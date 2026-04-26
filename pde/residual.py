@@ -17,11 +17,28 @@ def compute_pde_residual(
     k_ratio: float = 0.05,
     eps: float = 1e-12,
 ):
-    """Compute the dimensionless graph PDE residual at each node.
+    """计算每个节点的无量纲图 PDE 残差。
 
-    Edge feature layout is [dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq].
-    Inputs may be single-step tensors ([N], [N, 1]) or TBPTT windows
-    ([K, N], [K, N, 1]). The returned residual follows the T_next shape.
+    边特征布局为 [dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]。
+    输入可以是单步张量（[N]、[N, 1]），也可以是 TBPTT 窗口张量
+    （[K, N]、[K, N, 1]）。返回残差的形状会与 ``T_next`` 保持一致。
+
+    参数:
+        T_next: 下一步无量纲温度，形状 ``[N]``、``[N, 1]``、``[K, N]``
+            或 ``[K, N, 1]``。
+        T_current: 当前无量纲温度，形状同 ``T_next``，也可用单步温度广播到窗口。
+        v_scan_star: 无量纲扫描速度，标量张量、Python 标量或长度为 ``K`` 的张量。
+        Q_star: 无量纲热源，形状同温度或可广播的 ``[N, 1]``。
+        dt_star: 无量纲时间步长，标量。
+        edge_index: 图边索引，形状 ``[2, E]``。
+        edge_attr: 原始边特征，形状 ``[E, >=7]``。
+        inverse_pe: 佩克莱特数倒数 ``1 / Pe``。
+        pi_q: 无量纲热源强度系数。
+        k_ratio: 横向/纵向导热系数比 ``K_perp / K_parallel``。
+        eps: 数值下界，用于距离和时间步长防除零。
+
+    返回:
+        PDE 残差张量，形状与 ``T_next`` 保持一致。
     """
 
     T_next_2d, layout = _as_time_node(T_next, name="T_next")
@@ -64,6 +81,18 @@ def compute_pde_residual(
 
 
 def _as_time_node(value, *, name: str) -> Tuple[torch.Tensor, str]:
+    """将温度/热源输入规范化为 ``[K, N]`` 形式。
+
+    参数:
+        value: 输入张量或数组，允许形状为 ``[N]``、``[N, 1]``、
+            ``[K, N]`` 或 ``[K, N, 1]``。
+        name: 参数名，用于错误信息。
+
+    返回:
+        ``(tensor_2d, layout)`` 二元组；``tensor_2d`` 形状为 ``[K, N]``，
+        ``layout`` 记录原始布局以便恢复返回形状。
+    """
+
     tensor = torch.as_tensor(value)
     if tensor.ndim == 1:
         return tensor.reshape(1, -1), "node"
@@ -77,6 +106,17 @@ def _as_time_node(value, *, name: str) -> Tuple[torch.Tensor, str]:
 
 
 def _restore_layout(value: torch.Tensor, layout: str) -> torch.Tensor:
+    """根据记录的布局恢复张量形状。
+
+    参数:
+        value: 规范化计算后的二维张量，形状 ``[K, N]``。
+        layout: ``_as_time_node`` 返回的布局标记。
+
+    返回:
+        恢复后的张量，形状为 ``[N]``、``[N, 1]``、``[K, N]``
+        或 ``[K, N, 1]``。
+    """
+
     if layout == "node":
         return value[0]
     if layout == "node_col":
@@ -89,6 +129,17 @@ def _restore_layout(value: torch.Tensor, layout: str) -> torch.Tensor:
 
 
 def _broadcast_to_match(value, target, *, name: str):
+    """将单步节点张量广播到目标时间窗口形状。
+
+    参数:
+        value: 输入二维张量，形状 ``[1, N]`` 或 ``[K, N]``。
+        target: 目标二维张量，形状 ``[K, N]``。
+        name: 参数名，用于错误信息。
+
+    返回:
+        与 ``target`` 形状一致的张量；若 ``value`` 已匹配则原样返回。
+    """
+
     if value.shape == target.shape:
         return value
     if value.shape[0] == 1 and value.shape[1] == target.shape[1]:
@@ -97,6 +148,17 @@ def _broadcast_to_match(value, target, *, name: str):
 
 
 def _validate_graph(edge_index, edge_attr, num_nodes: int):
+    """校验图拓扑和边特征是否可用于 PDE 残差计算。
+
+    参数:
+        edge_index: 图边索引张量，形状必须为 ``[2, E]``。
+        edge_attr: 边特征张量，形状必须为 ``[E, >=7]``。
+        num_nodes: 节点数量 ``N``，用于检查边索引是否越界。
+
+    返回:
+        None。若形状不合法或边索引越界则抛出 ``ValueError``。
+    """
+
     if edge_index.ndim != 2 or edge_index.shape[0] != 2:
         raise ValueError(f"edge_index must have shape [2, E], got {tuple(edge_index.shape)}.")
     if edge_attr.ndim != 2 or edge_attr.shape[1] < 7:
@@ -111,6 +173,18 @@ def _validate_graph(edge_index, edge_attr, num_nodes: int):
 
 
 def _as_time_scalar(value, num_steps: int, *, device, dtype):
+    """将标量或时间序列速度转换为 ``[K, 1]`` 张量。
+
+    参数:
+        value: Python 标量或 ``torch.Tensor``；可为单个值或长度为 ``num_steps``。
+        num_steps: 时间步数量 ``K``。
+        device: 输出张量设备。
+        dtype: 输出张量数据类型。
+
+    返回:
+        速度张量，形状为 ``[1, 1]`` 或 ``[K, 1]``。
+    """
+
     tensor = _as_scalar_tensor(value, device=device, dtype=dtype)
     if tensor.numel() == 1:
         return tensor.reshape(1, 1)
@@ -120,6 +194,17 @@ def _as_time_scalar(value, num_steps: int, *, device, dtype):
 
 
 def _as_scalar_tensor(value, *, device, dtype):
+    """将标量值转换为指定设备和类型的张量。
+
+    参数:
+        value: Python 标量、数组或 ``torch.Tensor``。
+        device: 输出张量设备。
+        dtype: 输出张量数据类型。
+
+    返回:
+        ``torch.Tensor``，位于 ``device`` 且类型为 ``dtype``。
+    """
+
     if torch.is_tensor(value):
         return value.to(device=device, dtype=dtype)
     return torch.tensor(value, device=device, dtype=dtype)

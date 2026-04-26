@@ -1,0 +1,38 @@
+{
+  "data": {
+    "h5_path": "../DesignPlan/1.h5",
+    "cache_dir": "../runs/pdgcn/cache",
+    "checkpoint_path": "../runs/pdgcn/checkpoint.pt",
+    "history_path": "../runs/pdgcn/history.json",
+    "overwrite_cache": false
+  },
+  "scale": {
+    "L0": 51.764991760253906,
+    "v0": 80.0,
+    "T_amb": 300.0,
+    "delta_T0": 500,
+    "Q0": 3.1,
+    "K0": 1.0,
+    "rho": 1.0,
+    "Cp": 1.0,
+    "dt": 0.01
+  },
+  "model": {
+    "hidden_size": 64,
+    "message_passing_num": 3,
+    "gamma_upwind": 0.8,
+    "k_ratio": 0.05,
+    "lambda_outflow": 1.0,
+    "dropout": 0.0,
+    "layer_norm": true
+  },
+  "training": {
+    "lr": 0.0001,
+    "epochs": 1000,
+    "tbptt_window": 5,
+    "warmup_steps": 30,
+    "grad_clip_norm": null,
+    "loss_threshold": 0.02,
+    "device": null
+  }
+}

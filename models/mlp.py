@@ -2,31 +2,45 @@ import torch.nn as nn
 
 
 def build_mlp(in_size: int, hidden_size: int, out_size: int, *, layer_norm: bool = True, dropout: float = 0.0):
-    # Build the initial two-layer pattern: input projection -> hidden activation.
+    """构建三层前馈 MLP 模块。
+
+    参数:
+        in_size: 输入特征维度。
+        hidden_size: 隐层特征维度。
+        out_size: 输出特征维度。
+        layer_norm: 是否在输出层后追加 ``nn.LayerNorm``。
+        dropout: dropout 概率；为 ``0`` 时不插入 dropout 层。
+
+    返回:
+        ``nn.Sequential`` 模块，输入形状为 ``[..., in_size]``，
+        输出形状为 ``[..., out_size]``。
+    """
+
+    # 构建初始两层结构：输入投影 -> 隐层激活。
     layers = [
         nn.Linear(in_size, hidden_size),
         nn.ReLU(),
     ]
-    # Optional dropout: enabled only when dropout > 0.
+    # 可选 dropout：仅在 dropout > 0 时启用。
     if dropout > 0:
         layers.append(nn.Dropout(dropout))
 
-    # Add the second hidden layer and activation to improve representation capacity.
+    # 添加第二个隐层和激活函数以提升表达能力。
     layers.extend(
         [
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
         ]
     )
-    # Optional dropout after the second hidden layer.
+    # 第二个隐层后的可选 dropout。
     if dropout > 0:
         layers.append(nn.Dropout(dropout))
 
-    # Project to the target output dimension.
+    # 投影到目标输出维度。
     layers.append(nn.Linear(hidden_size, out_size))
-    # Optional LayerNorm: stabilizes training and normalizes output distribution.
+    # 可选 LayerNorm：稳定训练并规范化输出分布。
     if layer_norm:
         layers.append(nn.LayerNorm(out_size))
 
-    # Assemble layers in order into a callable feed-forward network.
+    # 按顺序组装为可调用的前馈网络。
     return nn.Sequential(*layers)

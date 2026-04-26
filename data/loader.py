@@ -18,7 +18,7 @@ class GraphRawData:
 
 
 class HDF5Loader:
-    """Load one PD-GCN graph frame from the generated HDF5 dataset."""
+    """从生成好的 HDF5 数据集中读取单帧 PD-GCN 图数据。"""
 
     REQUIRED_DATASETS = (
         "dynamic/xyz",
@@ -31,9 +31,33 @@ class HDF5Loader:
     )
 
     def __init__(self, file_path):
+        """初始化 HDF5 数据加载器。
+
+        参数:
+            file_path: HDF5 文件路径，类型可为字符串或 ``pathlib.Path``；
+                文件应包含 ``dynamic/xyz``、``dynamic/fiber``、``dynamic/Q``、
+                ``edge_index`` 和边界节点索引。
+
+        返回:
+            None。实例会保存规范化后的 ``Path`` 到 ``self.file_path``。
+        """
+
         self.file_path = Path(file_path)
 
     def load_graph_data(self, frame_idx: int = 0, device: Optional[torch.device] = None) -> GraphRawData:
+        """读取单个时间帧的原始图数据。
+
+        参数:
+            frame_idx: 要读取的帧编号，整数范围为 ``[0, num_frames - 1]``。
+            device: 可选目标设备；若提供，返回的张量会移动到该设备。
+
+        返回:
+            ``GraphRawData`` 数据对象，包含：
+            ``xyz`` 形状 ``[N, 3]``、``fiber`` 形状 ``[N, 3]``、
+            ``q`` 形状 ``[N, 1]``、``edge_index`` 形状 ``[2, E]``、
+            ``boundary_nodes`` 字典以及帧索引信息。
+        """
+
         if not self.file_path.exists():
             raise FileNotFoundError(f"HDF5 file not found: {self.file_path}")
 
@@ -71,12 +95,34 @@ class HDF5Loader:
         )
 
     def _validate_required_keys(self, h5_file):
+        """检查 HDF5 文件是否包含 PD-GCN 构图所需字段。
+
+        参数:
+            h5_file: 已打开的 ``h5py.File`` 对象。
+
+        返回:
+            None。若缺少必需数据集则抛出 ``KeyError``。
+        """
+
         missing = [key for key in self.REQUIRED_DATASETS if key not in h5_file]
         if missing:
             raise KeyError(f"Missing required HDF5 datasets: {missing}")
 
     @staticmethod
     def _validate_shapes(xyz, fiber, q, edge_index, boundary_nodes):
+        """校验单帧图数据的张量形状和索引范围。
+
+        参数:
+            xyz: 节点坐标张量，形状必须为 ``[N, 3]``。
+            fiber: 节点纤维方向张量，形状必须与 ``xyz`` 相同。
+            q: 节点热源张量，形状必须为 ``[N, 1]``。
+            edge_index: 图边索引张量，形状必须为 ``[2, E]``。
+            boundary_nodes: 边界节点字典，值为一维 long 索引张量。
+
+        返回:
+            None。若形状不匹配或索引越界则抛出 ``ValueError``。
+        """
+
         if xyz.ndim != 2 or xyz.shape[1] != 3:
             raise ValueError(f"dynamic/xyz frame must have shape [N, 3], got {tuple(xyz.shape)}.")
         if fiber.shape != xyz.shape:
@@ -107,6 +153,17 @@ class HDF5Loader:
 
 
 def _as_tensor(data, *, dtype, device=None):
+    """将 HDF5/NumPy 数据转换为 PyTorch 张量。
+
+    参数:
+        data: 可由 ``torch.as_tensor`` 接收的数据，通常来自 HDF5 数据集。
+        dtype: 目标 ``torch.dtype``，例如 ``torch.float32`` 或 ``torch.long``。
+        device: 可选目标设备；若提供，则返回张量会移动到该设备。
+
+    返回:
+        ``torch.Tensor``，数据类型为 ``dtype``，设备为 ``device`` 或默认设备。
+    """
+
     tensor = torch.as_tensor(data, dtype=dtype)
     if device is not None:
         tensor = tensor.to(device=device)

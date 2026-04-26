@@ -4,6 +4,17 @@ from pde.residual import compute_pde_residual
 
 
 def _edge_attr(distance, cos_theta, cos_phi_sq):
+    """构造用于残差测试的边特征张量。
+
+    参数:
+        distance: 边距离列表，长度为 ``E``。
+        cos_theta: 边与扫描方向夹角余弦列表，长度为 ``E``。
+        cos_phi_sq: 边与纤维方向夹角余弦平方列表，长度为 ``E``。
+
+    返回:
+        ``torch.FloatTensor``，形状 ``[E, 7]``，仅测试所需列被赋值。
+    """
+
     rows = []
     for d, theta, phi_sq in zip(distance, cos_theta, cos_phi_sq):
         rows.append([0.0, 0.0, 0.0, d, theta, 0.0, phi_sq])
@@ -11,6 +22,15 @@ def _edge_attr(distance, cos_theta, cos_phi_sq):
 
 
 def test_compute_pde_residual_matches_hand_calculation():
+    """验证 PDE 残差计算与手工推导结果一致。
+
+    参数:
+        None。
+
+    返回:
+        None。断言失败时由测试框架报告错误。
+    """
+
     edge_index = torch.tensor([[0, 2], [1, 1]], dtype=torch.long)
     edge_attr = _edge_attr(
         distance=[2.0, 1.0],
@@ -40,6 +60,15 @@ def test_compute_pde_residual_matches_hand_calculation():
 
 
 def test_compute_pde_residual_supports_tbptt_window_shape():
+    """验证 PDE 残差函数支持 TBPTT 时间窗口输入形状。
+
+    参数:
+        None。
+
+    返回:
+        None。断言输出形状和有限性。
+    """
+
     edge_index = torch.tensor([[0], [1]], dtype=torch.long)
     edge_attr = _edge_attr(distance=[1.0], cos_theta=[1.0], cos_phi_sq=[1.0])
     T_next = torch.tensor([[[1.0], [2.0]], [[2.0], [4.0]]])

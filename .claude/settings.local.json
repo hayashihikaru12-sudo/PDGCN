@@ -2,7 +2,39 @@
   "permissions": {
     "allow": [
       "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -m pytest pde/tests/ -v)",
-      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -c ' *)"
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -c ' *)",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -c \"import torch_geometric; print\\(torch_geometric.__version__\\)\")",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -c \"from torch_geometric.data import Data; d=Data\\(x=None\\); print\\(type\\(d.keys\\), d.keys if not callable\\(d.keys\\) else d.keys\\(\\)\\)\")",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -m pytest pde/tests training/tests -x --tb=short)",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -m unittest discover -s pde/tests -v)",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -m unittest discover -s training/tests -v)",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -m unittest pde.tests.test_loss pde.tests.test_residual -v)",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe pde/tests/test_residual.py)",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe pde/tests/test_loss.py)",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -m unittest pde.tests.test_loss -v)",
+      "Bash(PYTHONPATH=. D:/ProgramData/CondaEnv/PIGNN/python.exe pde/tests/test_residual.py)",
+      "Bash(PYTHONPATH=. D:/ProgramData/CondaEnv/PIGNN/python.exe pde/tests/test_loss.py)",
+      "Bash(PYTHONPATH=. D:/ProgramData/CondaEnv/PIGNN/python.exe -m unittest pde.tests.test_loss pde.tests.test_residual training.tests.test_trainer -v)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest discover -s training/tests -p \"test_*.py\")",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest discover -s pde/tests -p \"test_*.py\")",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest pde.tests.test_loss pde.tests.test_residual -v)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -c \"import pde.tests.test_loss; print\\(dir\\(pde.tests.test_loss\\)\\)\")",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m pytest pde/tests/ -q)",
+      "Bash(ls *.py)",
+      "Bash(ls scripts/)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest discover -s training/tests -p \"test_*.py\" -v)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest discover -s pde/tests -p \"test_*.py\" -v)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -c \"from training import train_entry; print\\(dir\\(train_entry\\)\\)\")",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest discover -s pde -p \"test_*.py\" -v)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest test_loss test_residual -v)",
+      "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest pde.tests.test_loss pde.tests.test_residual -v)",
+      "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m unittest discover -t . -s pde/tests -p \"test_*.py\" -v)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -m pytest pde/tests/ -v --no-header)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" pde/tests/test_residual.py)",
+      "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" pde/tests/test_loss.py)",
+      "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" pde/tests/test_residual.py)",
+      "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" pde/tests/test_loss.py)",
+      "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -c \"from pde.tests.test_residual import test_compute_pde_residual_matches_hand_calculation, test_compute_pde_residual_supports_tbptt_window_shape; test_compute_pde_residual_matches_hand_calculation\\(\\); test_compute_pde_residual_supports_tbptt_window_shape\\(\\); print\\('test_residual OK'\\)\")"
     ]
   }
 }

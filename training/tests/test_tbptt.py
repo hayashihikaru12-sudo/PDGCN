@@ -10,15 +10,44 @@ from training.tbptt import iter_tbptt_windows, rollout_window
 
 class ConstantDeltaModel(nn.Module):
     def __init__(self, delta=1.0):
+        """初始化输出常数温度增量的测试模型。
+
+        参数:
+            self: ``ConstantDeltaModel`` 实例。
+            delta: 每个节点输出的无量纲温度增量初值。
+
+        返回:
+            None。实例包含 ``config`` 和参数 ``delta``。
+        """
+
         super().__init__()
         self.config = PDGCNConfig()
         self.delta = nn.Parameter(torch.tensor(float(delta)))
 
     def forward(self, graph):
+        """为每个节点返回同一个温度增量。
+
+        参数:
+            graph: PyG ``Data`` 图对象，使用 ``graph.x.shape[0]`` 获取节点数。
+
+        返回:
+            形状 ``[N, 1]`` 的张量，每个元素均为 ``delta``。
+        """
+
         return self.delta.expand(graph.x.shape[0], 1)
 
 
 def make_graph(num_nodes=3, temperature=0.0):
+    """构造用于 TBPTT 测试的小图。
+
+    参数:
+        num_nodes: 节点数量 ``N``。
+        temperature: 节点初始无量纲温度值。
+
+    返回:
+        PyG ``Data`` 图对象，包含节点特征、两条测试边和空边界索引。
+    """
+
     graph = Data(
         x=torch.zeros(num_nodes, 8),
         edge_index=torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
@@ -41,10 +70,28 @@ def make_graph(num_nodes=3, temperature=0.0):
 
 class TBPTTTests(unittest.TestCase):
     def test_iter_tbptt_windows_preserves_order(self):
+        """验证 TBPTT 窗口切分保持原序列顺序。
+
+        参数:
+            self: ``TBPTTTests`` 测试用例实例。
+
+        返回:
+            None。断言窗口列表内容。
+        """
+
         windows = list(iter_tbptt_windows([0, 1, 2, 3, 4], 2))
         self.assertEqual(windows, [[0, 1], [2, 3], [4]])
 
     def test_rollout_window_accumulates_temperature(self):
+        """验证窗口 rollout 会逐步累积温度增量。
+
+        参数:
+            self: ``TBPTTTests`` 测试用例实例。
+
+        返回:
+            None。断言预测序列形状和窗口末温度。
+        """
+
         model = ConstantDeltaModel(delta=1.0)
         window = [make_graph(), make_graph()]
         predictions, final_temperature = rollout_window(model, window, torch.zeros(3, 1))

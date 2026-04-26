@@ -6,11 +6,11 @@ import torch
 
 @dataclass(frozen=True)
 class ScaleParams:
-    """Characteristic scales used by the PD-GCN data pipeline.
+    """PD-GCN 数据流水线使用的特征尺度参数。
 
-    K0, rho, Cp are optional: they do not participate in tensor-level
-    nondimensionalization but are required by ``derive_pde_constants`` to
-    compute the scalar coefficients ``inverse_pe`` and ``pi_q``.
+    ``K0``、``rho``、``Cp`` 是可选参数：它们不参与张量级无量纲化，
+    但 ``derive_pde_constants`` 需要使用它们计算标量系数
+    ``inverse_pe`` 和 ``pi_q``。
     """
 
     L0: float
@@ -24,6 +24,16 @@ class ScaleParams:
     eps: float = 1e-12
 
     def __post_init__(self):
+        """校验无量纲化特征尺度参数。
+
+        参数:
+            self: ``ScaleParams`` 实例，包含长度、速度、温度、热源等标尺；
+                ``K0``、``rho``、``Cp`` 可选，但若提供则必须为正数。
+
+        返回:
+            None。校验失败时抛出 ``ValueError``。
+        """
+
         positive_fields = ("L0", "v0", "delta_T0", "Q0", "eps")
         for field_name in positive_fields:
             value = float(getattr(self, field_name))
@@ -36,11 +46,19 @@ class ScaleParams:
 
 
 def derive_pde_constants(scale_params: "ScaleParams") -> Tuple[float, float]:
-    """Compute (inverse_pe, pi_q) from characteristic scales.
+    """根据特征尺度计算 ``(inverse_pe, pi_q)``。
 
     ``1/Pe = K0 / (rho * Cp * v0 * L0)`` and
     ``pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)``.
-    Requires ``K0``, ``rho``, and ``Cp`` to be set on ``scale_params``.
+    调用前必须在 ``scale_params`` 中设置 ``K0``、``rho`` 和 ``Cp``。
+
+    参数:
+        scale_params: ``ScaleParams`` 实例，必须设置 ``K0``、``rho`` 和 ``Cp``；
+            其余字段提供无量纲化所需的特征标尺。
+
+    返回:
+        ``(inverse_pe, pi_q)`` 二元组，均为 Python ``float``；
+        分别表示佩克莱特数倒数和无量纲热源强度。
     """
 
     missing = [name for name in ("K0", "rho", "Cp") if getattr(scale_params, name) is None]
@@ -67,30 +85,103 @@ def derive_pde_constants(scale_params: "ScaleParams") -> Tuple[float, float]:
 
 
 def coordinates_to_dimensionless(coordinates, scale_params: ScaleParams):
+    """将真实坐标转换为无量纲坐标。
+
+    参数:
+        coordinates: 坐标张量或数组，形状通常为 ``[N, 3]``，单位与 ``L0`` 一致。
+        scale_params: ``ScaleParams`` 实例，使用其中的 ``L0`` 作为长度标尺。
+
+    返回:
+        与 ``coordinates`` 形状一致的无量纲坐标，数值为 ``coordinates / L0``。
+    """
+
     return coordinates / scale_params.L0
 
 
 def coordinates_from_dimensionless(coordinates_star, scale_params: ScaleParams):
+    """将无量纲坐标还原为真实坐标。
+
+    参数:
+        coordinates_star: 无量纲坐标张量或数组，形状通常为 ``[N, 3]``。
+        scale_params: ``ScaleParams`` 实例，使用其中的 ``L0`` 作为长度标尺。
+
+    返回:
+        与 ``coordinates_star`` 形状一致的真实坐标，数值为 ``coordinates_star * L0``。
+    """
+
     return coordinates_star * scale_params.L0
 
 
 def temperature_to_dimensionless(temperature, scale_params: ScaleParams):
+    """将真实温度转换为无量纲温度。
+
+    参数:
+        temperature: 温度张量或数组，形状通常为 ``[N, 1]``，单位为真实温度单位。
+        scale_params: ``ScaleParams`` 实例，使用 ``T_amb`` 和 ``delta_T0``。
+
+    返回:
+        与 ``temperature`` 形状一致的无量纲温度 ``(T - T_amb) / delta_T0``。
+    """
+
     return (temperature - scale_params.T_amb) / scale_params.delta_T0
 
 
 def temperature_from_dimensionless(temperature_star, scale_params: ScaleParams):
+    """将无量纲温度还原为真实温度。
+
+    参数:
+        temperature_star: 无量纲温度张量或数组，形状通常为 ``[N, 1]`` 或
+            ``[K, N, 1]``。
+        scale_params: ``ScaleParams`` 实例，使用 ``T_amb`` 和 ``delta_T0``。
+
+    返回:
+        与 ``temperature_star`` 形状一致的真实温度 ``T* * delta_T0 + T_amb``。
+    """
+
     return temperature_star * scale_params.delta_T0 + scale_params.T_amb
 
 
 def heat_source_to_dimensionless(q, scale_params: ScaleParams):
+    """将真实热源强度转换为无量纲热源。
+
+    参数:
+        q: 热源强度张量或数组，形状通常为 ``[N, 1]``。
+        scale_params: ``ScaleParams`` 实例，使用其中的 ``Q0`` 作为热源标尺。
+
+    返回:
+        与 ``q`` 形状一致的无量纲热源 ``q / Q0``。
+    """
+
     return q / scale_params.Q0
 
 
 def heat_source_from_dimensionless(q_star, scale_params: ScaleParams):
+    """将无量纲热源强度还原为真实热源。
+
+    参数:
+        q_star: 无量纲热源张量或数组，形状通常为 ``[N, 1]``。
+        scale_params: ``ScaleParams`` 实例，使用其中的 ``Q0`` 作为热源标尺。
+
+    返回:
+        与 ``q_star`` 形状一致的真实热源强度 ``q_star * Q0``。
+    """
+
     return q_star * scale_params.Q0
 
 
 def velocity_to_dimensionless(scan_velocity, scale_params: ScaleParams, *, device=None, dtype=torch.float32):
+    """将扫描速度转换为无量纲速度张量。
+
+    参数:
+        scan_velocity: 标量、序列或 ``torch.Tensor``，表示真实扫描速度。
+        scale_params: ``ScaleParams`` 实例，使用其中的 ``v0`` 作为速度标尺。
+        device: 可选目标设备，例如 ``torch.device("cpu")`` 或 CUDA 设备。
+        dtype: 可选目标数据类型，默认为 ``torch.float32``。
+
+    返回:
+        ``torch.Tensor``，形状继承自输入，数值为 ``scan_velocity / v0``。
+    """
+
     if torch.is_tensor(scan_velocity):
         velocity = scan_velocity
         if device is not None:
@@ -103,11 +194,33 @@ def velocity_to_dimensionless(scan_velocity, scale_params: ScaleParams, *, devic
 
 
 def to_dimensionless(node_features, edge_features, global_condition, scale_params: ScaleParams):
-    """Convert raw PD-GCN feature tensors to the dimensionless feature layout.
+    """将原始 PD-GCN 特征张量转换为无量纲特征布局。
 
-    Expected node layout: [x, y, z, fx, fy, fz, T, Q].
-    Expected edge layout: [dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq].
-    Expected global layout: [scan_velocity].
+    重要提示:
+        本函数只接收带真实单位的原始特征张量。不要对 ``build_graph``
+        返回的 ``graph.x``、``graph.edge_attr`` 或 ``graph.global_attr``
+        再调用本函数。``build_graph`` 已经完成坐标、边位移/距离、
+        温度、热源和扫描速度的无量纲化。若对 ``build_graph`` 构造出的图
+        再调用本函数，``edge_features[:, 0:4]`` 会被第二次除以 ``L0``，
+        从而破坏 PDE 尺度。
+
+    期望节点布局: [x, y, z, fx, fy, fz, T, Q]。
+    期望边布局: [dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]。
+    期望全局条件布局: [scan_velocity]。
+
+    参数:
+        node_features: 原始节点特征张量，形状 ``[N, 8]``，列含义为
+            ``[x, y, z, fx, fy, fz, T, Q]``。
+        edge_features: 原始边特征张量，形状 ``[E, 7]``，列含义为
+            ``[dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]``。
+        global_condition: 全局工艺条件，形状通常为 ``[1]``，表示扫描速度。
+        scale_params: ``ScaleParams`` 实例，提供坐标、温度、热源和速度标尺。
+
+    返回:
+        ``(node_star, edge_star, global_star)`` 三元组：
+        ``node_star`` 形状 ``[N, 8]``，坐标/温度/热源已无量纲化；
+        ``edge_star`` 形状 ``[E, 7]``，边位移和距离已无量纲化；
+        ``global_star`` 形状 ``[G]``，全局速度已无量纲化。
     """
 
     node_star = node_features.clone()
@@ -117,6 +230,9 @@ def to_dimensionless(node_features, edge_features, global_condition, scale_param
     node_star[:, 6:7] = temperature_to_dimensionless(node_star[:, 6:7], scale_params)
     node_star[:, 7:8] = heat_source_to_dimensionless(node_star[:, 7:8], scale_params)
 
+    # 警告: 此处的 edge_features[:, 0:4] 必须仍然带真实长度单位。
+    # 不要传入 build_graph/build_edge_features(nodes_star, ...) 生成的 edge_attr，
+    # 因为其中的边位移和边距离已经是无量纲量。
     edge_star[:, 0:4] = edge_star[:, 0:4] / scale_params.L0
     global_star = velocity_to_dimensionless(
         global_condition,

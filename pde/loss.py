@@ -6,7 +6,17 @@ from .residual import _as_time_node, compute_pde_residual
 
 
 def apply_dirichlet_boundary(T, boundary_nodes: Optional[Dict[str, torch.Tensor]], *, value: float = 0.0):
-    """Clamp upwind and side boundary nodes to the dimensionless Dirichlet value."""
+    """将迎风和侧边界节点钳制为 Dirichlet 温度。
+
+    参数:
+        T: 无量纲温度张量，允许形状 ``[N]``、``[N, 1]``、``[K, N]``
+            或 ``[K, N, 1]``。
+        boundary_nodes: 边界节点字典；函数使用其中 ``upwind`` 和 ``side``。
+        value: 无量纲 Dirichlet 温度值，默认 ``0.0`` 表示环境温度。
+
+    返回:
+        与 ``T`` 形状一致的新张量；指定边界节点已被替换为 ``value``。
+    """
 
     nodes = _concat_boundary_nodes(boundary_nodes, ("upwind", "side"), device=torch.as_tensor(T).device)
     if nodes.numel() == 0:
@@ -28,7 +38,19 @@ def apply_dirichlet_boundary(T, boundary_nodes: Optional[Dict[str, torch.Tensor]
 
 
 def compute_outflow_loss(T, edge_index, edge_attr, outflow_nodes, *, eps: float = 1e-12):
-    """Compute the dimensionless soft Neumann outflow loss on downwind nodes."""
+    """计算尾迹出流边界的无量纲 Neumann 软约束损失。
+
+    参数:
+        T: 无量纲温度张量，允许形状 ``[N]``、``[N, 1]``、``[K, N]``
+            或 ``[K, N, 1]``。
+        edge_index: 图边索引，形状 ``[2, E]``。
+        edge_attr: 原始边特征，形状 ``[E, >=7]``，使用 ``d`` 和 ``cos_theta``。
+        outflow_nodes: 尾迹边界节点索引，一维张量或可转为张量的序列。
+        eps: 分母下界，用于避免除零。
+
+    返回:
+        标量张量，表示出流边界法向温度梯度平方均值。
+    """
 
     T_2d, _ = _as_time_node(T, name="T")
     device = T_2d.device
@@ -72,7 +94,31 @@ def total_loss(
     return_components: bool = False,
     eps: float = 1e-12,
 ):
-    """Compute L_total = L_PDE + lambda_outflow * L_outflow."""
+    """计算 PD-GCN 纯物理总损失。
+
+    参数:
+        T_next: 下一步无量纲温度预测，形状 ``[N]``、``[N, 1]``、
+            ``[K, N]`` 或 ``[K, N, 1]``。
+        T_current: 当前无量纲温度，形状同 ``T_next`` 或可广播到 ``T_next``。
+        v_scan_star: 无量纲扫描速度，标量或长度为 ``K`` 的张量。
+        Q_star: 无量纲热源张量，形状同温度或可广播。
+        dt_star: 无量纲时间步长。
+        edge_index: 图边索引，形状 ``[2, E]``。
+        edge_attr: 原始边特征，形状 ``[E, >=7]``。
+        boundary_nodes: 边界节点字典，使用 ``upwind``、``side`` 和 ``downwind``。
+        inverse_pe: 佩克莱特数倒数。
+        pi_q: 无量纲热源强度系数。
+        k_ratio: 横向/纵向导热系数比。
+        lambda_outflow: 出流边界损失权重。
+        dirichlet_temperature_star: 硬 Dirichlet 边界的无量纲温度值。
+        return_components: 是否返回损失分量和中间张量。
+        eps: 数值下界，用于防止除零。
+
+    返回:
+        若 ``return_components=False``，返回标量总损失张量；
+        否则返回字典，包含 ``loss_total``、``loss_pde``、``loss_outflow``、
+        ``residual`` 和 ``T_next_bc``。
+    """
 
     T_next_bc = apply_dirichlet_boundary(
         T_next,
@@ -117,6 +163,18 @@ def total_loss(
 
 
 def _concat_boundary_nodes(boundary_nodes: Optional[Dict[str, torch.Tensor]], names: Iterable[str], *, device):
+    """从边界字典中合并指定类别节点。
+
+    参数:
+        boundary_nodes: 边界节点字典，值为一维索引张量；可为 ``None``。
+        names: 要合并的边界名称序列。
+        device: 返回索引张量所在设备。
+
+    返回:
+        一维 ``torch.LongTensor``，包含指定边界类别的唯一索引；
+        若没有可用边界则返回空张量。
+    """
+
     if not boundary_nodes:
         return torch.empty(0, device=device, dtype=torch.long)
     selected = [
@@ -130,6 +188,17 @@ def _concat_boundary_nodes(boundary_nodes: Optional[Dict[str, torch.Tensor]], na
 
 
 def _interior_nodes(num_nodes: int, boundary_nodes: Optional[Dict[str, torch.Tensor]], *, device):
+    """计算不属于任意边界的内部节点索引。
+
+    参数:
+        num_nodes: 图节点数量 ``N``。
+        boundary_nodes: 边界节点字典；使用 ``upwind``、``side`` 和 ``downwind``。
+        device: 返回索引张量所在设备。
+
+    返回:
+        一维 ``torch.LongTensor``，包含内部节点索引；若未提供边界则返回所有节点。
+    """
+
     all_nodes = torch.arange(num_nodes, device=device, dtype=torch.long)
     boundary = _concat_boundary_nodes(boundary_nodes, ("upwind", "side", "downwind"), device=device)
     if boundary.numel() == 0:

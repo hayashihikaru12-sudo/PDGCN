@@ -27,11 +27,30 @@ class PDGCNConfig:
 
     @property
     def encoder_node_input_size(self) -> int:
+        """计算节点编码器实际输入维度。
+
+        参数:
+            self: ``PDGCNConfig`` 实例，包含节点特征维度、全局特征维度和开关。
+
+        返回:
+            Python ``int``。若 ``include_global=True``，返回
+            ``node_input_size + global_input_size``；否则返回 ``node_input_size``。
+        """
+
         if self.include_global:
             return self.node_input_size + self.global_input_size
         return self.node_input_size
 
     def __post_init__(self):
+        """校验 PD-GCN 模型和物理损失配置。
+
+        参数:
+            self: ``PDGCNConfig`` 实例，包含维度、网络超参数和物理损失系数。
+
+        返回:
+            None。若维度或系数非法则抛出 ``ValueError``。
+        """
+
         positive_ints = (
             "node_input_size",
             "edge_input_size",

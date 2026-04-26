@@ -8,6 +8,17 @@ from .graph_utils import clone_graph_with_temperature, graph_boundary_nodes, gra
 
 
 def iter_tbptt_windows(graph_seq: Sequence, window_size: int):
+    """按固定长度切分 TBPTT 时间窗口。
+
+    参数:
+        graph_seq: 图序列，长度为 ``T``，每个元素通常为 PyG ``Data`` 对象。
+        window_size: 每个截断窗口的最大长度 ``k``，必须为正整数。
+
+    返回:
+        生成器；每次产出一个列表窗口，长度不超过 ``window_size``，
+        并保持原始时间顺序。
+    """
+
     if int(window_size) <= 0:
         raise ValueError(f"window_size must be positive, got {window_size}.")
     for start in range(0, len(graph_seq), int(window_size)):
@@ -17,6 +28,19 @@ def iter_tbptt_windows(graph_seq: Sequence, window_size: int):
 
 
 def rollout_window(model, window: Sequence, initial_temperature_star):
+    """在一个 TBPTT 窗口内自回归滚动预测温度。
+
+    参数:
+        model: PD-GCN 模型，输入单步图对象并输出 ``delta_T*``，形状 ``[N, 1]``。
+        window: 图对象序列，长度为 ``k``。
+        initial_temperature_star: 窗口初始无量纲温度，形状 ``[N, 1]``。
+
+    返回:
+        ``(prediction_seq, final_temperature)`` 二元组：
+        ``prediction_seq`` 形状 ``[k, N, 1]``，为每步预测温度；
+        ``final_temperature`` 形状 ``[N, 1]``，为窗口末温度。
+    """
+
     if not window:
         raise ValueError("window must contain at least one graph.")
 
@@ -38,6 +62,19 @@ def rollout_window(model, window: Sequence, initial_temperature_star):
 
 
 def train_tbptt_window(model, window: Sequence, initial_temperature_star):
+    """计算单个 TBPTT 窗口的物理损失。
+
+    参数:
+        model: PD-GCN 模型，需带有 ``config`` 属性以读取物理损失参数。
+        window: 图对象序列，长度为 ``k``。
+        initial_temperature_star: 窗口初始无量纲温度，形状 ``[N, 1]``。
+
+    返回:
+        ``(loss, final_temperature)`` 二元组：
+        ``loss`` 为标量张量，可直接反向传播；
+        ``final_temperature`` 形状 ``[N, 1]``，用于下一个窗口的初值。
+    """
+
     prediction_seq, final_temperature = rollout_window(model, window, initial_temperature_star)
     losses = []
     current_temperature = initial_temperature_star
@@ -66,6 +103,15 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
 
 
 def initial_temperature_from_graph_seq(graph_seq: Sequence):
+    """从图序列首帧读取初始无量纲温度。
+
+    参数:
+        graph_seq: 非空图对象序列，首个图的 ``x[:, 6:7]`` 为初温。
+
+    返回:
+        初始温度张量，形状 ``[N, 1]``。
+    """
+
     if not graph_seq:
         raise ValueError("graph_seq must contain at least one graph.")
     return graph_temperature(graph_seq[0])

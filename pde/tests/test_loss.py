@@ -4,6 +4,17 @@ from pde.loss import apply_dirichlet_boundary, compute_outflow_loss, total_loss
 
 
 def _edge_attr(distance, cos_theta, cos_phi_sq=None):
+    """构造用于损失测试的边特征张量。
+
+    参数:
+        distance: 边距离列表，长度为 ``E``。
+        cos_theta: 边与扫描方向夹角余弦列表，长度为 ``E``。
+        cos_phi_sq: 可选余弦平方列表；若为 ``None``，默认全部为 ``1.0``。
+
+    返回:
+        ``torch.FloatTensor``，形状 ``[E, 7]``。
+    """
+
     if cos_phi_sq is None:
         cos_phi_sq = [1.0] * len(distance)
     rows = []
@@ -13,6 +24,15 @@ def _edge_attr(distance, cos_theta, cos_phi_sq=None):
 
 
 def test_apply_dirichlet_boundary_clamps_upwind_and_side_nodes():
+    """验证 Dirichlet 硬边界只钳制迎风和侧边界节点。
+
+    参数:
+        None。
+
+    返回:
+        None。断言钳制结果和原输入未被原地修改。
+    """
+
     T = torch.tensor([[5.0], [6.0], [7.0], [8.0]])
     boundary_nodes = {
         "upwind": torch.tensor([0]),
@@ -27,6 +47,15 @@ def test_apply_dirichlet_boundary_clamps_upwind_and_side_nodes():
 
 
 def test_compute_outflow_loss_matches_weighted_gradient():
+    """验证出流损失与手工加权梯度计算一致。
+
+    参数:
+        None。
+
+    返回:
+        None。断言标量损失值。
+    """
+
     edge_index = torch.tensor([[0, 1], [2, 2]], dtype=torch.long)
     edge_attr = _edge_attr(distance=[1.0, 2.0], cos_theta=[1.0, 3.0])
     T = torch.tensor([[1.0], [3.0], [7.0]])
@@ -38,6 +67,15 @@ def test_compute_outflow_loss_matches_weighted_gradient():
 
 
 def test_total_loss_returns_scalar_and_components_are_consistent():
+    """验证总损失为标量且分量加权关系正确。
+
+    参数:
+        None。
+
+    返回:
+        None。断言总损失、PDE 损失、出流损失和边界钳制结果。
+    """
+
     edge_index = torch.tensor([[0, 1], [1, 2]], dtype=torch.long)
     edge_attr = _edge_attr(distance=[1.0, 1.0], cos_theta=[1.0, 1.0])
     T_next = torch.tensor([[9.0], [2.0], [4.0], [8.0]])

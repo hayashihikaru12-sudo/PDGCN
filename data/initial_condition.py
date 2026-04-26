@@ -15,7 +15,26 @@ def generate_initial_temperature(
     upwind_bias: float = 0.1,
     x_star: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Generate a dimensionless quasi-steady initial temperature by graph relaxation."""
+    """通过 legacy 图扩散松弛生成无量纲准稳态初始温度。
+
+    训练入口默认使用当前 PD-GCN 权重执行伪时间 warmup；本函数仅作为
+    数据层无模型依赖的构图 fallback。
+
+    参数:
+        edge_index: 图边索引，形状 ``[2, E]``，第一行为 source，第二行为 receiver。
+        q_star: 无量纲热源张量，形状 ``[N]`` 或 ``[N, 1]``。
+        boundary_nodes: 边界节点字典，至少可包含 ``upwind`` 和 ``side``。
+        num_nodes: 图节点数量 ``N``。
+        M: 松弛迭代次数；为 ``0`` 时直接返回冷态零温度。
+        dtau: 伪时间步长，用于更新松弛温度。
+        diffusion: 图扩散项权重。
+        source_weight: 热源项权重。
+        upwind_bias: 沿局部 x 方向的迎风权重偏置强度。
+        x_star: 可选无量纲坐标张量，形状 ``[N, 3]``；提供时用于构造迎风偏置。
+
+    返回:
+        无量纲初始温度张量，形状 ``[N, 1]``；迎风和侧边界节点被钳制为 ``0``。
+    """
 
     if M < 0:
         raise ValueError(f"M must be non-negative, got {M}.")
@@ -55,6 +74,18 @@ def generate_initial_temperature(
 
 
 def _concat_unique_boundary(boundary_nodes, names, *, device):
+    """合并指定边界类别的节点索引并去重。
+
+    参数:
+        boundary_nodes: 边界节点字典，值为一维索引张量。
+        names: 要合并的边界名称序列，例如 ``("upwind", "side")``。
+        device: 输出索引张量所在设备。
+
+    返回:
+        一维 ``torch.LongTensor``，包含指定边界类别的唯一节点索引；
+        若没有匹配边界，则返回空张量。
+    """
+
     selected = [boundary_nodes[name].to(device=device, dtype=torch.long) for name in names if name in boundary_nodes]
     if not selected:
         return torch.empty(0, device=device, dtype=torch.long)
