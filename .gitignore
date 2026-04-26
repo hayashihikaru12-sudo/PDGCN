@@ -1,0 +1,61 @@
+# Reference materials: readable locally, not tracked by this repo.
+/PIGNN/
+/DesignPlan/
+
+# Python bytecode and runtime caches.
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python build and packaging artifacts.
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Virtual environments and local environment files.
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+
+# IDE and OS metadata.
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+
+# Logs, temporary files, and training outputs.
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+checkpoint/
+checkpoints/
+runs/
+outputs/
+wandb/
+
+# Model/data binaries generated during experiments.
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.hdf5
+*.npz
+*.npy

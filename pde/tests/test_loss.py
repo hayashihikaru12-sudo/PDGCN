@@ -1,0 +1,73 @@
+import torch
+
+from pde.loss import apply_dirichlet_boundary, compute_outflow_loss, total_loss
+
+
+def _edge_attr(distance, cos_theta, cos_phi_sq=None):
+    if cos_phi_sq is None:
+        cos_phi_sq = [1.0] * len(distance)
+    rows = []
+    for d, theta, phi_sq in zip(distance, cos_theta, cos_phi_sq):
+        rows.append([0.0, 0.0, 0.0, d, theta, 0.0, phi_sq])
+    return torch.tensor(rows, dtype=torch.float32)
+
+
+def test_apply_dirichlet_boundary_clamps_upwind_and_side_nodes():
+    T = torch.tensor([[5.0], [6.0], [7.0], [8.0]])
+    boundary_nodes = {
+        "upwind": torch.tensor([0]),
+        "side": torch.tensor([3]),
+        "downwind": torch.tensor([2]),
+    }
+
+    clamped = apply_dirichlet_boundary(T, boundary_nodes, value=0.0)
+
+    assert torch.allclose(clamped, torch.tensor([[0.0], [6.0], [7.0], [0.0]]))
+    assert torch.allclose(T, torch.tensor([[5.0], [6.0], [7.0], [8.0]]))
+
+
+def test_compute_outflow_loss_matches_weighted_gradient():
+    edge_index = torch.tensor([[0, 1], [2, 2]], dtype=torch.long)
+    edge_attr = _edge_attr(distance=[1.0, 2.0], cos_theta=[1.0, 3.0])
+    T = torch.tensor([[1.0], [3.0], [7.0]])
+
+    loss = compute_outflow_loss(T, edge_index, edge_attr, torch.tensor([2]))
+
+    expected_gradient = ((7.0 - 1.0) / 1.0 * 1.0 + (7.0 - 3.0) / 2.0 * 3.0) / (1.0 + 3.0)
+    assert torch.allclose(loss, torch.tensor(expected_gradient**2), atol=1e-6)
+
+
+def test_total_loss_returns_scalar_and_components_are_consistent():
+    edge_index = torch.tensor([[0, 1], [1, 2]], dtype=torch.long)
+    edge_attr = _edge_attr(distance=[1.0, 1.0], cos_theta=[1.0, 1.0])
+    T_next = torch.tensor([[9.0], [2.0], [4.0], [8.0]])
+    T_current = torch.tensor([[0.0], [1.0], [3.0], [0.0]])
+    Q_star = torch.zeros_like(T_next)
+    boundary_nodes = {
+        "upwind": torch.tensor([0]),
+        "side": torch.tensor([3]),
+        "downwind": torch.tensor([2]),
+    }
+
+    components = total_loss(
+        T_next=T_next,
+        T_current=T_current,
+        v_scan_star=1.0,
+        Q_star=Q_star,
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        boundary_nodes=boundary_nodes,
+        inverse_pe=0.0,
+        pi_q=1.0,
+        k_ratio=0.05,
+        lambda_outflow=0.25,
+        return_components=True,
+    )
+
+    assert components["loss_total"].ndim == 0
+    assert torch.allclose(components["T_next_bc"], torch.tensor([[0.0], [2.0], [4.0], [0.0]]))
+    assert torch.allclose(
+        components["loss_total"],
+        components["loss_pde"] + 0.25 * components["loss_outflow"],
+    )

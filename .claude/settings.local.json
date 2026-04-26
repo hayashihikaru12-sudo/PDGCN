@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -m pytest pde/tests/ -v)",
+      "Bash(D:/ProgramData/CondaEnv/PIGNN/python.exe -c ' *)"
+    ]
+  }
+}
