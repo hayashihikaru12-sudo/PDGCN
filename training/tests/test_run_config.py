@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from data import ScaleParams
-from training import pdgcn_config_from_scale
+from training import load_run_config, pdgcn_config_from_scale
 from training.run_config import derive_dt_star
 from training.train_entry import run_training_from_config
 
@@ -94,6 +94,68 @@ class RunConfigTests(unittest.TestCase):
             pdgcn_config_from_scale(scale, dt=0.5)
         with self.assertRaises(ValueError):
             derive_dt_star(scale, 0.0)
+
+    def test_load_classified_run_config_groups_dataset_and_hyperparameters(self):
+        config_path = self.root / "classified.json"
+        payload = {
+            "outputs": {
+                "checkpoint_path": "checkpoint.pt",
+                "history_path": "history.json",
+            },
+            "datasets": [
+                {
+                    "name": "case_a",
+                    "h5_path": "input.h5",
+                    "cache_dir": "cache/case_a",
+                    "overwrite_cache": True,
+                    "scale": {
+                        "L0": 2.0,
+                        "v0": 2.0,
+                        "T_amb": 300.0,
+                        "delta_T0": 10.0,
+                        "Q0": 2.0,
+                        "K0": 8.0,
+                        "rho": 2.0,
+                        "Cp": 1.0,
+                        "dt": 0.5,
+                    },
+                }
+            ],
+            "hyperparameters": {
+                "model": {
+                    "hidden_size": 8,
+                    "message_passing_num": 1,
+                },
+                "physics_loss": {
+                    "lambda_outflow": 0.0,
+                    "thermal_loss_beta": 0.25,
+                    "residual_time_scheme": "backward",
+                },
+                "training": {
+                    "lr": 0.001,
+                    "epochs": 3,
+                    "tbptt_window": 2,
+                    "warmup_steps": 1,
+                    "device": "cpu",
+                },
+            },
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        config = load_run_config(config_path)
+
+        self.assertEqual(config.schema, "classified")
+        self.assertEqual(config.outputs.checkpoint_path, "checkpoint.pt")
+        self.assertEqual(len(config.datasets), 1)
+        self.assertEqual(config.datasets[0].name, "case_a")
+        self.assertEqual(config.data.h5_path, "input.h5")
+        self.assertEqual(config.data.cache_dir, "cache/case_a")
+        self.assertEqual(config.data.checkpoint_path, "checkpoint.pt")
+        self.assertEqual(config.scale.L0, 2.0)
+        self.assertEqual(config.model["hidden_size"], 8)
+        self.assertEqual(config.model["lambda_outflow"], 0.0)
+        self.assertEqual(config.model["residual_time_scheme"], "backward")
+        self.assertEqual(config.training.device, "cpu")
 
     def test_run_training_from_config_writes_checkpoint_history_and_metadata(self):
         h5_path = self.root / "input.h5"

@@ -33,6 +33,11 @@ def run_training_from_config(config_path):
 
     config_path = Path(config_path)
     run_config = load_run_config(config_path)
+    if len(run_config.datasets) > 1:
+        raise NotImplementedError(
+            "The classified config schema can list multiple datasets, but "
+            "run_training_from_config currently supports one dataset per run."
+        )
     base_dir = config_path.resolve().parent
 
     h5_path = _resolve_path(base_dir, run_config.data.h5_path)

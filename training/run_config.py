@@ -1,7 +1,7 @@
 import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from data.dimensionless import ScaleParams, derive_pde_constants
 from models import PDGCNConfig
@@ -10,6 +10,15 @@ from .config import TrainConfig
 
 
 DERIVED_PDGCN_FIELDS = {"inverse_pe", "pi_q", "dt_star"}
+PHYSICS_LOSS_FIELDS = {
+    "k_ratio",
+    "lambda_outflow",
+    "gradient_regularization",
+    "dirichlet_temperature_star",
+    "thermal_loss_beta",
+    "thermal_loss_base_temperature_star",
+    "residual_time_scheme",
+}
 
 
 @dataclass(frozen=True)
@@ -20,6 +29,12 @@ class DataRunConfig:
     history_path: Optional[str] = None
     overwrite_cache: bool = False
     scan_velocity: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class OutputRunConfig:
+    checkpoint_path: str
+    history_path: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -52,11 +67,24 @@ class ScaleRunConfig:
 
 
 @dataclass(frozen=True)
+class DatasetRunConfig:
+    h5_path: str
+    cache_dir: str
+    scale: ScaleRunConfig
+    name: str = ""
+    overwrite_cache: bool = False
+    scan_velocity: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class RunConfig:
     data: DataRunConfig
     scale: ScaleRunConfig
     model: Dict[str, Any]
     training: TrainConfig
+    outputs: Optional[OutputRunConfig] = None
+    datasets: Tuple[DatasetRunConfig, ...] = ()
+    schema: str = "legacy"
 
 
 def derive_dt_star(scale_params: ScaleParams, dt: float) -> float:
@@ -92,6 +120,12 @@ def load_run_config(path) -> RunConfig:
     if not isinstance(payload, dict):
         raise ValueError("run config JSON must contain an object at the top level.")
 
+    if _is_classified_schema(payload):
+        return _load_classified_run_config(payload)
+    return _load_legacy_run_config(payload)
+
+
+def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
     data = _build_dataclass(DataRunConfig, payload.get("data"), context="data")
     scale = _build_dataclass(ScaleRunConfig, payload.get("scale"), context="scale")
     model = _require_mapping(payload.get("model", {}), context="model")
@@ -105,18 +139,127 @@ def load_run_config(path) -> RunConfig:
         scale=scale,
         model=dict(model),
         training=TrainConfig(**training_kwargs),
+        datasets=(
+            DatasetRunConfig(
+                h5_path=data.h5_path,
+                cache_dir=data.cache_dir,
+                scale=scale,
+                overwrite_cache=data.overwrite_cache,
+                scan_velocity=data.scan_velocity,
+            ),
+        ),
+        outputs=OutputRunConfig(
+            checkpoint_path=data.checkpoint_path,
+            history_path=data.history_path,
+        ),
+        schema="legacy",
+    )
+
+
+def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
+    outputs = _build_dataclass(OutputRunConfig, payload.get("outputs"), context="outputs")
+    dataset_payloads = payload.get("datasets")
+    if not isinstance(dataset_payloads, list) or not dataset_payloads:
+        raise ValueError("'datasets' section must be a non-empty list.")
+    datasets = tuple(
+        _build_dataset_run_config(dataset_payload, index=index)
+        for index, dataset_payload in enumerate(dataset_payloads)
+    )
+
+    hyperparameters = _require_mapping(payload.get("hyperparameters"), context="hyperparameters")
+    model = _classified_model_overrides(hyperparameters)
+    training_kwargs = _filter_dataclass_kwargs(
+        TrainConfig,
+        _require_mapping(hyperparameters.get("training"), context="hyperparameters.training"),
+        context="hyperparameters.training",
+    )
+
+    first_dataset = datasets[0]
+    data = DataRunConfig(
+        h5_path=first_dataset.h5_path,
+        cache_dir=first_dataset.cache_dir,
+        checkpoint_path=outputs.checkpoint_path,
+        history_path=outputs.history_path,
+        overwrite_cache=first_dataset.overwrite_cache,
+        scan_velocity=first_dataset.scan_velocity,
+    )
+    return RunConfig(
+        data=data,
+        scale=first_dataset.scale,
+        model=model,
+        training=TrainConfig(**training_kwargs),
+        outputs=outputs,
+        datasets=datasets,
+        schema="classified",
     )
 
 
 def run_config_to_dict(config: RunConfig) -> Dict[str, Any]:
     """将运行配置转换为可写入 JSON/checkpoint metadata 的字典。"""
 
+    if config.schema == "classified":
+        model, physics_loss = _split_model_and_physics(config.model)
+        return {
+            "schema": config.schema,
+            "outputs": asdict(config.outputs) if config.outputs is not None else None,
+            "datasets": [asdict(dataset) for dataset in config.datasets],
+            "hyperparameters": {
+                "model": model,
+                "physics_loss": physics_loss,
+                "training": asdict(config.training),
+            },
+        }
     return {
         "data": asdict(config.data),
         "scale": asdict(config.scale),
         "model": dict(config.model),
         "training": asdict(config.training),
     }
+
+
+def _is_classified_schema(payload: Dict[str, Any]) -> bool:
+    return any(name in payload for name in ("outputs", "datasets", "hyperparameters"))
+
+
+def _build_dataset_run_config(value, *, index: int) -> DatasetRunConfig:
+    mapping = _require_mapping(value, context=f"datasets[{index}]")
+    valid = {"name", "h5_path", "cache_dir", "scale", "overwrite_cache", "scan_velocity"}
+    unknown = sorted(set(mapping) - valid)
+    if unknown:
+        raise ValueError(f"Unknown keys in 'datasets[{index}]' section: {unknown}")
+
+    scale = _build_dataclass(ScaleRunConfig, mapping.get("scale"), context=f"datasets[{index}].scale")
+    return DatasetRunConfig(
+        name=str(mapping.get("name", f"dataset_{index}")),
+        h5_path=str(mapping["h5_path"]),
+        cache_dir=str(mapping["cache_dir"]),
+        scale=scale,
+        overwrite_cache=bool(mapping.get("overwrite_cache", False)),
+        scan_velocity=mapping.get("scan_velocity"),
+    )
+
+
+def _classified_model_overrides(hyperparameters: Dict[str, Any]) -> Dict[str, Any]:
+    model = dict(_require_mapping(hyperparameters.get("model", {}), context="hyperparameters.model"))
+    physics_loss = dict(
+        _require_mapping(hyperparameters.get("physics_loss", {}), context="hyperparameters.physics_loss")
+    )
+    overlap = sorted(set(model) & set(physics_loss))
+    if overlap:
+        raise ValueError(f"Duplicate keys between model and physics_loss hyperparameters: {overlap}")
+    model.update(physics_loss)
+    return model
+
+
+def _split_model_and_physics(model_overrides: Dict[str, Any]):
+    model = {}
+    physics_loss = {}
+    for key, value in model_overrides.items():
+        if key in PHYSICS_LOSS_FIELDS:
+            physics_loss[key] = value
+        else:
+            model[key] = value
+    return model, physics_loss
 
 
 def _build_dataclass(cls, value, *, context: str):
