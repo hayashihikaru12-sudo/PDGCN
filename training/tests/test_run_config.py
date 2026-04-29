@@ -73,6 +73,9 @@ class RunConfigTests(unittest.TestCase):
                 "inverse_pe": 999.0,
                 "pi_q": 999.0,
                 "dt_star": 999.0,
+                "thermal_loss_beta": 0.25,
+                "thermal_loss_base_temperature_star": 0.0,
+                "residual_time_scheme": "backward",
             },
         )
 
@@ -80,6 +83,9 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(config.inverse_pe, 0.5)
         self.assertAlmostEqual(config.pi_q, 0.125)
         self.assertAlmostEqual(config.dt_star, 1.0)
+        self.assertAlmostEqual(config.thermal_loss_beta, 0.25)
+        self.assertAlmostEqual(config.thermal_loss_base_temperature_star, 0.0)
+        self.assertEqual(config.residual_time_scheme, "backward")
 
     def test_pdgcn_config_from_scale_requires_physics_inputs_and_dt(self):
         scale = ScaleParams(L0=2.0, v0=4.0, T_amb=300.0, delta_T0=10.0, Q0=5.0)
@@ -119,6 +125,9 @@ class RunConfigTests(unittest.TestCase):
                 "pi_q": 999.0,
                 "dt_star": 999.0,
                 "lambda_outflow": 0.0,
+                "thermal_loss_beta": 0.25,
+                "thermal_loss_base_temperature_star": 0.0,
+                "residual_time_scheme": "backward",
             },
             "training": {
                 "lr": 0.001,
@@ -145,6 +154,9 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(metadata["model_config"]["inverse_pe"], 1.0)
         self.assertAlmostEqual(metadata["model_config"]["pi_q"], 0.1)
         self.assertAlmostEqual(metadata["model_config"]["dt_star"], 0.5)
+        self.assertAlmostEqual(metadata["model_config"]["thermal_loss_beta"], 0.25)
+        self.assertAlmostEqual(metadata["model_config"]["thermal_loss_base_temperature_star"], 0.0)
+        self.assertEqual(metadata["model_config"]["residual_time_scheme"], "backward")
         self.assertEqual(metadata["train_config"]["loss_threshold"], 1e20)
 
     def test_train_entry_can_run_as_script_path(self):

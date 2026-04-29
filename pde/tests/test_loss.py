@@ -109,3 +109,67 @@ def test_total_loss_returns_scalar_and_components_are_consistent():
         components["loss_total"],
         components["loss_pde"] + 0.25 * components["loss_outflow"],
     )
+
+
+def test_total_loss_pde_component_includes_thermal_loss_term():
+    """验证 PDE 损失分量使用包含热耗散项的残差。"""
+
+    edge_index = torch.empty((2, 0), dtype=torch.long)
+    edge_attr = torch.empty((0, 7), dtype=torch.float32)
+    T_next = torch.tensor([[2.0], [4.0]])
+    T_current = torch.tensor([[1.0], [1.0]])
+    Q_star = torch.zeros_like(T_next)
+
+    components = total_loss(
+        T_next=T_next,
+        T_current=T_current,
+        v_scan_star=0.0,
+        Q_star=Q_star,
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        inverse_pe=0.0,
+        pi_q=0.0,
+        k_ratio=0.05,
+        lambda_outflow=0.0,
+        thermal_loss_beta=0.5,
+        thermal_loss_base_temperature_star=0.5,
+        return_components=True,
+    )
+
+    expected_residual = torch.tensor([[1.25], [3.25]])
+    expected_loss = expected_residual.square().mean()
+    assert torch.allclose(components["residual"], expected_residual, atol=1e-6)
+    assert torch.allclose(components["loss_pde"], expected_loss, atol=1e-6)
+    assert torch.allclose(components["loss_total"], expected_loss, atol=1e-6)
+
+
+def test_total_loss_can_use_backward_residual_time_scheme():
+    """验证总损失可切换为后向残差时间离散方式。"""
+
+    edge_index = torch.empty((2, 0), dtype=torch.long)
+    edge_attr = torch.empty((0, 7), dtype=torch.float32)
+    T_next = torch.tensor([[2.0], [4.0]])
+    T_current = torch.tensor([[1.0], [1.0]])
+    Q_star = torch.zeros_like(T_next)
+
+    components = total_loss(
+        T_next=T_next,
+        T_current=T_current,
+        v_scan_star=0.0,
+        Q_star=Q_star,
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        inverse_pe=0.0,
+        pi_q=0.0,
+        k_ratio=0.05,
+        lambda_outflow=0.0,
+        thermal_loss_beta=0.5,
+        thermal_loss_base_temperature_star=0.5,
+        residual_time_scheme="backward",
+        return_components=True,
+    )
+
+    expected_residual = torch.tensor([[1.75], [4.75]])
+    assert torch.allclose(components["residual"], expected_residual, atol=1e-6)

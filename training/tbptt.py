@@ -95,6 +95,9 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
             k_ratio=model.config.k_ratio,
             lambda_outflow=model.config.lambda_outflow,
             dirichlet_temperature_star=model.config.dirichlet_temperature_star,
+            thermal_loss_beta=model.config.thermal_loss_beta,
+            thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
+            residual_time_scheme=model.config.residual_time_scheme,
         )
         losses.append(loss)
         current_temperature = prediction

@@ -15,6 +15,9 @@ def compute_pde_residual(
     inverse_pe: float = 1.0,
     pi_q: float = 1.0,
     k_ratio: float = 0.05,
+    thermal_loss_beta: float = 0.0,
+    thermal_loss_base_temperature_star=0.0,
+    residual_time_scheme: str = "explicit",
     eps: float = 1e-12,
 ):
     """计算每个节点的无量纲图 PDE 残差。
@@ -35,6 +38,11 @@ def compute_pde_residual(
         inverse_pe: 佩克莱特数倒数 ``1 / Pe``。
         pi_q: 无量纲热源强度系数。
         k_ratio: 横向/纵向导热系数比 ``K_perp / K_parallel``。
+        thermal_loss_beta: 无量纲层间等效热耗散系数 ``beta``。
+        thermal_loss_base_temperature_star: 下方接触面的无量纲基底温度
+            ``T_base*``，单层训练默认 ``0.0`` 表示冷源。
+        residual_time_scheme: PDE 空间项和热耗散项的时间离散方式；
+            ``explicit`` 使用 ``T_current``，``backward`` 使用 ``T_next``。
         eps: 数值下界，用于距离和时间步长防除零。
 
     返回:
@@ -52,8 +60,19 @@ def compute_pde_residual(
     dtype = T_next_2d.dtype
     T_current_2d = T_current_2d.to(device=device, dtype=dtype)
     Q_star_2d = Q_star_2d.to(device=device, dtype=dtype)
+    base_temperature_2d = _as_base_temperature(
+        thermal_loss_base_temperature_star,
+        T_next_2d,
+        device=device,
+        dtype=dtype,
+    )
     edge_index = edge_index.to(device=device)
     edge_attr = edge_attr.to(device=device, dtype=dtype)
+    T_eval_2d = _select_residual_temperature(
+        residual_time_scheme,
+        T_current_2d,
+        T_next_2d,
+    )
 
     sender = edge_index[0]
     receiver = edge_index[1]
@@ -63,8 +82,8 @@ def compute_pde_residual(
     upwind_weight = torch.relu(cos_theta)
     k_edge = cos_phi_sq + float(k_ratio) * (1.0 - cos_phi_sq)
 
-    T_i = T_next_2d[:, receiver]
-    T_j = T_next_2d[:, sender]
+    T_i = T_eval_2d[:, receiver]
+    T_j = T_eval_2d[:, sender]
 
     v_scan = _as_time_scalar(v_scan_star, T_next_2d.shape[0], device=device, dtype=dtype)
     convection_edge = v_scan * upwind_weight.reshape(1, -1) * (T_i - T_j) / distance.reshape(1, -1)
@@ -76,7 +95,8 @@ def compute_pde_residual(
     diffusion.index_add_(1, receiver, diffusion_edge)
 
     transient = (T_next_2d - T_current_2d) / _as_scalar_tensor(dt_star, device=device, dtype=dtype).clamp_min(eps)
-    residual = transient + convection - float(inverse_pe) * diffusion - float(pi_q) * Q_star_2d
+    thermal_loss = float(thermal_loss_beta) * (T_eval_2d - base_temperature_2d)
+    residual = transient + convection - float(inverse_pe) * diffusion - float(pi_q) * Q_star_2d + thermal_loss
     return _restore_layout(residual, layout)
 
 
@@ -145,6 +165,35 @@ def _broadcast_to_match(value, target, *, name: str):
     if value.shape[0] == 1 and value.shape[1] == target.shape[1]:
         return value.expand(target.shape[0], -1)
     raise ValueError(f"{name} shape {tuple(value.shape)} must match T_next shape {tuple(target.shape)}.")
+
+
+def _as_base_temperature(value, target, *, device, dtype):
+    """将基底温度转换为可与 ``target`` 广播的 ``[K, N]`` 张量。"""
+
+    tensor = _as_scalar_tensor(value, device=device, dtype=dtype)
+    if tensor.numel() == 1:
+        return tensor.reshape(1, 1)
+
+    base_2d, _ = _as_time_node(tensor, name="thermal_loss_base_temperature_star")
+    return _broadcast_to_match(
+        base_2d.to(device=device, dtype=dtype),
+        target,
+        name="thermal_loss_base_temperature_star",
+    )
+
+
+def _select_residual_temperature(time_scheme: str, T_current, T_next):
+    """按配置选择 PDE 空间项和热耗散项的评估温度。"""
+
+    scheme = str(time_scheme).strip().lower().replace("-", "_")
+    if scheme in ("explicit", "explicit_euler", "forward", "forward_euler"):
+        return T_current
+    if scheme in ("backward", "backward_euler", "implicit"):
+        return T_next
+    raise ValueError(
+        "residual_time_scheme must be 'explicit' or 'backward', "
+        f"got {time_scheme!r}."
+    )
 
 
 def _validate_graph(edge_index, edge_attr, num_nodes: int):

@@ -24,6 +24,9 @@ class PDGCNConfig:
     dt_star: float = 1.0
     gradient_regularization: float = 0.0
     dirichlet_temperature_star: float = 0.0
+    thermal_loss_beta: float = 0.0
+    thermal_loss_base_temperature_star: float = 0.0
+    residual_time_scheme: str = "explicit"
 
     @property
     def encoder_node_input_size(self) -> int:
@@ -78,4 +81,19 @@ class PDGCNConfig:
         if float(self.gradient_regularization) < 0:
             raise ValueError(
                 f"gradient_regularization must be non-negative, got {self.gradient_regularization}."
+            )
+        if float(self.thermal_loss_beta) < 0:
+            raise ValueError(f"thermal_loss_beta must be non-negative, got {self.thermal_loss_beta}.")
+        if str(self.residual_time_scheme).strip().lower().replace("-", "_") not in (
+            "explicit",
+            "explicit_euler",
+            "forward",
+            "forward_euler",
+            "backward",
+            "backward_euler",
+            "implicit",
+        ):
+            raise ValueError(
+                "residual_time_scheme must be 'explicit' or 'backward', "
+                f"got {self.residual_time_scheme!r}."
             )

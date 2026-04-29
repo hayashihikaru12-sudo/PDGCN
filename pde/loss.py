@@ -91,6 +91,9 @@ def total_loss(
     k_ratio: float = 0.05,
     lambda_outflow: float = 1.0,
     dirichlet_temperature_star: float = 0.0,
+    thermal_loss_beta: float = 0.0,
+    thermal_loss_base_temperature_star=0.0,
+    residual_time_scheme: str = "explicit",
     return_components: bool = False,
     eps: float = 1e-12,
 ):
@@ -111,6 +114,11 @@ def total_loss(
         k_ratio: 横向/纵向导热系数比。
         lambda_outflow: 出流边界损失权重。
         dirichlet_temperature_star: 硬 Dirichlet 边界的无量纲温度值。
+        thermal_loss_beta: 无量纲层间等效热耗散系数 ``beta``。
+        thermal_loss_base_temperature_star: 无量纲基底温度 ``T_base*``，
+            单层训练默认 ``0.0`` 表示冷源。
+        residual_time_scheme: PDE 空间项和热耗散项的时间离散方式；
+            ``explicit`` 使用当前温度，``backward`` 使用预测温度。
         return_components: 是否返回损失分量和中间张量。
         eps: 数值下界，用于防止除零。
 
@@ -136,6 +144,9 @@ def total_loss(
         inverse_pe=inverse_pe,
         pi_q=pi_q,
         k_ratio=k_ratio,
+        thermal_loss_beta=thermal_loss_beta,
+        thermal_loss_base_temperature_star=thermal_loss_base_temperature_star,
+        residual_time_scheme=residual_time_scheme,
         eps=eps,
     )
 

@@ -262,6 +262,9 @@ def train_static_topology(
                         k_ratio=model.config.k_ratio,
                         lambda_outflow=model.config.lambda_outflow,
                         dirichlet_temperature_star=model.config.dirichlet_temperature_star,
+                        thermal_loss_beta=model.config.thermal_loss_beta,
+                        thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
+                        residual_time_scheme=model.config.residual_time_scheme,
                     )
                 )
                 window_temperature = next_temperature
