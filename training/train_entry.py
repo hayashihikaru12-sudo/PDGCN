@@ -4,6 +4,8 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+import h5py
+import numpy as np
 import torch
 
 if __package__ is None or __package__ == "":
@@ -50,9 +52,14 @@ def run_training_from_config(config_path):
     )
 
     scale_params = run_config.scale.to_scale_params()
+    timing = derive_timing_from_hdf5(
+        h5_path,
+        scale_params,
+        scan_velocity=run_config.data.scan_velocity,
+    )
     model_config = pdgcn_config_from_scale(
         scale_params,
-        dt=run_config.scale.dt,
+        dt=timing["dt"],
         model_overrides=run_config.model,
     )
     train_config = run_config.training
@@ -92,6 +99,7 @@ def run_training_from_config(config_path):
     metadata = {
         "run_config": run_config_to_dict(run_config),
         "scale_params": asdict(scale_params),
+        "hdf5_timing": timing,
         "model_config": asdict(model_config),
         "train_config": asdict(train_config),
         "history": history,
@@ -146,6 +154,97 @@ def _ensure_static_cache(h5_path, cache_dir, scale_params, *, overwrite: bool, s
         scan_velocity=scan_velocity,
         overwrite=overwrite,
     )
+
+
+def derive_timing_from_hdf5(h5_path, scale_params, *, scan_velocity=None, tolerance: float = 1e-6):
+    """从 HDF5 切片文件派生文件级真实时间步和无量纲时间步。"""
+
+    h5_path = Path(h5_path)
+    with h5py.File(h5_path, "r") as h5_file:
+        if "velocity_speed" not in h5_file.attrs:
+            raise ValueError(f"HDF5 file {h5_path} is missing root attr 'velocity_speed'.")
+        velocity = float(h5_file.attrs["velocity_speed"])
+        if velocity <= 0:
+            raise ValueError(f"HDF5 file {h5_path} has non-positive velocity_speed={velocity}.")
+        if scan_velocity is not None and not np.isclose(
+            float(scan_velocity),
+            velocity,
+            rtol=tolerance,
+            atol=tolerance,
+        ):
+            raise ValueError(
+                "Configured scan_velocity must match HDF5 velocity_speed when dt is "
+                f"derived from file timing; got scan_velocity={scan_velocity}, "
+                f"velocity_speed={velocity}."
+            )
+
+        if "dynamic/xyz" not in h5_file:
+            raise ValueError(f"HDF5 file {h5_path} is missing dataset 'dynamic/xyz'.")
+        num_frames = int(h5_file["dynamic/xyz"].shape[0])
+        if num_frames < 2:
+            raise ValueError(f"HDF5 file {h5_path} must contain at least two frames.")
+
+        step_distance = _read_file_step_distance(
+            h5_file,
+            h5_path,
+            expected_intervals=num_frames - 1,
+            tolerance=tolerance,
+        )
+        if "path/slice_path_length" in h5_file:
+            slice_path_length = float(np.asarray(h5_file["path/slice_path_length"][()]))
+            expected_length = step_distance * float(num_frames - 1)
+            if not np.isclose(slice_path_length, expected_length, rtol=tolerance, atol=tolerance):
+                raise ValueError(
+                    "HDF5 slice_path_length must equal heat_center_step_distance * "
+                    f"(num_frames - 1); got {slice_path_length} vs {expected_length}."
+                )
+        else:
+            slice_path_length = None
+
+    dt = step_distance / velocity
+    dt_star = dt / (float(scale_params.L0) / float(scale_params.v0))
+    return {
+        "source": "hdf5:path/heat_center_step_distance",
+        "dt": float(dt),
+        "dt_star": float(dt_star),
+        "step_distance": float(step_distance),
+        "velocity_speed": float(velocity),
+        "num_frames": int(num_frames),
+        "slice_path_length": slice_path_length,
+    }
+
+
+def _read_file_step_distance(h5_file, h5_path, *, expected_intervals: int, tolerance: float):
+    if "path/heat_center_step_distance" not in h5_file:
+        raise ValueError(f"HDF5 file {h5_path} is missing dataset 'path/heat_center_step_distance'.")
+
+    raw = np.asarray(h5_file["path/heat_center_step_distance"][()], dtype=np.float64)
+    if raw.ndim == 0:
+        step_distance = float(raw)
+    else:
+        if raw.size == 0:
+            raise ValueError(f"HDF5 file {h5_path} has empty heat_center_step_distance.")
+        if raw.size != int(expected_intervals):
+            raise ValueError(
+                "HDF5 heat_center_step_distance array must have length num_frames - 1; "
+                f"got {raw.size}, expected {expected_intervals}."
+            )
+        if not np.all(np.isfinite(raw)):
+            raise ValueError(f"HDF5 file {h5_path} has non-finite heat_center_step_distance values.")
+        min_step = float(np.min(raw))
+        max_step = float(np.max(raw))
+        if not np.isclose(min_step, max_step, rtol=tolerance, atol=tolerance):
+            raise ValueError(
+                "HDF5 heat_center_step_distance must be constant within a slice; "
+                f"got min={min_step}, max={max_step}."
+            )
+        step_distance = float(np.mean(raw))
+
+    if not np.isfinite(step_distance) or step_distance <= 0:
+        raise ValueError(
+            f"HDF5 file {h5_path} has non-positive heat_center_step_distance={step_distance}."
+        )
+    return step_distance
 
 
 def _resolve_path(base_dir: Path, value) -> Path:

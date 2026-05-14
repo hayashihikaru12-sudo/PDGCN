@@ -47,7 +47,6 @@ class ScaleRunConfig:
     K0: float
     rho: float
     Cp: float
-    dt: float
     eps: float = 1e-12
 
     def to_scale_params(self) -> ScaleParams:

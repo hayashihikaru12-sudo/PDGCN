@@ -6,7 +6,7 @@
   "datasets": [
     {
       "name": "case_1",
-      "h5_path": "../DesignPlan/1.h5",
+      "h5_path": "../HDF5_outputs/brep_slice_curve0002_sample00139_len104_random_20260515_011839_853369_heat.h5",
       "cache_dir": "../runs/pdgcn/cache/case_1",
       "overwrite_cache": true,
       "scale": {
@@ -17,8 +17,7 @@
         "Q0": 3.1,
         "K0": 1.0,
         "rho": 1.0,
-        "Cp": 1.0,
-        "dt": 0.01
+        "Cp": 1.0
       }
     }
   ],

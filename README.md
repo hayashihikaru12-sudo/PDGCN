@@ -124,7 +124,7 @@ training/train_entry.py
 它会完成以下步骤：
 
 1. 读取 JSON 训练配置。
-2. 从尺度参数派生 PDE 常数 `inverse_pe`、`pi_q` 和 `dt_star`。
+2. 从尺度参数派生 PDE 常数 `inverse_pe`、`pi_q`，并从 HDF5 文件级步长与速度派生 `dt_star`。
 3. 读取 HDF5 数据并构建固定拓扑缓存。
 4. 初始化 PDGCN 模型。
 5. 使用 TBPTT 窗口执行自回归温度预测。
