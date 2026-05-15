@@ -6,9 +6,8 @@
   "datasets": [
     {
       "name": "case_1",
-      "h5_path": "../HDF5_outputs/brep_slice_curve0002_sample00139_len104_random_20260515_011839_853369_heat.h5",
+      "h5_dir": "../HDF5_outputs",
       "cache_dir": "../runs/pdgcn/cache/case_1",
-      "overwrite_cache": true,
       "scale": {
         "L0": 51.764991760253906,
         "v0": 80.0,

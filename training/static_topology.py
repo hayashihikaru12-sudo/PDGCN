@@ -1,12 +1,12 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 import torch
 from torch_geometric.data import Data
 
 from data.dimensionless import ScaleParams, temperature_from_dimensionless
-from data.static_cache import STATIC_FILE, FrameMemmapReader
+from data.static_cache import STATIC_FILE, HDF5FrameReader
 from pde import apply_dirichlet_boundary, total_loss
 
 from .config import TrainConfig
@@ -186,7 +186,7 @@ def _snapshot_graph_for_tbptt(graph):
 
 def train_static_topology(
     model,
-    frame_reader: FrameMemmapReader,
+    frame_reader: HDF5FrameReader,
     static_state: StaticGraphState,
     feature_builder: GpuFeatureBuilder,
     config: TrainConfig,
@@ -197,7 +197,7 @@ def train_static_topology(
 
     参数:
         model: 待训练模型，输入当前帧图对象并输出 ``delta_T*``。
-        frame_reader: ``FrameMemmapReader``，按帧提供 CPU 基础特征。
+        frame_reader: ``HDF5FrameReader``，按帧提供 CPU 基础特征。
         static_state: ``StaticGraphState``，提供常驻设备的静态拓扑。
         feature_builder: ``GpuFeatureBuilder``，在设备上构建当前帧特征。
         config: ``TrainConfig``，提供训练轮数、窗口长度、warmup、学习率和设备。
@@ -208,6 +208,31 @@ def train_static_topology(
         训练历史列表；每个元素包含 ``epoch``、平均 ``loss`` 和窗口损失。
     """
 
+    return train_static_topology_sequences(
+        model,
+        [frame_reader],
+        static_state,
+        feature_builder,
+        config,
+        optimizer=optimizer,
+        epoch_callback=epoch_callback,
+    )
+
+
+def train_static_topology_sequences(
+    model,
+    frame_readers: Sequence[HDF5FrameReader],
+    static_state: StaticGraphState,
+    feature_builder: GpuFeatureBuilder,
+    config: TrainConfig,
+    optimizer: Optional[torch.optim.Optimizer] = None,
+    epoch_callback: Optional[Callable[[dict], None]] = None,
+):
+    """按独立 HDF5 序列训练固定拓扑 PD-GCN。"""
+
+    if not frame_readers:
+        raise ValueError("frame_readers must contain at least one sequence.")
+
     device = static_state.device
     model.to(device)
     if optimizer is None:
@@ -216,72 +241,25 @@ def train_static_topology(
     history = []
     for epoch in range(int(config.epochs)):
         model.train()
-        if int(config.warmup_steps) > 0:
-            node_base_cpu, global_cpu = frame_reader.read_frame(0)
-            warmup_graph = _snapshot_graph_for_tbptt(
-                feature_builder.build(node_base_cpu, global_cpu, feature_builder.initial_temperature())
-            )
-            current_temperature = pseudo_time_relax_initial_temperature(
-                model,
-                warmup_graph,
-                int(config.warmup_steps),
-            )
-        else:
-            current_temperature = feature_builder.initial_temperature().detach()
         window_losses = []
-
-        for start in range(0, frame_reader.num_frames, int(config.tbptt_window)):
-            end = min(start + int(config.tbptt_window), frame_reader.num_frames)
-            optimizer.zero_grad()
-            loss_terms = []
-            window_temperature = current_temperature
-
-            for frame_idx in range(start, end):
-                node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
-                graph = _snapshot_graph_for_tbptt(
-                    feature_builder.build(node_base_cpu, global_cpu, window_temperature)
-                )
-                delta_temperature = model(graph)
-                next_temperature = apply_dirichlet_boundary(
-                    window_temperature + delta_temperature,
-                    static_state.boundary_nodes,
-                    value=getattr(model.config, "dirichlet_temperature_star", 0.0),
-                )
-                loss_terms.append(
-                    total_loss(
-                        T_next=next_temperature,
-                        T_current=window_temperature,
-                        v_scan_star=graph.global_attr,
-                        Q_star=graph.x[:, 7:8],
-                        dt_star=model.config.dt_star,
-                        edge_index=static_state.edge_index,
-                        edge_attr=graph.edge_attr,
-                        boundary_nodes=static_state.boundary_nodes,
-                        inverse_pe=model.config.inverse_pe,
-                        pi_q=model.config.pi_q,
-                        k_ratio=model.config.k_ratio,
-                        lambda_outflow=model.config.lambda_outflow,
-                        dirichlet_temperature_star=model.config.dirichlet_temperature_star,
-                        thermal_loss_beta=model.config.thermal_loss_beta,
-                        thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
-                        residual_time_scheme=model.config.residual_time_scheme,
-                    )
-                )
-                window_temperature = next_temperature
-
-            loss = torch.stack(loss_terms).mean()
-            loss.backward()
-            if config.grad_clip_norm is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
-            optimizer.step()
-
-            window_losses.append(float(loss.detach().cpu()))
-            current_temperature = window_temperature.detach()
+        file_window_counts = []
+        for frame_reader in frame_readers:
+            sequence_losses = _train_one_static_sequence_epoch(
+                model,
+                frame_reader,
+                static_state,
+                feature_builder,
+                config,
+                optimizer,
+            )
+            window_losses.extend(sequence_losses)
+            file_window_counts.append(len(sequence_losses))
 
         epoch_record = {
             "epoch": epoch,
             "loss": sum(window_losses) / max(len(window_losses), 1),
             "window_losses": window_losses,
+            "file_window_counts": file_window_counts,
         }
         should_stop = config.loss_threshold is not None and epoch_record["loss"] < float(config.loss_threshold)
         if should_stop:
@@ -295,10 +273,82 @@ def train_static_topology(
     return history
 
 
+def _train_one_static_sequence_epoch(
+    model,
+    frame_reader: HDF5FrameReader,
+    static_state: StaticGraphState,
+    feature_builder: GpuFeatureBuilder,
+    config: TrainConfig,
+    optimizer: torch.optim.Optimizer,
+):
+    if int(config.warmup_steps) > 0:
+        node_base_cpu, global_cpu = frame_reader.read_frame(0)
+        warmup_graph = _snapshot_graph_for_tbptt(
+            feature_builder.build(node_base_cpu, global_cpu, feature_builder.initial_temperature())
+        )
+        current_temperature = pseudo_time_relax_initial_temperature(
+            model,
+            warmup_graph,
+            int(config.warmup_steps),
+        )
+    else:
+        current_temperature = feature_builder.initial_temperature().detach()
+
+    window_losses = []
+    for start in range(0, frame_reader.num_frames, int(config.tbptt_window)):
+        end = min(start + int(config.tbptt_window), frame_reader.num_frames)
+        optimizer.zero_grad()
+        loss_terms = []
+        window_temperature = current_temperature
+
+        for frame_idx in range(start, end):
+            node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
+            graph = _snapshot_graph_for_tbptt(
+                feature_builder.build(node_base_cpu, global_cpu, window_temperature)
+            )
+            delta_temperature = model(graph)
+            next_temperature = apply_dirichlet_boundary(
+                window_temperature + delta_temperature,
+                static_state.boundary_nodes,
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
+            loss_terms.append(
+                total_loss(
+                    T_next=next_temperature,
+                    T_current=window_temperature,
+                    v_scan_star=graph.global_attr,
+                    Q_star=graph.x[:, 7:8],
+                    dt_star=model.config.dt_star,
+                    edge_index=static_state.edge_index,
+                    edge_attr=graph.edge_attr,
+                    boundary_nodes=static_state.boundary_nodes,
+                    inverse_pe=model.config.inverse_pe,
+                    pi_q=model.config.pi_q,
+                    k_ratio=model.config.k_ratio,
+                    lambda_outflow=model.config.lambda_outflow,
+                    dirichlet_temperature_star=model.config.dirichlet_temperature_star,
+                    thermal_loss_beta=model.config.thermal_loss_beta,
+                    thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
+                    residual_time_scheme=model.config.residual_time_scheme,
+                )
+            )
+            window_temperature = next_temperature
+
+        loss = torch.stack(loss_terms).mean()
+        loss.backward()
+        if config.grad_clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
+        optimizer.step()
+
+        window_losses.append(float(loss.detach().cpu()))
+        current_temperature = window_temperature.detach()
+    return window_losses
+
+
 @torch.no_grad()
 def rollout_static_topology(
     model,
-    frame_reader: FrameMemmapReader,
+    frame_reader: HDF5FrameReader,
     static_state: StaticGraphState,
     feature_builder: GpuFeatureBuilder,
     steps: int,
@@ -313,7 +363,7 @@ def rollout_static_topology(
 
     参数:
         model: 已训练模型。
-        frame_reader: ``FrameMemmapReader``，提供动态基础特征。
+        frame_reader: ``HDF5FrameReader``，提供动态基础特征。
         static_state: ``StaticGraphState``，提供固定拓扑。
         feature_builder: ``GpuFeatureBuilder``，构建当前帧图特征。
         steps: 推理步数。

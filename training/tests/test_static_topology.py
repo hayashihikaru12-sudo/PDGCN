@@ -7,9 +7,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from data import FrameMemmapReader, HDF5Loader, ScaleParams, build_graph, build_static_cache
+from data import HDF5FrameReader, HDF5Loader, ScaleParams, build_graph, build_static_cache
 from models import PDGCN, PDGCNConfig
-from training import GpuFeatureBuilder, StaticGraphState, rollout_static_topology, train_static_topology
+from training import (
+    GpuFeatureBuilder,
+    StaticGraphState,
+    rollout_static_topology,
+    train_static_topology,
+    train_static_topology_sequences,
+)
 from training.config import TrainConfig
 
 
@@ -39,6 +45,20 @@ class TrainableDeltaModel(nn.Module):
         """
 
         return self.delta.expand(graph.x.shape[0], 1)
+
+
+class RecordingDeltaModel(TrainableDeltaModel):
+    def __init__(self):
+        super().__init__()
+        self.forward_temperatures = []
+        self.warmup_deltas = []
+
+    def forward(self, graph):
+        if not torch.is_grad_enabled():
+            self.warmup_deltas.append(float(self.delta.detach().cpu()))
+        else:
+            self.forward_temperatures.append(graph.x[:, 6:7].detach().cpu().clone())
+        return super().forward(graph)
 
 
 def make_h5(path: Path):
@@ -119,7 +139,7 @@ class StaticTopologyTests(unittest.TestCase):
         """
 
         build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
-        reader = FrameMemmapReader(self.cache_dir, pin_memory=False)
+        reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, pin_memory=False)
         static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
         builder = GpuFeatureBuilder(static_state, self.scale)
 
@@ -145,7 +165,7 @@ class StaticTopologyTests(unittest.TestCase):
         """
 
         build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
-        reader = FrameMemmapReader(self.cache_dir, pin_memory=False)
+        reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, pin_memory=False)
         static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
         builder = GpuFeatureBuilder(static_state, self.scale)
         model = TrainableDeltaModel()
@@ -177,7 +197,7 @@ class StaticTopologyTests(unittest.TestCase):
         """验证真实 PD-GCN 在固定拓扑多步 TBPTT 下可反向传播。"""
 
         build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
-        reader = FrameMemmapReader(self.cache_dir, pin_memory=False)
+        reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, pin_memory=False)
         try:
             static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
             builder = GpuFeatureBuilder(static_state, self.scale)
@@ -209,7 +229,7 @@ class StaticTopologyTests(unittest.TestCase):
         """验证固定拓扑训练每个 epoch 结束后会触发 loss 回调。"""
 
         build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
-        reader = FrameMemmapReader(self.cache_dir, pin_memory=False)
+        reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, pin_memory=False)
         records = []
         try:
             static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
@@ -232,7 +252,7 @@ class StaticTopologyTests(unittest.TestCase):
         """验证固定拓扑推理可显式启用模型伪时间 warmup。"""
 
         build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
-        reader = FrameMemmapReader(self.cache_dir, pin_memory=False)
+        reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, pin_memory=False)
         try:
             static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
             builder = GpuFeatureBuilder(static_state, self.scale)
@@ -252,6 +272,81 @@ class StaticTopologyTests(unittest.TestCase):
 
         expected = torch.tensor([[[0.0], [0.3], [0.0], [0.3]]])
         self.assertTrue(torch.allclose(output, expected, atol=1e-6))
+
+    def test_static_cache_contains_only_static_files(self):
+        build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
+
+        self.assertTrue((self.cache_dir / "static.pt").exists())
+        self.assertTrue((self.cache_dir / "meta.json").exists())
+        self.assertFalse((self.cache_dir / "dynamic_node_base.npy").exists())
+        self.assertFalse((self.cache_dir / "global.npy").exists())
+
+    def test_hdf5_frame_reader_rejects_missing_dynamic_dataset(self):
+        bad_h5_path = self.root / "missing_q.h5"
+        make_h5(bad_h5_path)
+        with h5py.File(bad_h5_path, "a") as h5_file:
+            del h5_file["dynamic/Q"]
+
+        with self.assertRaisesRegex(KeyError, "dynamic/Q"):
+            HDF5FrameReader(bad_h5_path, expected_num_nodes=4, pin_memory=False)
+
+    def test_hdf5_frame_reader_rejects_node_count_mismatch(self):
+        with self.assertRaisesRegex(ValueError, "static cache expects"):
+            HDF5FrameReader(self.h5_path, expected_num_nodes=5, pin_memory=False)
+
+    def test_multi_file_training_resets_temperature_per_file(self):
+        second_h5_path = self.root / "input2.h5"
+        make_h5(second_h5_path)
+        build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
+        static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
+        builder = GpuFeatureBuilder(static_state, self.scale)
+        model = RecordingDeltaModel()
+        readers = [
+            HDF5FrameReader(self.h5_path, expected_num_nodes=4, pin_memory=False),
+            HDF5FrameReader(second_h5_path, expected_num_nodes=4, pin_memory=False),
+        ]
+        try:
+            history = train_static_topology_sequences(
+                model,
+                readers,
+                static_state,
+                builder,
+                TrainConfig(lr=0.01, epochs=1, tbptt_window=2, warmup_steps=0, device="cpu"),
+            )
+        finally:
+            for reader in readers:
+                reader.close()
+
+        self.assertEqual(history[0]["file_window_counts"], [1, 1])
+        self.assertGreaterEqual(len(model.forward_temperatures), 4)
+        self.assertTrue(torch.allclose(model.forward_temperatures[0], torch.zeros(4, 1)))
+        self.assertTrue(torch.allclose(model.forward_temperatures[2], torch.zeros(4, 1)))
+
+    def test_multi_file_warmup_uses_latest_model_parameters(self):
+        second_h5_path = self.root / "input2.h5"
+        make_h5(second_h5_path)
+        build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
+        static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
+        builder = GpuFeatureBuilder(static_state, self.scale)
+        model = RecordingDeltaModel()
+        readers = [
+            HDF5FrameReader(self.h5_path, expected_num_nodes=4, pin_memory=False),
+            HDF5FrameReader(second_h5_path, expected_num_nodes=4, pin_memory=False),
+        ]
+        try:
+            train_static_topology_sequences(
+                model,
+                readers,
+                static_state,
+                builder,
+                TrainConfig(lr=0.01, epochs=1, tbptt_window=2, warmup_steps=1, device="cpu"),
+            )
+        finally:
+            for reader in readers:
+                reader.close()
+
+        self.assertGreaterEqual(len(model.warmup_deltas), 2)
+        self.assertNotEqual(model.warmup_deltas[0], model.warmup_deltas[1])
 
 
 if __name__ == "__main__":

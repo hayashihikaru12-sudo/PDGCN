@@ -13,8 +13,8 @@ if __package__ is None or __package__ == "":
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-from data import FrameMemmapReader, build_static_cache
-from data.static_cache import DYNAMIC_NODE_FILE, GLOBAL_FILE, META_FILE, STATIC_FILE
+from data import HDF5FrameReader, build_static_cache
+from data.static_cache import META_FILE, STATIC_FILE
 from models import PDGCN
 
 from training.checkpoint import save_checkpoint
@@ -24,7 +24,7 @@ from training.run_config import (
     pdgcn_config_from_scale,
     run_config_to_dict,
 )
-from training.static_topology import GpuFeatureBuilder, StaticGraphState, train_static_topology
+from training.static_topology import GpuFeatureBuilder, StaticGraphState, train_static_topology_sequences
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "pdgcn_train.example.json"
@@ -42,7 +42,9 @@ def run_training_from_config(config_path):
         )
     base_dir = config_path.resolve().parent
 
-    h5_path = _resolve_path(base_dir, run_config.data.h5_path)
+    h5_dir = _resolve_path(base_dir, run_config.data.h5_dir)
+    h5_paths = discover_hdf5_files(h5_dir)
+    first_h5_path = h5_paths[0]
     cache_dir = _resolve_path(base_dir, run_config.data.cache_dir)
     checkpoint_path = _resolve_path(base_dir, run_config.data.checkpoint_path)
     history_path = (
@@ -53,7 +55,7 @@ def run_training_from_config(config_path):
 
     scale_params = run_config.scale.to_scale_params()
     timing = derive_timing_from_hdf5(
-        h5_path,
+        first_h5_path,
         scale_params,
         scan_velocity=run_config.data.scan_velocity,
     )
@@ -65,10 +67,9 @@ def run_training_from_config(config_path):
     train_config = run_config.training
 
     _ensure_static_cache(
-        h5_path,
+        first_h5_path,
         cache_dir,
         scale_params,
-        overwrite=run_config.data.overwrite_cache,
         scan_velocity=run_config.data.scan_velocity,
     )
 
@@ -78,15 +79,22 @@ def run_training_from_config(config_path):
     feature_builder = GpuFeatureBuilder(static_state, scale_params)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(train_config.lr))
 
-    reader = FrameMemmapReader(cache_dir)
+    readers = [
+        HDF5FrameReader(
+            h5_path,
+            expected_num_nodes=static_state.num_nodes,
+            scan_velocity=run_config.data.scan_velocity,
+        )
+        for h5_path in h5_paths
+    ]
     monitor = LossMonitor(
         total_epochs=int(train_config.epochs),
         history_path=history_path,
     )
     try:
-        history = train_static_topology(
+        history = train_static_topology_sequences(
             model,
-            reader,
+            readers,
             static_state,
             feature_builder,
             train_config,
@@ -94,12 +102,14 @@ def run_training_from_config(config_path):
             epoch_callback=monitor,
         )
     finally:
-        reader.close()
+        for reader in readers:
+            reader.close()
 
     metadata = {
         "run_config": run_config_to_dict(run_config),
         "scale_params": asdict(scale_params),
         "hdf5_timing": timing,
+        "h5_files": [str(path) for path in h5_paths],
         "model_config": asdict(model_config),
         "train_config": asdict(train_config),
         "history": history,
@@ -121,6 +131,7 @@ def run_training_from_config(config_path):
         "checkpoint_path": str(checkpoint_path),
         "history_path": str(history_path),
         "cache_dir": str(cache_dir),
+        "h5_files": [str(path) for path in h5_paths],
         "model_config": model_config,
         "scale_params": scale_params,
     }
@@ -142,17 +153,31 @@ def main(argv=None):
     return 0
 
 
-def _ensure_static_cache(h5_path, cache_dir, scale_params, *, overwrite: bool, scan_velocity):
+def discover_hdf5_files(h5_dir):
+    h5_dir = Path(h5_dir)
+    if not h5_dir.exists():
+        raise FileNotFoundError(f"HDF5 directory not found: {h5_dir}")
+    if not h5_dir.is_dir():
+        raise NotADirectoryError(f"h5_dir must be a directory: {h5_dir}")
+    h5_paths = sorted(
+        [path for path in h5_dir.iterdir() if path.is_file() and path.suffix.lower() in {".h5", ".hdf5"}],
+        key=lambda path: _natural_sort_key(path.name),
+    )
+    if not h5_paths:
+        raise FileNotFoundError(f"No .h5 files found in directory: {h5_dir}")
+    return h5_paths
+
+
+def _ensure_static_cache(h5_path, cache_dir, scale_params, *, scan_velocity):
     cache_dir = Path(cache_dir)
-    required = [cache_dir / name for name in (STATIC_FILE, DYNAMIC_NODE_FILE, GLOBAL_FILE, META_FILE)]
-    if not overwrite and all(path.exists() for path in required):
+    required = [cache_dir / name for name in (STATIC_FILE, META_FILE)]
+    if all(path.exists() for path in required):
         return cache_dir
     return build_static_cache(
         h5_path,
         cache_dir,
         scale_params,
         scan_velocity=scan_velocity,
-        overwrite=overwrite,
     )
 
 
@@ -252,6 +277,12 @@ def _resolve_path(base_dir: Path, value) -> Path:
     if path.is_absolute():
         return path
     return (base_dir / path).resolve()
+
+
+def _natural_sort_key(value: str):
+    import re
+
+    return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", value)]
 
 
 if __name__ == "__main__":

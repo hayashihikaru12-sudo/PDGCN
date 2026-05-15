@@ -8,5 +8,5 @@
 
 本代码库的python环境是：**conda中的PIGNN环境**（D:\ProgramData\\CondaEnv\PIGNN\python.exe），已经配置好了
 
-**@/DesignPlan文件夹和@/PIGNN文件夹均为参考资料文件夹，均可读取不可修改**
+**@/DesignPlan文件夹和@/PIGNN文件夹均为参考资料文件夹，均可读取不可修改（除非prompt显式要求）**
 

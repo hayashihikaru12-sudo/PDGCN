@@ -8,11 +8,12 @@ from .feature_builder import (
 )
 from .initial_condition import generate_initial_temperature
 from .loader import GraphRawData, HDF5Loader
-from .static_cache import FrameMemmapReader, build_static_cache
+from .static_cache import FrameMemmapReader, HDF5FrameReader, build_static_cache
 
 __all__ = [
     "FrameMemmapReader",
     "GraphRawData",
+    "HDF5FrameReader",
     "HDF5Loader",
     "ScaleParams",
     "derive_pde_constants",

@@ -12,7 +12,7 @@ import torch
 from data import ScaleParams
 from training import load_run_config, pdgcn_config_from_scale
 from training.run_config import derive_dt_star
-from training.train_entry import derive_timing_from_hdf5, run_training_from_config
+from training.train_entry import derive_timing_from_hdf5, discover_hdf5_files, run_training_from_config
 
 
 def make_h5(path: Path):
@@ -108,9 +108,8 @@ class RunConfigTests(unittest.TestCase):
             "datasets": [
                 {
                     "name": "case_a",
-                    "h5_path": "input.h5",
+                    "h5_dir": "h5",
                     "cache_dir": "cache/case_a",
-                    "overwrite_cache": True,
                     "scale": {
                         "L0": 2.0,
                         "v0": 2.0,
@@ -150,7 +149,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.outputs.checkpoint_path, "checkpoint.pt")
         self.assertEqual(len(config.datasets), 1)
         self.assertEqual(config.datasets[0].name, "case_a")
-        self.assertEqual(config.data.h5_path, "input.h5")
+        self.assertEqual(config.data.h5_dir, "h5")
         self.assertEqual(config.data.cache_dir, "cache/case_a")
         self.assertEqual(config.data.checkpoint_path, "checkpoint.pt")
         self.assertEqual(config.scale.L0, 2.0)
@@ -168,7 +167,7 @@ class RunConfigTests(unittest.TestCase):
             },
             "datasets": [
                 {
-                    "h5_path": "input.h5",
+                    "h5_dir": "h5",
                     "cache_dir": "cache",
                     "scale": {
                         "L0": 2.0,
@@ -291,16 +290,17 @@ class RunConfigTests(unittest.TestCase):
             derive_timing_from_hdf5(h5_path, scale, scan_velocity=3.0)
 
     def test_run_training_from_config_writes_checkpoint_history_and_metadata(self):
-        h5_path = self.root / "input.h5"
+        h5_dir = self.root / "h5"
+        h5_dir.mkdir()
+        h5_path = h5_dir / "input.h5"
         config_path = self.root / "config.json"
         make_h5(h5_path)
         payload = {
             "data": {
-                "h5_path": "input.h5",
+                "h5_dir": "h5",
                 "cache_dir": "cache",
                 "checkpoint_path": "checkpoint.pt",
                 "history_path": "history.json",
-                "overwrite_cache": True,
             },
             "scale": {
                 "L0": 2.0,
@@ -356,6 +356,17 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(metadata["model_config"]["thermal_loss_base_temperature_star"], 0.0)
         self.assertEqual(metadata["model_config"]["residual_time_scheme"], "backward")
         self.assertEqual(metadata["train_config"]["loss_threshold"], 1e20)
+        self.assertEqual(len(metadata["h5_files"]), 1)
+
+    def test_discover_hdf5_files_uses_natural_filename_order(self):
+        h5_dir = self.root / "h5_order"
+        h5_dir.mkdir()
+        for name in ("slice10.h5", "slice2.h5", "slice1.h5"):
+            make_h5(h5_dir / name)
+
+        ordered = [path.name for path in discover_hdf5_files(h5_dir)]
+
+        self.assertEqual(ordered, ["slice1.h5", "slice2.h5", "slice10.h5"])
 
     def test_train_entry_can_run_as_script_path(self):
         completed = subprocess.run(

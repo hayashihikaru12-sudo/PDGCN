@@ -23,11 +23,10 @@ PHYSICS_LOSS_FIELDS = {
 
 @dataclass(frozen=True)
 class DataRunConfig:
-    h5_path: str
+    h5_dir: str
     cache_dir: str
     checkpoint_path: str
     history_path: Optional[str] = None
-    overwrite_cache: bool = False
     scan_velocity: Optional[float] = None
 
 
@@ -67,11 +66,10 @@ class ScaleRunConfig:
 
 @dataclass(frozen=True)
 class DatasetRunConfig:
-    h5_path: str
+    h5_dir: str
     cache_dir: str
     scale: ScaleRunConfig
     name: str = ""
-    overwrite_cache: bool = False
     scan_velocity: Optional[float] = None
 
 
@@ -140,10 +138,9 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
         training=TrainConfig(**training_kwargs),
         datasets=(
             DatasetRunConfig(
-                h5_path=data.h5_path,
+                h5_dir=data.h5_dir,
                 cache_dir=data.cache_dir,
                 scale=scale,
-                overwrite_cache=data.overwrite_cache,
                 scan_velocity=data.scan_velocity,
             ),
         ),
@@ -175,11 +172,10 @@ def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
 
     first_dataset = datasets[0]
     data = DataRunConfig(
-        h5_path=first_dataset.h5_path,
+        h5_dir=first_dataset.h5_dir,
         cache_dir=first_dataset.cache_dir,
         checkpoint_path=outputs.checkpoint_path,
         history_path=outputs.history_path,
-        overwrite_cache=first_dataset.overwrite_cache,
         scan_velocity=first_dataset.scan_velocity,
     )
     return RunConfig(
@@ -222,18 +218,20 @@ def _is_classified_schema(payload: Dict[str, Any]) -> bool:
 
 def _build_dataset_run_config(value, *, index: int) -> DatasetRunConfig:
     mapping = _require_mapping(value, context=f"datasets[{index}]")
-    valid = {"name", "h5_path", "cache_dir", "scale", "overwrite_cache", "scan_velocity"}
+    valid = {"name", "h5_dir", "cache_dir", "scale", "scan_velocity"}
     unknown = sorted(set(mapping) - valid)
     if unknown:
         raise ValueError(f"Unknown keys in 'datasets[{index}]' section: {unknown}")
+    for required_key in ("h5_dir", "cache_dir", "scale"):
+        if required_key not in mapping:
+            raise ValueError(f"Missing required 'datasets[{index}].{required_key}' field.")
 
     scale = _build_dataclass(ScaleRunConfig, mapping.get("scale"), context=f"datasets[{index}].scale")
     return DatasetRunConfig(
         name=str(mapping.get("name", f"dataset_{index}")),
-        h5_path=str(mapping["h5_path"]),
+        h5_dir=str(mapping["h5_dir"]),
         cache_dir=str(mapping["cache_dir"]),
         scale=scale,
-        overwrite_cache=bool(mapping.get("overwrite_cache", False)),
         scan_velocity=mapping.get("scan_velocity"),
     )
 
