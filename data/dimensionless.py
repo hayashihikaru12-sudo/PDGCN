@@ -21,6 +21,7 @@ class ScaleParams:
     K0: Optional[float] = None
     rho: Optional[float] = None
     Cp: Optional[float] = None
+    heat_source_effective_thickness: Optional[float] = None
     eps: float = 1e-12
 
     def __post_init__(self):
@@ -39,7 +40,7 @@ class ScaleParams:
             value = float(getattr(self, field_name))
             if value <= 0:
                 raise ValueError(f"{field_name} must be positive, got {value}.")
-        for field_name in ("K0", "rho", "Cp"):
+        for field_name in ("K0", "rho", "Cp", "heat_source_effective_thickness"):
             value = getattr(self, field_name)
             if value is not None and float(value) <= 0:
                 raise ValueError(f"{field_name} must be positive when provided, got {value}.")

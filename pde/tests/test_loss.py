@@ -1,4 +1,5 @@
 import torch
+import unittest
 
 from pde.loss import apply_dirichlet_boundary, compute_outflow_loss, total_loss
 
@@ -173,3 +174,53 @@ def test_total_loss_can_use_backward_residual_time_scheme():
 
     expected_residual = torch.tensor([[1.75], [4.75]])
     assert torch.allclose(components["residual"], expected_residual, atol=1e-6)
+
+
+class TotalLossComponentTests(unittest.TestCase):
+    def test_return_components_includes_beta_without_adding_it_to_total(self):
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, 7), dtype=torch.float32)
+        T_next = torch.tensor([[2.0], [4.0]])
+        T_current = torch.tensor([[1.0], [1.0]])
+
+        components = total_loss(
+            T_next=T_next,
+            T_current=T_current,
+            v_scan_star=0.0,
+            Q_star=torch.zeros_like(T_next),
+            dt_star=1.0,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            lambda_outflow=0.5,
+            thermal_loss_beta=0.25,
+            thermal_loss_base_temperature_star=1.0,
+            residual_time_scheme="backward",
+            return_components=True,
+        )
+
+        self.assertIn("loss_beta", components)
+        self.assertIn("thermal_loss_term", components)
+        self.assertTrue(torch.allclose(components["loss_beta"], torch.tensor(0.3125)))
+        self.assertTrue(
+            torch.allclose(
+                components["loss_total"],
+                components["loss_pde"] + 0.5 * components["loss_outflow"],
+            )
+        )
+
+    def test_beta_monitor_loss_is_zero_when_beta_is_zero(self):
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, 7), dtype=torch.float32)
+        components = total_loss(
+            T_next=torch.tensor([[2.0], [4.0]]),
+            T_current=torch.tensor([[1.0], [1.0]]),
+            v_scan_star=0.0,
+            Q_star=torch.zeros(2, 1),
+            dt_star=1.0,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            thermal_loss_beta=0.0,
+            return_components=True,
+        )
+
+        self.assertTrue(torch.allclose(components["loss_beta"], torch.tensor(0.0)))

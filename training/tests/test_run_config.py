@@ -119,6 +119,7 @@ class RunConfigTests(unittest.TestCase):
                         "K0": 8.0,
                         "rho": 2.0,
                         "Cp": 1.0,
+                        "heat_source_effective_thickness": 0.001,
                     },
                 }
             ],
@@ -158,6 +159,94 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.model["residual_time_scheme"], "backward")
         self.assertEqual(config.training.device, "cpu")
 
+    def test_load_config_uses_default_monitoring(self):
+        config_path = self.root / "monitoring_default.json"
+        payload = {
+            "data": {
+                "h5_dir": "h5",
+                "cache_dir": "cache",
+                "checkpoint_path": "checkpoint.pt",
+            },
+            "scale": {
+                "L0": 2.0,
+                "v0": 2.0,
+                "T_amb": 300.0,
+                "delta_T0": 10.0,
+                "Q0": 2.0,
+                "K0": 8.0,
+                "rho": 2.0,
+                "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
+            },
+            "model": {},
+            "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        config = load_run_config(config_path)
+
+        self.assertTrue(config.monitoring.enabled)
+        self.assertEqual(config.monitoring.interval_epochs, 10)
+        self.assertIsNone(config.monitoring.temperature_frame_index)
+
+    def test_load_config_accepts_monitoring_interval(self):
+        config_path = self.root / "monitoring_interval.json"
+        payload = {
+            "data": {
+                "h5_dir": "h5",
+                "cache_dir": "cache",
+                "checkpoint_path": "checkpoint.pt",
+            },
+            "scale": {
+                "L0": 2.0,
+                "v0": 2.0,
+                "T_amb": 300.0,
+                "delta_T0": 10.0,
+                "Q0": 2.0,
+                "K0": 8.0,
+                "rho": 2.0,
+                "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
+            },
+            "model": {},
+            "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
+            "monitoring": {"interval_epochs": 2, "temperature_frame_index": 1},
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        config = load_run_config(config_path)
+
+        self.assertEqual(config.monitoring.interval_epochs, 2)
+        self.assertEqual(config.monitoring.temperature_frame_index, 1)
+
+    def test_load_config_rejects_non_positive_monitoring_interval(self):
+        config_path = self.root / "monitoring_bad_interval.json"
+        payload = {
+            "data": {
+                "h5_dir": "h5",
+                "cache_dir": "cache",
+                "checkpoint_path": "checkpoint.pt",
+            },
+            "scale": {
+                "L0": 2.0,
+                "v0": 2.0,
+                "T_amb": 300.0,
+                "delta_T0": 10.0,
+                "Q0": 2.0,
+                "K0": 8.0,
+                "rho": 2.0,
+                "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
+            },
+            "model": {},
+            "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
+            "monitoring": {"interval_epochs": 0},
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "monitoring.interval_epochs"):
+            load_run_config(config_path)
+
     def test_load_config_rejects_manual_dt_in_scale(self):
         config_path = self.root / "manual_dt.json"
         payload = {
@@ -178,6 +267,7 @@ class RunConfigTests(unittest.TestCase):
                         "K0": 8.0,
                         "rho": 2.0,
                         "Cp": 1.0,
+                        "heat_source_effective_thickness": 0.001,
                         "dt": 0.5,
                     },
                 }
@@ -193,6 +283,40 @@ class RunConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown keys.*dt"):
             load_run_config(config_path)
 
+    def test_load_config_requires_heat_source_effective_thickness(self):
+        config_path = self.root / "missing_thickness.json"
+        payload = {
+            "outputs": {
+                "checkpoint_path": "checkpoint.pt",
+                "history_path": "history.json",
+            },
+            "datasets": [
+                {
+                    "h5_dir": "h5",
+                    "cache_dir": "cache",
+                    "scale": {
+                        "L0": 1.0,
+                        "v0": 1.0,
+                        "T_amb": 300.0,
+                        "delta_T0": 10.0,
+                        "Q0": 1.0,
+                        "K0": 1.0,
+                        "rho": 1.0,
+                        "Cp": 1.0,
+                    },
+                }
+            ],
+            "hyperparameters": {
+                "model": {},
+                "physics_loss": {},
+                "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
+            },
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "heat_source_effective_thickness"):
+            load_run_config(config_path)
+
     def test_derive_timing_from_hdf5_scalar_step_distance(self):
         h5_path = self.root / "input.h5"
         make_h5(h5_path)
@@ -200,11 +324,30 @@ class RunConfigTests(unittest.TestCase):
 
         timing = derive_timing_from_hdf5(h5_path, scale)
 
-        self.assertAlmostEqual(timing["step_distance"], 0.5)
-        self.assertAlmostEqual(timing["velocity_speed"], 2.0)
+        self.assertAlmostEqual(timing["step_distance"], 0.0005)
+        self.assertAlmostEqual(timing["velocity_speed"], 0.002)
         self.assertAlmostEqual(timing["dt"], 0.25)
         self.assertAlmostEqual(timing["dt_star"], 0.25)
-        self.assertAlmostEqual(timing["slice_path_length"], 0.5)
+        self.assertAlmostEqual(timing["slice_path_length"], 0.0005)
+        self.assertAlmostEqual(timing["native_step_distance_mm"], 0.5)
+        self.assertAlmostEqual(timing["native_velocity_speed_mm_per_s"], 2.0)
+        self.assertAlmostEqual(timing["native_slice_path_length_mm"], 0.5)
+
+    def test_derive_timing_from_hdf5_converts_mm_timing_to_si(self):
+        h5_path = self.root / "input_si_timing.h5"
+        make_h5(h5_path)
+        with h5py.File(h5_path, "a") as h5_file:
+            h5_file.attrs["velocity_speed"] = 1000.0
+            h5_file["path/heat_center_step_distance"][()] = np.float64(500.0)
+            h5_file["path/slice_path_length"][()] = np.float64(500.0)
+        scale = ScaleParams(L0=1.0, v0=2.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        timing = derive_timing_from_hdf5(h5_path, scale)
+
+        self.assertAlmostEqual(timing["step_distance"], 0.5)
+        self.assertAlmostEqual(timing["velocity_speed"], 1.0)
+        self.assertAlmostEqual(timing["dt"], 0.5)
+        self.assertAlmostEqual(timing["dt_star"], 1.0)
 
     def test_derive_timing_from_hdf5_accepts_constant_step_array(self):
         h5_path = self.root / "input_array.h5"
@@ -303,14 +446,15 @@ class RunConfigTests(unittest.TestCase):
                 "history_path": "history.json",
             },
             "scale": {
-                "L0": 2.0,
-                "v0": 2.0,
+                "L0": 0.002,
+                "v0": 0.002,
                 "T_amb": 300.0,
                 "delta_T0": 10.0,
-                "Q0": 2.0,
-                "K0": 8.0,
+                "Q0": 2.0e9,
+                "K0": 8.0e-6,
                 "rho": 2.0,
                 "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
             },
             "model": {
                 "hidden_size": 8,
@@ -346,17 +490,48 @@ class RunConfigTests(unittest.TestCase):
         self.assertTrue(result["history"][-1]["stopped_early"])
         metadata = checkpoint["metadata"]
         self.assertAlmostEqual(metadata["model_config"]["inverse_pe"], 1.0)
-        self.assertAlmostEqual(metadata["model_config"]["pi_q"], 0.1)
+        self.assertAlmostEqual(metadata["model_config"]["pi_q"], 1.0e8)
         self.assertAlmostEqual(metadata["model_config"]["dt_star"], 0.25)
         self.assertAlmostEqual(metadata["hdf5_timing"]["dt"], 0.25)
         self.assertAlmostEqual(metadata["hdf5_timing"]["dt_star"], 0.25)
-        self.assertAlmostEqual(metadata["hdf5_timing"]["step_distance"], 0.5)
-        self.assertAlmostEqual(metadata["hdf5_timing"]["velocity_speed"], 2.0)
+        self.assertAlmostEqual(metadata["hdf5_timing"]["step_distance"], 0.0005)
+        self.assertAlmostEqual(metadata["hdf5_timing"]["velocity_speed"], 0.002)
         self.assertAlmostEqual(metadata["model_config"]["thermal_loss_beta"], 0.25)
         self.assertAlmostEqual(metadata["model_config"]["thermal_loss_base_temperature_star"], 0.0)
         self.assertEqual(metadata["model_config"]["residual_time_scheme"], "backward")
         self.assertEqual(metadata["train_config"]["loss_threshold"], 1e20)
         self.assertEqual(len(metadata["h5_files"]), 1)
+        history_payload = json.loads(history_path.read_text(encoding="utf-8"))
+        self.assertIn("slice_records", history_payload)
+        self.assertIn("loss_beta", history_payload["history"][0])
+        figures_dir = history_path.parent / "figures"
+        self.assertFalse((figures_dir / "loss_curve.png").exists())
+        monitor_path = history_path.parent / "metrics" / "monitor_data.h5"
+        self.assertEqual(Path(result["monitor_data_path"]), monitor_path)
+        self.assertTrue(monitor_path.exists())
+        with h5py.File(monitor_path, "r") as monitor_h5:
+            self.assertEqual(monitor_h5.attrs["schema_version"], "1.0")
+            self.assertIn("epoch_metrics", monitor_h5)
+            self.assertIn("slice_metrics", monitor_h5)
+            self.assertIn("epoch_snapshots/epoch_0001", monitor_h5)
+            self.assertIn("slice_snapshots/epoch_0001_slice_0001", monitor_h5)
+            self.assertEqual(monitor_h5["epoch_metrics/epoch"].shape, (1,))
+            self.assertEqual(monitor_h5["epoch_metrics/loss_beta"].shape, (1,))
+            self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/coords"].shape, (4, 3))
+            self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/temperature"].shape, (4,))
+
+        history_path.unlink()
+        from training.visualize_monitor import main as visualize_main
+
+        self.assertEqual(visualize_main(["--monitor-data", str(monitor_path), "--grid-resolution", "64"]), 0)
+        self.assertTrue((figures_dir / "loss_curve.png").exists())
+        self.assertGreater((figures_dir / "loss_curve.png").stat().st_size, 0)
+        self.assertTrue((figures_dir / "temperature_stats.png").exists())
+        self.assertTrue((figures_dir / "residual_epoch_0001_frame_0001.png").exists())
+        self.assertTrue((figures_dir / "temperature_epoch_0001_frame_0001.png").exists())
+        self.assertTrue((figures_dir / "first_slice_loss_curve.png").exists())
+        self.assertTrue((figures_dir / "first_slice" / "residual_epoch_0001_after_slice_001.png").exists())
+        self.assertTrue((figures_dir / "first_slice" / "temperature_epoch_0001_after_slice_001.png").exists())
 
     def test_discover_hdf5_files_uses_natural_filename_order(self):
         h5_dir = self.root / "h5_order"

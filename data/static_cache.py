@@ -8,6 +8,12 @@ import numpy as np
 import torch
 
 from .dimensionless import ScaleParams
+from .hdf5_units import (
+    heat_flux_w_per_mm2_to_volume_w_per_m3,
+    length_mm_to_m,
+    resolve_heat_source_effective_thickness,
+    velocity_mm_per_s_to_m_per_s,
+)
 
 
 STATIC_FILE = "static.pt"
@@ -73,6 +79,19 @@ def build_static_cache(
         "global_layout": ["scan_velocity"],
         "source_h5": str(h5_path),
         "source_num_frames": int(num_frames),
+        "hdf5_native_units": {
+            "dynamic/xyz": "mm",
+            "dynamic/Q": "W/mm^2",
+            "velocity_speed": "mm/s",
+        },
+        "pipeline_units": {
+            "coordinates": "m",
+            "heat_source": "W/m^3",
+            "scan_velocity": "m/s",
+        },
+        "heat_source_effective_thickness": float(scale_params.heat_source_effective_thickness)
+        if scale_params.heat_source_effective_thickness is not None
+        else None,
         "scale_params": asdict(scale_params),
     }
     (cache_dir / META_FILE).write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -87,6 +106,8 @@ class HDF5FrameReader:
         h5_path,
         *,
         expected_num_nodes: Optional[int] = None,
+        scale_params: Optional[ScaleParams] = None,
+        heat_source_effective_thickness: Optional[float] = None,
         scan_velocity: Optional[float] = None,
         pin_memory: bool = True,
     ):
@@ -120,6 +141,10 @@ class HDF5FrameReader:
                     f"HDF5 file {self.h5_path} has {self.num_nodes} nodes, "
                     f"but static cache expects {expected_num_nodes}."
                 )
+            self.heat_source_effective_thickness = resolve_heat_source_effective_thickness(
+                scale_params=scale_params,
+                heat_source_effective_thickness=heat_source_effective_thickness,
+            )
             self.velocity = _resolve_scan_velocity(self.h5_file, scan_velocity)
         except Exception:
             self.h5_file.close()
@@ -140,9 +165,12 @@ class HDF5FrameReader:
         if not 0 <= int(frame_idx) < self.num_frames:
             raise IndexError(f"frame_idx must be in [0, {self.num_frames - 1}], got {frame_idx}.")
         idx = int(frame_idx)
-        self._node_array[:, 0:3] = self.xyz[idx, :, :]
+        self._node_array[:, 0:3] = length_mm_to_m(self.xyz[idx, :, :])
         self._node_array[:, 3:6] = self.fiber[idx, :, :]
-        self._node_array[:, 6:7] = self.q[idx, :, :]
+        self._node_array[:, 6:7] = heat_flux_w_per_mm2_to_volume_w_per_m3(
+            self.q[idx, :, :],
+            self.heat_source_effective_thickness,
+        )
         self._global_array[0] = np.float32(self.velocity)
         return self._node_buffer, self._global_buffer
 
@@ -211,7 +239,7 @@ def _resolve_scan_velocity(h5_file, scan_velocity):
     if scan_velocity is not None:
         return float(scan_velocity)
     if "velocity_speed" in h5_file.attrs:
-        return float(h5_file.attrs["velocity_speed"])
+        return float(velocity_mm_per_s_to_m_per_s(float(h5_file.attrs["velocity_speed"])))
     return 1.0
 
 

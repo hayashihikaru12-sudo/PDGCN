@@ -3,6 +3,7 @@ from .config import TrainConfig
 from .inference import rollout
 from .run_config import derive_dt_star, load_run_config, pdgcn_config_from_scale
 from .static_topology import (
+    evaluate_static_topology_sequence,
     GpuFeatureBuilder,
     StaticGraphState,
     rollout_static_topology,
@@ -17,6 +18,7 @@ __all__ = [
     "StaticGraphState",
     "TrainConfig",
     "derive_dt_star",
+    "evaluate_static_topology_sequence",
     "iter_tbptt_windows",
     "load_run_config",
     "load_checkpoint",

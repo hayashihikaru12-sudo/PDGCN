@@ -2,7 +2,14 @@ from typing import Dict, Iterable, Optional
 
 import torch
 
-from .residual import _as_time_node, compute_pde_residual
+from .residual import (
+    _as_base_temperature,
+    _as_time_node,
+    _broadcast_to_match,
+    _restore_layout,
+    _select_residual_temperature,
+    compute_pde_residual,
+)
 
 
 def apply_dirichlet_boundary(T, boundary_nodes: Optional[Dict[str, torch.Tensor]], *, value: float = 0.0):
@@ -151,11 +158,33 @@ def total_loss(
     )
 
     residual_2d, _ = _as_time_node(residual, name="residual")
+    T_next_bc_2d, t_next_layout = _as_time_node(T_next_bc, name="T_next_bc")
+    T_current_2d, _ = _as_time_node(T_current, name="T_current")
+    T_current_2d = _broadcast_to_match(
+        T_current_2d.to(device=residual_2d.device, dtype=residual_2d.dtype),
+        T_next_bc_2d.to(device=residual_2d.device, dtype=residual_2d.dtype),
+        name="T_current",
+    )
+    T_eval_2d = _select_residual_temperature(
+        residual_time_scheme,
+        T_current_2d,
+        T_next_bc_2d.to(device=residual_2d.device, dtype=residual_2d.dtype),
+    )
+    base_temperature_2d = _as_base_temperature(
+        thermal_loss_base_temperature_star,
+        T_eval_2d,
+        device=residual_2d.device,
+        dtype=residual_2d.dtype,
+    )
+    thermal_loss_term_2d = float(thermal_loss_beta) * (T_eval_2d - base_temperature_2d)
+
     interior_nodes = _interior_nodes(residual_2d.shape[1], boundary_nodes, device=residual_2d.device)
     if interior_nodes.numel() == 0:
         loss_pde = residual_2d.square().mean()
+        loss_beta = thermal_loss_term_2d.square().mean()
     else:
         loss_pde = residual_2d[:, interior_nodes].square().mean()
+        loss_beta = thermal_loss_term_2d[:, interior_nodes].square().mean()
 
     outflow_nodes = _concat_boundary_nodes(boundary_nodes, ("downwind",), device=residual_2d.device)
     loss_outflow = compute_outflow_loss(T_next_bc, edge_index, edge_attr, outflow_nodes, eps=eps)
@@ -168,8 +197,10 @@ def total_loss(
         "loss_total": loss_total,
         "loss_pde": loss_pde,
         "loss_outflow": loss_outflow,
+        "loss_beta": loss_beta,
         "residual": residual,
         "T_next_bc": T_next_bc,
+        "thermal_loss_term": _restore_layout(thermal_loss_term_2d, t_next_layout),
     }
 
 

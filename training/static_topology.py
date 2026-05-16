@@ -192,6 +192,9 @@ def train_static_topology(
     config: TrainConfig,
     optimizer: Optional[torch.optim.Optimizer] = None,
     epoch_callback: Optional[Callable[[dict], None]] = None,
+    monitor_callback: Optional[Callable[[dict, dict], None]] = None,
+    slice_callback: Optional[Callable[[dict], None]] = None,
+    monitor_frame_index: Optional[int] = None,
 ):
     """使用固定拓扑流式数据管线训练 PD-GCN。
 
@@ -216,6 +219,9 @@ def train_static_topology(
         config,
         optimizer=optimizer,
         epoch_callback=epoch_callback,
+        monitor_callback=monitor_callback,
+        slice_callback=slice_callback,
+        monitor_frame_index=monitor_frame_index,
     )
 
 
@@ -227,6 +233,9 @@ def train_static_topology_sequences(
     config: TrainConfig,
     optimizer: Optional[torch.optim.Optimizer] = None,
     epoch_callback: Optional[Callable[[dict], None]] = None,
+    monitor_callback: Optional[Callable[[dict, dict], None]] = None,
+    slice_callback: Optional[Callable[[dict], None]] = None,
+    monitor_frame_index: Optional[int] = None,
 ):
     """按独立 HDF5 序列训练固定拓扑 PD-GCN。"""
 
@@ -241,23 +250,38 @@ def train_static_topology_sequences(
     history = []
     for epoch in range(int(config.epochs)):
         model.train()
-        window_losses = []
+        window_records = []
         file_window_counts = []
-        for frame_reader in frame_readers:
-            sequence_losses = _train_one_static_sequence_epoch(
+        last_snapshot = None
+        for file_index, frame_reader in enumerate(frame_readers):
+            sequence_records, sequence_snapshot = _train_one_static_sequence_epoch(
                 model,
                 frame_reader,
                 static_state,
                 feature_builder,
                 config,
                 optimizer,
+                monitor_frame_index=monitor_frame_index,
             )
-            window_losses.extend(sequence_losses)
-            file_window_counts.append(len(sequence_losses))
+            window_records.extend(sequence_records)
+            file_window_counts.append(len(sequence_records))
+            if sequence_snapshot is not None:
+                last_snapshot = sequence_snapshot
+            if slice_callback is not None:
+                slice_callback({"epoch": epoch, "slice_index": file_index, "frame_reader": frame_reader})
 
+        window_losses = [record["loss_total"] for record in window_records]
         epoch_record = {
             "epoch": epoch,
             "loss": sum(window_losses) / max(len(window_losses), 1),
+            "loss_total": _mean_records(window_records, "loss_total"),
+            "loss_pde": _mean_records(window_records, "loss_pde"),
+            "loss_outflow": _mean_records(window_records, "loss_outflow"),
+            "loss_beta": _mean_records(window_records, "loss_beta"),
+            "temperature_mean": _mean_records(window_records, "temperature_mean"),
+            "temperature_max": _max_records(window_records, "temperature_max"),
+            "temperature_min": _min_records(window_records, "temperature_min"),
+            "temperature_var": _mean_records(window_records, "temperature_var"),
             "window_losses": window_losses,
             "file_window_counts": file_window_counts,
         }
@@ -266,6 +290,8 @@ def train_static_topology_sequences(
             epoch_record["stopped_early"] = True
             epoch_record["stop_reason"] = "loss_threshold"
         history.append(epoch_record)
+        if monitor_callback is not None:
+            monitor_callback(epoch_record, {"snapshot": last_snapshot} if last_snapshot is not None else {})
         if epoch_callback is not None:
             epoch_callback(epoch_record)
         if should_stop:
@@ -280,6 +306,8 @@ def _train_one_static_sequence_epoch(
     feature_builder: GpuFeatureBuilder,
     config: TrainConfig,
     optimizer: torch.optim.Optimizer,
+    *,
+    monitor_frame_index: Optional[int] = None,
 ):
     if int(config.warmup_steps) > 0:
         node_base_cpu, global_cpu = frame_reader.read_frame(0)
@@ -294,12 +322,15 @@ def _train_one_static_sequence_epoch(
     else:
         current_temperature = feature_builder.initial_temperature().detach()
 
-    window_losses = []
+    window_records = []
+    selected_snapshot = None
     for start in range(0, frame_reader.num_frames, int(config.tbptt_window)):
         end = min(start + int(config.tbptt_window), frame_reader.num_frames)
         optimizer.zero_grad()
         loss_terms = []
+        component_records = []
         window_temperature = current_temperature
+        window_snapshot = None
 
         for frame_idx in range(start, end):
             node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
@@ -312,26 +343,23 @@ def _train_one_static_sequence_epoch(
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            loss_terms.append(
-                total_loss(
-                    T_next=next_temperature,
-                    T_current=window_temperature,
-                    v_scan_star=graph.global_attr,
-                    Q_star=graph.x[:, 7:8],
-                    dt_star=model.config.dt_star,
-                    edge_index=static_state.edge_index,
-                    edge_attr=graph.edge_attr,
-                    boundary_nodes=static_state.boundary_nodes,
-                    inverse_pe=model.config.inverse_pe,
-                    pi_q=model.config.pi_q,
-                    k_ratio=model.config.k_ratio,
-                    lambda_outflow=model.config.lambda_outflow,
-                    dirichlet_temperature_star=model.config.dirichlet_temperature_star,
-                    thermal_loss_beta=model.config.thermal_loss_beta,
-                    thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
-                    residual_time_scheme=model.config.residual_time_scheme,
-                )
+            components = _compute_loss_components(
+                model,
+                next_temperature,
+                window_temperature,
+                graph,
+                static_state,
             )
+            loss_terms.append(components["loss_total"])
+            component_records.append(_detach_loss_record(components))
+            if _should_capture_frame(frame_idx, monitor_frame_index, frame_reader.num_frames):
+                window_snapshot = _build_monitor_snapshot(
+                    graph,
+                    components["residual"],
+                    next_temperature,
+                    feature_builder.scale_params,
+                    frame_idx=frame_idx,
+                )
             window_temperature = next_temperature
 
         loss = torch.stack(loss_terms).mean()
@@ -340,9 +368,164 @@ def _train_one_static_sequence_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
         optimizer.step()
 
-        window_losses.append(float(loss.detach().cpu()))
+        window_record = _aggregate_component_records(component_records)
+        window_record.update(_temperature_stats(window_temperature, feature_builder.scale_params))
+        window_record["loss_total"] = float(loss.detach().cpu())
+        window_records.append(window_record)
+        if window_snapshot is not None:
+            selected_snapshot = window_snapshot
         current_temperature = window_temperature.detach()
-    return window_losses
+    return window_records, selected_snapshot
+
+
+@torch.no_grad()
+def evaluate_static_topology_sequence(
+    model,
+    frame_reader: HDF5FrameReader,
+    static_state: StaticGraphState,
+    feature_builder: GpuFeatureBuilder,
+    config: TrainConfig,
+    *,
+    epoch: int = 0,
+    slice_index: int = 0,
+    monitor_frame_index: Optional[int] = None,
+):
+    """无梯度评估一个 HDF5 切片并返回平均损失分量和监控快照。"""
+
+    model.to(static_state.device)
+    was_training = model.training
+    model.eval()
+    current_temperature = feature_builder.initial_temperature()
+    if int(config.warmup_steps) > 0:
+        node_base_cpu, global_cpu = frame_reader.read_frame(0)
+        warmup_graph = _snapshot_graph_for_tbptt(
+            feature_builder.build(node_base_cpu, global_cpu, current_temperature)
+        )
+        current_temperature = pseudo_time_relax_initial_temperature(
+            model,
+            warmup_graph,
+            int(config.warmup_steps),
+        )
+
+    component_records = []
+    snapshot = None
+    try:
+        for frame_idx in range(frame_reader.num_frames):
+            node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
+            graph = feature_builder.build(node_base_cpu, global_cpu, current_temperature)
+            next_temperature = apply_dirichlet_boundary(
+                current_temperature + model(graph),
+                static_state.boundary_nodes,
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
+            components = _compute_loss_components(
+                model,
+                next_temperature,
+                current_temperature,
+                graph,
+                static_state,
+            )
+            component_records.append(_detach_loss_record(components))
+            if _should_capture_frame(frame_idx, monitor_frame_index, frame_reader.num_frames):
+                snapshot = _build_monitor_snapshot(
+                    graph,
+                    components["residual"],
+                    next_temperature,
+                    feature_builder.scale_params,
+                    frame_idx=frame_idx,
+                )
+            current_temperature = next_temperature
+    finally:
+        if was_training:
+            model.train()
+
+    record = {
+        "epoch": int(epoch),
+        "slice_index": int(slice_index),
+        **_aggregate_component_records(component_records),
+        **_temperature_stats(current_temperature, feature_builder.scale_params),
+    }
+    record["loss"] = record["loss_total"]
+    return record, {"snapshot": snapshot} if snapshot is not None else {}
+
+
+def _compute_loss_components(model, next_temperature, current_temperature, graph, static_state: StaticGraphState):
+    return total_loss(
+        T_next=next_temperature,
+        T_current=current_temperature,
+        v_scan_star=graph.global_attr,
+        Q_star=graph.x[:, 7:8],
+        dt_star=model.config.dt_star,
+        edge_index=static_state.edge_index,
+        edge_attr=graph.edge_attr,
+        boundary_nodes=static_state.boundary_nodes,
+        inverse_pe=model.config.inverse_pe,
+        pi_q=model.config.pi_q,
+        k_ratio=model.config.k_ratio,
+        lambda_outflow=model.config.lambda_outflow,
+        dirichlet_temperature_star=model.config.dirichlet_temperature_star,
+        thermal_loss_beta=model.config.thermal_loss_beta,
+        thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
+        residual_time_scheme=model.config.residual_time_scheme,
+        return_components=True,
+    )
+
+
+def _detach_loss_record(components):
+    return {
+        "loss_total": float(components["loss_total"].detach().cpu()),
+        "loss_pde": float(components["loss_pde"].detach().cpu()),
+        "loss_outflow": float(components["loss_outflow"].detach().cpu()),
+        "loss_beta": float(components["loss_beta"].detach().cpu()),
+    }
+
+
+def _aggregate_component_records(records):
+    return {
+        "loss_total": _mean_records(records, "loss_total"),
+        "loss_pde": _mean_records(records, "loss_pde"),
+        "loss_outflow": _mean_records(records, "loss_outflow"),
+        "loss_beta": _mean_records(records, "loss_beta"),
+    }
+
+
+def _temperature_stats(temperature_star, scale_params: ScaleParams):
+    temperature = temperature_from_dimensionless(temperature_star.detach(), scale_params)
+    return {
+        "temperature_mean": float(temperature.mean().cpu()),
+        "temperature_max": float(temperature.max().cpu()),
+        "temperature_min": float(temperature.min().cpu()),
+        "temperature_var": float(temperature.var(unbiased=False).cpu()),
+    }
+
+
+def _build_monitor_snapshot(graph, residual, temperature_star, scale_params: ScaleParams, *, frame_idx: int):
+    return {
+        "frame_index": int(frame_idx),
+        "coords": graph.pos.detach().cpu().numpy(),
+        "residual": residual.detach().reshape(-1).cpu().numpy(),
+        "temperature": temperature_from_dimensionless(temperature_star.detach(), scale_params).reshape(-1).cpu().numpy(),
+    }
+
+
+def _should_capture_frame(frame_idx: int, monitor_frame_index: Optional[int], num_frames: int) -> bool:
+    target = int(num_frames) // 2 if monitor_frame_index is None else min(int(monitor_frame_index), int(num_frames) - 1)
+    return int(frame_idx) == target
+
+
+def _mean_records(records, key: str) -> float:
+    values = [float(record[key]) for record in records if key in record]
+    return sum(values) / max(len(values), 1)
+
+
+def _max_records(records, key: str) -> float:
+    values = [float(record[key]) for record in records if key in record]
+    return max(values) if values else 0.0
+
+
+def _min_records(records, key: str) -> float:
+    values = [float(record[key]) for record in records if key in record]
+    return min(values) if values else 0.0
 
 
 @torch.no_grad()

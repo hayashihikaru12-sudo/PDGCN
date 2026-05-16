@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -37,6 +37,24 @@ class OutputRunConfig:
 
 
 @dataclass(frozen=True)
+class MonitoringRunConfig:
+    enabled: bool = True
+    interval_epochs: int = 10
+    temperature_frame_index: Optional[int] = None
+    figures_dir: Optional[str] = None
+    metrics_path: Optional[str] = None
+
+    def __post_init__(self):
+        if int(self.interval_epochs) <= 0:
+            raise ValueError(f"monitoring.interval_epochs must be positive, got {self.interval_epochs}.")
+        if self.temperature_frame_index is not None and int(self.temperature_frame_index) < 0:
+            raise ValueError(
+                "monitoring.temperature_frame_index must be non-negative when set, "
+                f"got {self.temperature_frame_index}."
+            )
+
+
+@dataclass(frozen=True)
 class ScaleRunConfig:
     L0: float
     v0: float
@@ -46,7 +64,15 @@ class ScaleRunConfig:
     K0: float
     rho: float
     Cp: float
+    heat_source_effective_thickness: float
     eps: float = 1e-12
+
+    def __post_init__(self):
+        if float(self.heat_source_effective_thickness) <= 0:
+            raise ValueError(
+                "scale.heat_source_effective_thickness must be positive, "
+                f"got {self.heat_source_effective_thickness}."
+            )
 
     def to_scale_params(self) -> ScaleParams:
         """转换为数据流水线使用的 ``ScaleParams``。"""
@@ -60,6 +86,7 @@ class ScaleRunConfig:
             K0=self.K0,
             rho=self.rho,
             Cp=self.Cp,
+            heat_source_effective_thickness=self.heat_source_effective_thickness,
             eps=self.eps,
         )
 
@@ -79,6 +106,7 @@ class RunConfig:
     scale: ScaleRunConfig
     model: Dict[str, Any]
     training: TrainConfig
+    monitoring: MonitoringRunConfig = field(default_factory=MonitoringRunConfig)
     outputs: Optional[OutputRunConfig] = None
     datasets: Tuple[DatasetRunConfig, ...] = ()
     schema: str = "legacy"
@@ -126,6 +154,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
     data = _build_dataclass(DataRunConfig, payload.get("data"), context="data")
     scale = _build_dataclass(ScaleRunConfig, payload.get("scale"), context="scale")
     model = _require_mapping(payload.get("model", {}), context="model")
+    monitoring = _build_monitoring_run_config(payload.get("monitoring"))
     training_kwargs = _filter_dataclass_kwargs(
         TrainConfig,
         _require_mapping(payload.get("training", {}), context="training"),
@@ -136,6 +165,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
         scale=scale,
         model=dict(model),
         training=TrainConfig(**training_kwargs),
+        monitoring=monitoring,
         datasets=(
             DatasetRunConfig(
                 h5_dir=data.h5_dir,
@@ -154,6 +184,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
 
 def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
     outputs = _build_dataclass(OutputRunConfig, payload.get("outputs"), context="outputs")
+    monitoring = _build_monitoring_run_config(payload.get("monitoring"))
     dataset_payloads = payload.get("datasets")
     if not isinstance(dataset_payloads, list) or not dataset_payloads:
         raise ValueError("'datasets' section must be a non-empty list.")
@@ -183,6 +214,7 @@ def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
         scale=first_dataset.scale,
         model=model,
         training=TrainConfig(**training_kwargs),
+        monitoring=monitoring,
         outputs=outputs,
         datasets=datasets,
         schema="classified",
@@ -203,12 +235,14 @@ def run_config_to_dict(config: RunConfig) -> Dict[str, Any]:
                 "physics_loss": physics_loss,
                 "training": asdict(config.training),
             },
+            "monitoring": asdict(config.monitoring),
         }
     return {
         "data": asdict(config.data),
         "scale": asdict(config.scale),
         "model": dict(config.model),
         "training": asdict(config.training),
+        "monitoring": asdict(config.monitoring),
     }
 
 
@@ -265,6 +299,14 @@ def _build_dataclass(cls, value, *, context: str):
     return cls(**kwargs)
 
 
+def _build_monitoring_run_config(value) -> MonitoringRunConfig:
+    if value is None:
+        return MonitoringRunConfig()
+    mapping = _require_mapping(value, context="monitoring")
+    kwargs = _filter_dataclass_kwargs(MonitoringRunConfig, mapping, context="monitoring")
+    return MonitoringRunConfig(**kwargs)
+
+
 def _require_mapping(value, *, context: str) -> Dict[str, Any]:
     if value is None:
         raise ValueError(f"Missing required '{context}' section in run config.")
@@ -274,8 +316,16 @@ def _require_mapping(value, *, context: str) -> Dict[str, Any]:
 
 
 def _filter_dataclass_kwargs(cls, mapping: Dict[str, Any], *, context: str) -> Dict[str, Any]:
-    valid = {field.name for field in fields(cls)}
+    field_defs = fields(cls)
+    valid = {field.name for field in field_defs}
     unknown = sorted(set(mapping) - valid)
     if unknown:
         raise ValueError(f"Unknown keys in '{context}' section: {unknown}")
+    missing = [
+        field.name
+        for field in field_defs
+        if field.default is MISSING and field.default_factory is MISSING and field.name not in mapping
+    ]
+    if missing:
+        raise ValueError(f"Missing required keys in '{context}' section: {missing}")
     return dict(mapping)

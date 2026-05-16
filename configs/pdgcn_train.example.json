@@ -1,4 +1,5 @@
 {
+  "monitoring": { "enabled": false },
   "outputs": {
     "checkpoint_path": "../runs/pdgcn/checkpoint.pt",
     "history_path": "../runs/pdgcn/history.json"
@@ -6,17 +7,18 @@
   "datasets": [
     {
       "name": "case_1",
-      "h5_dir": "../HDF5_outputs",
+      "h5_dir": "../case_1_HDF",
       "cache_dir": "../runs/pdgcn/cache/case_1",
       "scale": {
-        "L0": 51.764991760253906,
-        "v0": 80.0,
-        "T_amb": 300.0,
-        "delta_T0": 500,
-        "Q0": 3.1,
-        "K0": 1.0,
-        "rho": 1.0,
-        "Cp": 1.0
+        "L0": 0.051764991760253906,
+        "v0": 0.08,
+        "T_amb": 120,
+        "delta_T0": 230,
+        "Q0": 3100000000.0,
+        "K0": 5.9,
+        "rho": 1575,
+        "Cp": 1300.0,
+        "heat_source_effective_thickness": 0.00015
       }
     }
   ],

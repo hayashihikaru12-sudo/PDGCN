@@ -14,17 +14,23 @@ if __package__ is None or __package__ == "":
         sys.path.insert(0, str(repo_root))
 
 from data import HDF5FrameReader, build_static_cache
+from data.hdf5_units import length_mm_to_m, velocity_mm_per_s_to_m_per_s
 from data.static_cache import META_FILE, STATIC_FILE
 from models import PDGCN
 
 from training.checkpoint import save_checkpoint
-from training.monitor import LossMonitor
+from training.monitor import LossMonitor, TrainingProcessMonitor
 from training.run_config import (
     load_run_config,
     pdgcn_config_from_scale,
     run_config_to_dict,
 )
-from training.static_topology import GpuFeatureBuilder, StaticGraphState, train_static_topology_sequences
+from training.static_topology import (
+    GpuFeatureBuilder,
+    StaticGraphState,
+    evaluate_static_topology_sequence,
+    train_static_topology_sequences,
+)
 
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "pdgcn_train.example.json"
@@ -83,14 +89,42 @@ def run_training_from_config(config_path):
         HDF5FrameReader(
             h5_path,
             expected_num_nodes=static_state.num_nodes,
+            scale_params=scale_params,
             scan_velocity=run_config.data.scan_velocity,
         )
         for h5_path in h5_paths
     ]
-    monitor = LossMonitor(
-        total_epochs=int(train_config.epochs),
-        history_path=history_path,
+    monitor_frame_index = (
+        run_config.monitoring.temperature_frame_index
+        if run_config.monitoring.temperature_frame_index is not None
+        else readers[0].num_frames // 2
     )
+    monitor_frame_index = min(int(monitor_frame_index), readers[0].num_frames - 1)
+    monitor = _build_monitor(
+        run_config,
+        history_path,
+        h5_paths=h5_paths,
+        scale_params=scale_params,
+        model_config=model_config,
+        train_config=train_config,
+        temperature_frame_index=monitor_frame_index,
+    )
+
+    def slice_callback(slice_context):
+        if not run_config.monitoring.enabled or not hasattr(monitor, "record_slice"):
+            return
+        slice_record, slice_payload = evaluate_static_topology_sequence(
+            model,
+            readers[0],
+            static_state,
+            feature_builder,
+            train_config,
+            epoch=int(slice_context["epoch"]),
+            slice_index=int(slice_context["slice_index"]),
+            monitor_frame_index=monitor_frame_index,
+        )
+        monitor.record_slice(slice_record, slice_payload)
+
     try:
         history = train_static_topology_sequences(
             model,
@@ -99,7 +133,10 @@ def run_training_from_config(config_path):
             feature_builder,
             train_config,
             optimizer=optimizer,
-            epoch_callback=monitor,
+            monitor_callback=monitor if run_config.monitoring.enabled else None,
+            epoch_callback=None if run_config.monitoring.enabled else monitor,
+            slice_callback=slice_callback if run_config.monitoring.enabled else None,
+            monitor_frame_index=monitor_frame_index,
         )
     finally:
         for reader in readers:
@@ -114,6 +151,7 @@ def run_training_from_config(config_path):
         "train_config": asdict(train_config),
         "history": history,
     }
+    slice_records = getattr(monitor, "slice_records", [])
     save_checkpoint(
         model,
         optimizer,
@@ -123,18 +161,63 @@ def run_training_from_config(config_path):
     )
     history_path.parent.mkdir(parents=True, exist_ok=True)
     history_path.write_text(
-        json.dumps({"history": history, "metadata": metadata}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {"history": history, "slice_records": slice_records, "metadata": metadata},
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
     return {
         "history": history,
         "checkpoint_path": str(checkpoint_path),
         "history_path": str(history_path),
+        "monitor_data_path": str(getattr(monitor, "metrics_path", "")),
         "cache_dir": str(cache_dir),
         "h5_files": [str(path) for path in h5_paths],
         "model_config": model_config,
         "scale_params": scale_params,
     }
+
+
+def _build_monitor(
+    run_config,
+    history_path,
+    *,
+    h5_paths=None,
+    scale_params=None,
+    model_config=None,
+    train_config=None,
+    temperature_frame_index=None,
+):
+    if not run_config.monitoring.enabled:
+        return LossMonitor(
+            total_epochs=int(run_config.training.epochs),
+            history_path=history_path,
+        )
+
+    figures_dir = (
+        _resolve_path(history_path.parent, run_config.monitoring.figures_dir)
+        if run_config.monitoring.figures_dir is not None
+        else history_path.parent / "figures"
+    )
+    metrics_path = (
+        _resolve_path(history_path.parent, run_config.monitoring.metrics_path)
+        if run_config.monitoring.metrics_path is not None
+        else history_path.parent / "metrics" / "monitor_data.h5"
+    )
+    return TrainingProcessMonitor(
+        total_epochs=int(run_config.training.epochs),
+        history_path=history_path,
+        figures_dir=figures_dir,
+        metrics_path=metrics_path,
+        interval_epochs=int(run_config.monitoring.interval_epochs),
+        temperature_frame_index=temperature_frame_index,
+        h5_files=h5_paths,
+        scale_params=scale_params,
+        model_config=model_config,
+        train_config=train_config,
+    )
 
 
 def main(argv=None):
@@ -149,6 +232,8 @@ def main(argv=None):
     final_loss = result["history"][-1]["loss"] if result["history"] else None
     print(f"checkpoint: {result['checkpoint_path']}")
     print(f"history: {result['history_path']}")
+    if result.get("monitor_data_path"):
+        print(f"monitor_data: {result['monitor_data_path']}")
     print(f"final_loss: {final_loss}")
     return 0
 
@@ -188,9 +273,10 @@ def derive_timing_from_hdf5(h5_path, scale_params, *, scan_velocity=None, tolera
     with h5py.File(h5_path, "r") as h5_file:
         if "velocity_speed" not in h5_file.attrs:
             raise ValueError(f"HDF5 file {h5_path} is missing root attr 'velocity_speed'.")
-        velocity = float(h5_file.attrs["velocity_speed"])
+        native_velocity = float(h5_file.attrs["velocity_speed"])
+        velocity = float(velocity_mm_per_s_to_m_per_s(native_velocity))
         if velocity <= 0:
-            raise ValueError(f"HDF5 file {h5_path} has non-positive velocity_speed={velocity}.")
+            raise ValueError(f"HDF5 file {h5_path} has non-positive velocity_speed={native_velocity}.")
         if scan_velocity is not None and not np.isclose(
             float(scan_velocity),
             velocity,
@@ -200,7 +286,7 @@ def derive_timing_from_hdf5(h5_path, scale_params, *, scan_velocity=None, tolera
             raise ValueError(
                 "Configured scan_velocity must match HDF5 velocity_speed when dt is "
                 f"derived from file timing; got scan_velocity={scan_velocity}, "
-                f"velocity_speed={velocity}."
+                f"velocity_speed={velocity} m/s."
             )
 
         if "dynamic/xyz" not in h5_file:
@@ -209,14 +295,16 @@ def derive_timing_from_hdf5(h5_path, scale_params, *, scan_velocity=None, tolera
         if num_frames < 2:
             raise ValueError(f"HDF5 file {h5_path} must contain at least two frames.")
 
-        step_distance = _read_file_step_distance(
+        native_step_distance = _read_file_step_distance(
             h5_file,
             h5_path,
             expected_intervals=num_frames - 1,
             tolerance=tolerance,
         )
+        step_distance = float(length_mm_to_m(native_step_distance))
         if "path/slice_path_length" in h5_file:
-            slice_path_length = float(np.asarray(h5_file["path/slice_path_length"][()]))
+            native_slice_path_length = float(np.asarray(h5_file["path/slice_path_length"][()]))
+            slice_path_length = float(length_mm_to_m(native_slice_path_length))
             expected_length = step_distance * float(num_frames - 1)
             if not np.isclose(slice_path_length, expected_length, rtol=tolerance, atol=tolerance):
                 raise ValueError(
@@ -224,6 +312,7 @@ def derive_timing_from_hdf5(h5_path, scale_params, *, scan_velocity=None, tolera
                     f"(num_frames - 1); got {slice_path_length} vs {expected_length}."
                 )
         else:
+            native_slice_path_length = None
             slice_path_length = None
 
     dt = step_distance / velocity
@@ -236,6 +325,9 @@ def derive_timing_from_hdf5(h5_path, scale_params, *, scan_velocity=None, tolera
         "velocity_speed": float(velocity),
         "num_frames": int(num_frames),
         "slice_path_length": slice_path_length,
+        "native_step_distance_mm": float(native_step_distance),
+        "native_velocity_speed_mm_per_s": float(native_velocity),
+        "native_slice_path_length_mm": native_slice_path_length,
     }
 
 

@@ -36,7 +36,16 @@ boundary_nodes/side
 path/heat_center_step_distance
 ```
 
-后续同目录切片文件只重复校验必要动态数据集、节点数和动态形状，并直接复用共享静态缓存中的拓扑信息。
+HDF5 原始切片采用生成程序的原生单位：几何为 `mm`，速度为 `mm/s`，`dynamic/Q` 为面热流 `W/mm^2`。PDGCN 预处理阶段会强制转换为 SI 后再无量纲化：
+
+- `dynamic/xyz`: `mm -> m`
+- `velocity_speed`: `mm/s -> m/s`
+- `path/heat_center_step_distance`、`path/slice_path_length`: `mm -> m`
+- `dynamic/Q`: `W/mm^2 -> W/m^3`，转换公式为 `q''' = q'' * 1e6 / heat_source_effective_thickness`
+
+因此训练配置中的 `datasets[].scale` 必须使用 SI：`L0` 为 `m`，`v0` 为 `m/s`，`Q0` 为 `W/m^3`，`K0` 为 `W/(m·°C)`，`rho` 为 `kg/m^3`，`Cp` 为 `J/(kg·°C)`。`heat_source_effective_thickness` 为必填字段，单位 `m`，应按实际工况填写。
+
+详细配置说明见 [configs/README.md](configs/README.md)。
 
 ## 训练配置
 
@@ -46,11 +55,11 @@ path/heat_center_step_distance
 configs/pdgcn_train.example.json
 ```
 
-关键数据字段：
+关键字段：
 
 - `datasets[0].h5_dir`：训练输入 HDF5 目录。
 - `datasets[0].cache_dir`：该训练集共享的静态缓存目录。
-- `datasets[0].scale`：无量纲化与 PDE 系数派生所需尺度参数。
+- `datasets[0].scale`：SI 无量纲化标尺与 PDE 系数派生参数。
 
 静态缓存默认启用。缓存缺失时，训练入口会使用目录内排序后的第一个 HDF5 文件生成；缓存存在时直接复用。
 
@@ -83,14 +92,14 @@ runs/pdgcn/cache/case_1/
 3. 缓存缺失时用第一个文件生成共享静态缓存；后续文件不读取或比较拓扑数据。
 4. 每个 HDF5 文件作为独立样本序列训练，不与前一个文件共享温度状态。
 5. 每个文件开始时重新初始化温度；若 `warmup_steps > 0`，使用当前最新 PDGCN 参数做连续前向 warmup，不反向传播、不更新参数。
-6. 同一次训练 run 内模型参数和优化器状态持续更新。
+6. 同一 run 内模型参数和优化器状态持续更新。
 7. epoch loss 统计为该 epoch 内所有文件所有 TBPTT 窗口损失的平均值。
 
 ## 目录说明
 
 ```text
 configs/      训练配置示例与说明
-data/         HDF5 数据读取、无量纲化、特征构建、静态缓存
+data/         HDF5 数据读取、SI 转换、无量纲化、特征构建、静态缓存
 models/       PDGCN 模型、编码器、处理器、解码器
 pde/          PDE residual、边界条件和物理损失
 training/     训练入口、TBPTT、推理、checkpoint、监控

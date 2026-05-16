@@ -5,6 +5,13 @@ from typing import Dict, Optional
 import h5py
 import torch
 
+from .dimensionless import ScaleParams
+from .hdf5_units import (
+    heat_flux_w_per_mm2_to_volume_w_per_m3,
+    length_mm_to_m,
+    resolve_heat_source_effective_thickness,
+)
+
 
 @dataclass(frozen=True)
 class GraphRawData:
@@ -30,7 +37,13 @@ class HDF5Loader:
         "boundary_nodes/side",
     )
 
-    def __init__(self, file_path):
+    def __init__(
+        self,
+        file_path,
+        *,
+        scale_params: Optional[ScaleParams] = None,
+        heat_source_effective_thickness: Optional[float] = None,
+    ):
         """初始化 HDF5 数据加载器。
 
         参数:
@@ -43,6 +56,8 @@ class HDF5Loader:
         """
 
         self.file_path = Path(file_path)
+        self.scale_params = scale_params
+        self.heat_source_effective_thickness = heat_source_effective_thickness
 
     def load_graph_data(self, frame_idx: int = 0, device: Optional[torch.device] = None) -> GraphRawData:
         """读取单个时间帧的原始图数据。
@@ -63,6 +78,10 @@ class HDF5Loader:
 
         with h5py.File(self.file_path, "r") as h5_file:
             self._validate_required_keys(h5_file)
+            heat_source_effective_thickness = resolve_heat_source_effective_thickness(
+                scale_params=self.scale_params,
+                heat_source_effective_thickness=self.heat_source_effective_thickness,
+            )
 
             xyz_all = h5_file["dynamic/xyz"]
             fiber_all = h5_file["dynamic/fiber"]
@@ -72,9 +91,16 @@ class HDF5Loader:
             if not 0 <= frame_idx < num_frames:
                 raise IndexError(f"frame_idx must be in [0, {num_frames - 1}], got {frame_idx}.")
 
-            xyz = _as_tensor(xyz_all[frame_idx], dtype=torch.float32, device=device)
+            xyz = _as_tensor(length_mm_to_m(xyz_all[frame_idx]), dtype=torch.float32, device=device)
             fiber = _as_tensor(fiber_all[frame_idx], dtype=torch.float32, device=device)
-            q = _as_tensor(q_all[frame_idx], dtype=torch.float32, device=device)
+            q = _as_tensor(
+                heat_flux_w_per_mm2_to_volume_w_per_m3(
+                    q_all[frame_idx],
+                    heat_source_effective_thickness,
+                ),
+                dtype=torch.float32,
+                device=device,
+            )
             edge_index = _as_tensor(h5_file["edge_index"][()], dtype=torch.long, device=device)
 
             boundary_nodes = {
