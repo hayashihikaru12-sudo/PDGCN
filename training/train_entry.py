@@ -28,7 +28,6 @@ from training.run_config import (
 from training.static_topology import (
     GpuFeatureBuilder,
     StaticGraphState,
-    evaluate_static_topology_sequence,
     train_static_topology_sequences,
 )
 
@@ -110,21 +109,6 @@ def run_training_from_config(config_path):
         temperature_frame_index=monitor_frame_index,
     )
 
-    def slice_callback(slice_context):
-        if not run_config.monitoring.enabled or not hasattr(monitor, "record_slice"):
-            return
-        slice_record, slice_payload = evaluate_static_topology_sequence(
-            model,
-            readers[0],
-            static_state,
-            feature_builder,
-            train_config,
-            epoch=int(slice_context["epoch"]),
-            slice_index=int(slice_context["slice_index"]),
-            monitor_frame_index=monitor_frame_index,
-        )
-        monitor.record_slice(slice_record, slice_payload)
-
     try:
         history = train_static_topology_sequences(
             model,
@@ -135,7 +119,6 @@ def run_training_from_config(config_path):
             optimizer=optimizer,
             monitor_callback=monitor if run_config.monitoring.enabled else None,
             epoch_callback=None if run_config.monitoring.enabled else monitor,
-            slice_callback=slice_callback if run_config.monitoring.enabled else None,
             monitor_frame_index=monitor_frame_index,
         )
     finally:
@@ -151,7 +134,6 @@ def run_training_from_config(config_path):
         "train_config": asdict(train_config),
         "history": history,
     }
-    slice_records = getattr(monitor, "slice_records", [])
     save_checkpoint(
         model,
         optimizer,
@@ -162,7 +144,7 @@ def run_training_from_config(config_path):
     history_path.parent.mkdir(parents=True, exist_ok=True)
     history_path.write_text(
         json.dumps(
-            {"history": history, "slice_records": slice_records, "metadata": metadata},
+            {"history": history, "metadata": metadata},
             ensure_ascii=False,
             indent=2,
         ),

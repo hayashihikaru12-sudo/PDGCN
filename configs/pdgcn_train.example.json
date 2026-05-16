@@ -1,5 +1,5 @@
 {
-  "monitoring": { "enabled": false },
+  "monitoring": { "enabled": true },
   "outputs": {
     "checkpoint_path": "../runs/pdgcn/checkpoint.pt",
     "history_path": "../runs/pdgcn/history.json"

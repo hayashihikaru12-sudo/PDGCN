@@ -502,7 +502,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(metadata["train_config"]["loss_threshold"], 1e20)
         self.assertEqual(len(metadata["h5_files"]), 1)
         history_payload = json.loads(history_path.read_text(encoding="utf-8"))
-        self.assertIn("slice_records", history_payload)
+        self.assertNotIn("slice_records", history_payload)
         self.assertIn("loss_beta", history_payload["history"][0])
         figures_dir = history_path.parent / "figures"
         self.assertFalse((figures_dir / "loss_curve.png").exists())
@@ -514,9 +514,11 @@ class RunConfigTests(unittest.TestCase):
             self.assertIn("epoch_metrics", monitor_h5)
             self.assertIn("slice_metrics", monitor_h5)
             self.assertIn("epoch_snapshots/epoch_0001", monitor_h5)
-            self.assertIn("slice_snapshots/epoch_0001_slice_0001", monitor_h5)
+            self.assertIn("slice_snapshots", monitor_h5)
             self.assertEqual(monitor_h5["epoch_metrics/epoch"].shape, (1,))
             self.assertEqual(monitor_h5["epoch_metrics/loss_beta"].shape, (1,))
+            self.assertEqual(monitor_h5["slice_metrics/epoch"].shape, (0,))
+            self.assertEqual(len(monitor_h5["slice_snapshots"].keys()), 0)
             self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/coords"].shape, (4, 3))
             self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/temperature"].shape, (4,))
 
@@ -529,9 +531,8 @@ class RunConfigTests(unittest.TestCase):
         self.assertTrue((figures_dir / "temperature_stats.png").exists())
         self.assertTrue((figures_dir / "residual_epoch_0001_frame_0001.png").exists())
         self.assertTrue((figures_dir / "temperature_epoch_0001_frame_0001.png").exists())
-        self.assertTrue((figures_dir / "first_slice_loss_curve.png").exists())
-        self.assertTrue((figures_dir / "first_slice" / "residual_epoch_0001_after_slice_001.png").exists())
-        self.assertTrue((figures_dir / "first_slice" / "temperature_epoch_0001_after_slice_001.png").exists())
+        self.assertFalse((figures_dir / "first_slice_loss_curve.png").exists())
+        self.assertFalse((figures_dir / "first_slice").exists())
 
     def test_discover_hdf5_files_uses_natural_filename_order(self):
         h5_dir = self.root / "h5_order"
