@@ -109,6 +109,32 @@ def run_training_from_config(config_path):
         temperature_frame_index=monitor_frame_index,
     )
 
+    completed_history = []
+
+    def save_latest_epoch_checkpoint(epoch_record=None):
+        if epoch_record is not None:
+            completed_history.append(dict(epoch_record))
+        if not completed_history:
+            return
+        _save_training_artifacts(
+            model,
+            optimizer,
+            checkpoint_path,
+            history_path,
+            run_config=run_config,
+            scale_params=scale_params,
+            timing=timing,
+            h5_paths=h5_paths,
+            model_config=model_config,
+            train_config=train_config,
+            history=completed_history,
+        )
+
+    def epoch_callback(epoch_record):
+        if not run_config.monitoring.enabled:
+            monitor(epoch_record)
+        save_latest_epoch_checkpoint(epoch_record)
+
     try:
         history = train_static_topology_sequences(
             model,
@@ -118,13 +144,56 @@ def run_training_from_config(config_path):
             train_config,
             optimizer=optimizer,
             monitor_callback=monitor if run_config.monitoring.enabled else None,
-            epoch_callback=None if run_config.monitoring.enabled else monitor,
+            epoch_callback=epoch_callback,
             monitor_frame_index=monitor_frame_index,
         )
+    except KeyboardInterrupt:
+        save_latest_epoch_checkpoint()
+        raise
     finally:
         for reader in readers:
             reader.close()
 
+    completed_history = [dict(record) for record in history]
+    _save_training_artifacts(
+        model,
+        optimizer,
+        checkpoint_path,
+        history_path,
+        run_config=run_config,
+        scale_params=scale_params,
+        timing=timing,
+        h5_paths=h5_paths,
+        model_config=model_config,
+        train_config=train_config,
+        history=completed_history,
+    )
+    return {
+        "history": history,
+        "checkpoint_path": str(checkpoint_path),
+        "history_path": str(history_path),
+        "monitor_data_path": str(getattr(monitor, "metrics_path", "")),
+        "cache_dir": str(cache_dir),
+        "h5_files": [str(path) for path in h5_paths],
+        "model_config": model_config,
+        "scale_params": scale_params,
+    }
+
+
+def _save_training_artifacts(
+    model,
+    optimizer,
+    checkpoint_path,
+    history_path,
+    *,
+    run_config,
+    scale_params,
+    timing,
+    h5_paths,
+    model_config,
+    train_config,
+    history,
+):
     metadata = {
         "run_config": run_config_to_dict(run_config),
         "scale_params": asdict(scale_params),
@@ -150,16 +219,6 @@ def run_training_from_config(config_path):
         ),
         encoding="utf-8",
     )
-    return {
-        "history": history,
-        "checkpoint_path": str(checkpoint_path),
-        "history_path": str(history_path),
-        "monitor_data_path": str(getattr(monitor, "metrics_path", "")),
-        "cache_dir": str(cache_dir),
-        "h5_files": [str(path) for path in h5_paths],
-        "model_config": model_config,
-        "scale_params": scale_params,
-    }
 
 
 def _build_monitor(

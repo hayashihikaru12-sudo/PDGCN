@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import h5py
@@ -10,6 +11,8 @@ import numpy as np
 import torch
 
 from data import ScaleParams
+from inference.io import run_multilayer_inference_from_config
+from models import PDGCN, PDGCNConfig
 from training import load_run_config, pdgcn_config_from_scale
 from training.run_config import derive_dt_star
 from training.train_entry import derive_timing_from_hdf5, discover_hdf5_files, run_training_from_config
@@ -141,6 +144,12 @@ class RunConfigTests(unittest.TestCase):
                     "device": "cpu",
                 },
             },
+            "inference": {
+                "num_layers": 4,
+                "layer_spacing": 0.00015,
+                "output_path": "../runs/pdgcn/prediction.h5",
+                "steps": 2,
+            },
         }
         config_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -158,6 +167,9 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.model["lambda_outflow"], 0.0)
         self.assertEqual(config.model["residual_time_scheme"], "backward")
         self.assertEqual(config.training.device, "cpu")
+        self.assertEqual(config.inference.num_layers, 4)
+        self.assertAlmostEqual(config.inference.layer_spacing, 0.00015)
+        self.assertEqual(config.inference.steps, 2)
 
     def test_load_config_uses_default_monitoring(self):
         config_path = self.root / "monitoring_default.json"
@@ -246,6 +258,85 @@ class RunConfigTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "monitoring.interval_epochs"):
             load_run_config(config_path)
+
+    def test_multilayer_inference_entry_writes_hdf5(self):
+        h5_dir = self.root / "h5"
+        h5_dir.mkdir()
+        h5_path = h5_dir / "input.h5"
+        make_h5(h5_path)
+        checkpoint_path = self.root / "checkpoint.pt"
+        output_path = self.root / "prediction.h5"
+        model_config = PDGCNConfig(
+            hidden_size=8,
+            message_passing_num=1,
+            inverse_pe=0.0,
+            pi_q=0.0,
+            k_ratio=0.05,
+            dt_star=1.0,
+        )
+        model = PDGCN(model_config)
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": None,
+                "epoch": 0,
+                "metadata": {"model_config": model_config.__dict__},
+            },
+            checkpoint_path,
+        )
+        config_path = self.root / "infer.json"
+        payload = {
+            "outputs": {
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "history_path": "history.json",
+            },
+            "datasets": [
+                {
+                    "name": "case_a",
+                    "h5_dir": str(h5_dir.resolve()),
+                    "cache_dir": "cache/case_a",
+                    "scale": {
+                        "L0": 0.002,
+                        "v0": 0.002,
+                        "T_amb": 300.0,
+                        "delta_T0": 10.0,
+                        "Q0": 2.0e9,
+                        "K0": 8.0,
+                        "rho": 2.0,
+                        "Cp": 1.0,
+                        "heat_source_effective_thickness": 0.001,
+                    },
+                }
+            ],
+            "hyperparameters": {
+                "model": {"hidden_size": 8, "message_passing_num": 1},
+                "physics_loss": {"lambda_outflow": 0.0},
+                "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
+            },
+            "inference": {
+                "num_layers": 3,
+                "layer_spacing": 0.001,
+                "output_path": str(output_path.resolve()),
+                "steps": 2,
+                "warmup_steps": 0,
+            },
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = run_multilayer_inference_from_config(config_path)
+
+        self.assertEqual(result["output_path"], str(output_path.resolve()))
+        with h5py.File(output_path, "r") as h5_file:
+            self.assertEqual(tuple(h5_file["temperature"].shape), (2, 3, 4, 1))
+            self.assertEqual(tuple(h5_file["temperature_star"].shape), (2, 3, 4, 1))
+            self.assertIn("metadata", h5_file)
+            self.assertIn("metadata", h5_file.attrs)
+        vtk_dir = output_path.with_name(f"{output_path.stem}_vtk")
+        vtk_files = sorted(vtk_dir.glob("temperature_step_*_layer_*.vtk"))
+        self.assertEqual(len(vtk_files), 6)
+        vtk_text = vtk_files[0].read_text(encoding="ascii")
+        self.assertIn("SCALARS temperature float 1", vtk_text)
+        self.assertIn("SCALARS temperature_star float 1", vtk_text)
 
     def test_load_config_rejects_manual_dt_in_scale(self):
         config_path = self.root / "manual_dt.json"
@@ -521,18 +612,105 @@ class RunConfigTests(unittest.TestCase):
             self.assertEqual(len(monitor_h5["slice_snapshots"].keys()), 0)
             self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/coords"].shape, (4, 3))
             self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/temperature"].shape, (4,))
+            self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/edge_index"].shape[0], 2)
 
         history_path.unlink()
         from training.visualize_monitor import main as visualize_main
 
-        self.assertEqual(visualize_main(["--monitor-data", str(monitor_path), "--grid-resolution", "64"]), 0)
-        self.assertTrue((figures_dir / "loss_curve.png").exists())
-        self.assertGreater((figures_dir / "loss_curve.png").stat().st_size, 0)
-        self.assertTrue((figures_dir / "temperature_stats.png").exists())
-        self.assertTrue((figures_dir / "residual_epoch_0001_frame_0001.png").exists())
-        self.assertTrue((figures_dir / "temperature_epoch_0001_frame_0001.png").exists())
-        self.assertFalse((figures_dir / "first_slice_loss_curve.png").exists())
-        self.assertFalse((figures_dir / "first_slice").exists())
+        self.assertEqual(
+            visualize_main(
+                [
+                    "--monitor-data",
+                    str(monitor_path),
+                    "--output-dir",
+                    str(figures_dir / "vtk"),
+                    "--grid-resolution",
+                    "64",
+                ]
+            ),
+            0,
+        )
+        vtk_path = figures_dir / "vtk" / "epoch_temperature_residual_epoch_0001_frame_0001.vtk"
+        self.assertTrue(vtk_path.exists())
+        vtk_text = vtk_path.read_text(encoding="ascii")
+        self.assertIn("LINES", vtk_text)
+        self.assertIn("SCALARS temperature float 1", vtk_text)
+        self.assertIn("SCALARS residual float 1", vtk_text)
+        self.assertFalse((figures_dir / "loss_curve.png").exists())
+        self.assertFalse((figures_dir / "temperature_stats.png").exists())
+
+    def test_run_training_from_config_saves_checkpoint_after_completed_epoch_on_interrupt(self):
+        h5_dir = self.root / "h5_interrupt"
+        h5_dir.mkdir()
+        h5_path = h5_dir / "input.h5"
+        make_h5(h5_path)
+        checkpoint_path = self.root / "interrupt_checkpoint.pt"
+        history_path = self.root / "interrupt_history.json"
+        config_path = self.root / "interrupt_config.json"
+        payload = {
+            "data": {
+                "h5_dir": str(h5_dir.resolve()),
+                "cache_dir": "cache_interrupt",
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "history_path": str(history_path.resolve()),
+            },
+            "scale": {
+                "L0": 0.002,
+                "v0": 0.002,
+                "T_amb": 300.0,
+                "delta_T0": 10.0,
+                "Q0": 2.0e9,
+                "K0": 8.0e-6,
+                "rho": 2.0,
+                "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
+            },
+            "model": {
+                "hidden_size": 8,
+                "message_passing_num": 1,
+                "lambda_outflow": 0.0,
+            },
+            "training": {
+                "lr": 0.001,
+                "epochs": 3,
+                "tbptt_window": 1,
+                "warmup_steps": 0,
+                "device": "cpu",
+            },
+            "monitoring": {"enabled": False},
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        def interrupted_training(*args, **kwargs):
+            kwargs["epoch_callback"](
+                {
+                    "epoch": 0,
+                    "loss": 1.0,
+                    "loss_total": 1.0,
+                    "loss_pde": 0.8,
+                    "loss_outflow": 0.2,
+                    "loss_beta": 0.0,
+                    "temperature_mean": 300.0,
+                    "temperature_max": 301.0,
+                    "temperature_min": 299.0,
+                    "temperature_var": 1.0,
+                    "window_losses": [1.0],
+                    "file_window_counts": [1],
+                }
+            )
+            raise KeyboardInterrupt()
+
+        with mock.patch("training.train_entry.train_static_topology_sequences", side_effect=interrupted_training):
+            with self.assertRaises(KeyboardInterrupt):
+                run_training_from_config(config_path)
+
+        self.assertTrue(checkpoint_path.exists())
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        self.assertEqual(checkpoint["epoch"], 0)
+        self.assertEqual(checkpoint["metadata"]["history"][-1]["epoch"], 0)
+        history_payload = json.loads(history_path.read_text(encoding="utf-8"))
+        self.assertEqual(history_payload["history"][-1]["epoch"], 0)
+        self.assertIn("metadata", history_payload)
 
     def test_discover_hdf5_files_uses_natural_filename_order(self):
         h5_dir = self.root / "h5_order"

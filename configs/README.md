@@ -15,6 +15,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\train_entry.py --config config
 | `outputs` | object | 训练产物输出位置，包含 checkpoint 和训练历史。 |
 | `datasets` | array | 训练数据集列表。当前训练入口一次运行一个数据集；一个目录可包含多个 `.h5` 切片。 |
 | `hyperparameters` | object | 模型、物理损失和训练超参数。 |
+| `inference` | object | 可选多层 PD-GCN + 1D FDM 推理配置。 |
 
 ## `datasets[]`
 
@@ -79,3 +80,36 @@ HDF5 原始数据固定使用生成程序的原生单位：
 | `grad_clip_norm` | 梯度裁剪阈值，`null` 表示不裁剪。 |
 | `loss_threshold` | 提前停止阈值，`null` 表示不按 loss 提前停止。 |
 | `device` | 训练设备，`null` 表示自动选择。 |
+
+## 多层推理参数
+
+运行命令：
+
+```powershell
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_train.example.json
+```
+
+| 参数 | 含义 |
+| --- | --- |
+| `num_layers` | 多层堆叠层数，必须 `>= 2`。 |
+| `layer_spacing` | 层间距，单位 `m`。内部转换为 `layer_spacing / L0`。 |
+| `output_path` | 输出 HDF5 路径，保存 `temperature`、`temperature_star` 和 `metadata`。 |
+| `dataset_index` | 使用 `datasets[]` 中的哪个数据集，默认 `0`。 |
+| `h5_path` | 可选输入 HDF5 文件；为 `null` 时使用数据目录中自然升序的第一个文件。 |
+| `steps` | 可选推理步数；为 `null` 时使用输入 HDF5 的全部帧。 |
+| `warmup_steps` | 可选推理 warmup 步数；为 `null` 时沿用训练配置。 |
+| `bottom_temperature_star` | 底层恒温边界的无量纲温度，默认 `0.0`。 |
+| `top_heat_source_only` | 是否仅顶层保留热源，默认 `true`。 |
+| `allow_unstable_fdm` | 是否允许显式 FDM 系数 `C_n > 0.5`，默认 `false`。 |
+| `write_vtk` | 是否同时写出 ParaView legacy `.vtk` 文件，默认 `true`。 |
+| `vtk_output_dir` | 可选 VTK 输出目录；为 `null` 时使用 `<output_path stem>_vtk/`。 |
+
+VTK 文件按时间步和层输出，例如 `temperature_step_000000_layer_000.vtk`。文件使用曲面节点三维坐标和计算图 `edge_index` 写为 `POINTS + LINES`，点标量包含 `temperature` 和 `temperature_star`。
+
+FDM 系数定义为：
+
+```text
+C_n = dt_star * inverse_pe * k_ratio / layer_spacing_star^2
+```
+
+其中 `k_ratio = K_perp / K_parallel`，对应厚度方向法向导热能力。

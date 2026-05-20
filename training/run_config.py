@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from data.dimensionless import ScaleParams, derive_pde_constants
+from inference.config import InferenceRunConfig
 from models import PDGCNConfig
 
 from .config import TrainConfig
@@ -107,6 +108,7 @@ class RunConfig:
     model: Dict[str, Any]
     training: TrainConfig
     monitoring: MonitoringRunConfig = field(default_factory=MonitoringRunConfig)
+    inference: Optional[InferenceRunConfig] = None
     outputs: Optional[OutputRunConfig] = None
     datasets: Tuple[DatasetRunConfig, ...] = ()
     schema: str = "legacy"
@@ -155,6 +157,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
     scale = _build_dataclass(ScaleRunConfig, payload.get("scale"), context="scale")
     model = _require_mapping(payload.get("model", {}), context="model")
     monitoring = _build_monitoring_run_config(payload.get("monitoring"))
+    inference = _build_inference_run_config(payload.get("inference"))
     training_kwargs = _filter_dataclass_kwargs(
         TrainConfig,
         _require_mapping(payload.get("training", {}), context="training"),
@@ -166,6 +169,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
         model=dict(model),
         training=TrainConfig(**training_kwargs),
         monitoring=monitoring,
+        inference=inference,
         datasets=(
             DatasetRunConfig(
                 h5_dir=data.h5_dir,
@@ -185,6 +189,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
 def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
     outputs = _build_dataclass(OutputRunConfig, payload.get("outputs"), context="outputs")
     monitoring = _build_monitoring_run_config(payload.get("monitoring"))
+    inference = _build_inference_run_config(payload.get("inference"))
     dataset_payloads = payload.get("datasets")
     if not isinstance(dataset_payloads, list) or not dataset_payloads:
         raise ValueError("'datasets' section must be a non-empty list.")
@@ -215,6 +220,7 @@ def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
         model=model,
         training=TrainConfig(**training_kwargs),
         monitoring=monitoring,
+        inference=inference,
         outputs=outputs,
         datasets=datasets,
         schema="classified",
@@ -236,6 +242,7 @@ def run_config_to_dict(config: RunConfig) -> Dict[str, Any]:
                 "training": asdict(config.training),
             },
             "monitoring": asdict(config.monitoring),
+            "inference": asdict(config.inference) if config.inference is not None else None,
         }
     return {
         "data": asdict(config.data),
@@ -243,6 +250,7 @@ def run_config_to_dict(config: RunConfig) -> Dict[str, Any]:
         "model": dict(config.model),
         "training": asdict(config.training),
         "monitoring": asdict(config.monitoring),
+        "inference": asdict(config.inference) if config.inference is not None else None,
     }
 
 
@@ -305,6 +313,14 @@ def _build_monitoring_run_config(value) -> MonitoringRunConfig:
     mapping = _require_mapping(value, context="monitoring")
     kwargs = _filter_dataclass_kwargs(MonitoringRunConfig, mapping, context="monitoring")
     return MonitoringRunConfig(**kwargs)
+
+
+def _build_inference_run_config(value) -> Optional[InferenceRunConfig]:
+    if value is None:
+        return None
+    mapping = _require_mapping(value, context="inference")
+    kwargs = _filter_dataclass_kwargs(InferenceRunConfig, mapping, context="inference")
+    return InferenceRunConfig(**kwargs)
 
 
 def _require_mapping(value, *, context: str) -> Dict[str, Any]:

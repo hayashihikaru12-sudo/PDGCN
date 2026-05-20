@@ -74,8 +74,8 @@ class LossMonitor:
 class TrainingProcessMonitor:
     """Write training monitor records and snapshots to a single HDF5 file.
 
-    Training deliberately does not create PNG figures. Use
-    ``python -m training.visualize_monitor --monitor-data ...`` for plotting.
+    Training deliberately does not create visualization files. Use
+    ``python -m training.visualize_monitor --monitor-data ...`` to export VTK files.
     """
 
     def __init__(
@@ -229,6 +229,7 @@ def _write_snapshot(parent_group, group_name: str, snapshot, *, epoch: int, slic
     coords = np.asarray(snapshot["coords"], dtype=np.float32)
     residual = np.asarray(snapshot["residual"], dtype=np.float32).reshape(-1)
     temperature = np.asarray(snapshot["temperature"], dtype=np.float32).reshape(-1)
+    edge_index = snapshot.get("edge_index")
     if coords.ndim != 2 or coords.shape[1] != 3:
         raise ValueError(f"snapshot coords must have shape [N, 3], got {coords.shape}.")
     if residual.shape[0] != coords.shape[0] or temperature.shape[0] != coords.shape[0]:
@@ -237,6 +238,13 @@ def _write_snapshot(parent_group, group_name: str, snapshot, *, epoch: int, slic
     _create_array_dataset(group, "coords", coords)
     _create_array_dataset(group, "residual", residual)
     _create_array_dataset(group, "temperature", temperature)
+    if edge_index is not None:
+        edge_index = np.asarray(edge_index, dtype=np.int64)
+        if edge_index.ndim != 2 or 2 not in edge_index.shape:
+            raise ValueError(f"snapshot edge_index must have shape [2, E] or [E, 2], got {edge_index.shape}.")
+        if edge_index.shape[0] != 2:
+            edge_index = edge_index.T
+        _create_array_dataset(group, "edge_index", edge_index)
 
 
 def _create_array_dataset(group, name: str, values: np.ndarray):

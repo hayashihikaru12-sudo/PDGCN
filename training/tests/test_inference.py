@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch_geometric.data import Data
 
 from data import ScaleParams
+from inference import rollout_multilayer_fdm
 from models import PDGCNConfig
 from training import rollout
 
@@ -110,6 +111,49 @@ class InferenceTests(unittest.TestCase):
 
         self.assertTrue(torch.allclose(result["temperature_star"][0], torch.full((2, 1), 2.0)))
         self.assertTrue(torch.allclose(result["temperature"][0], torch.full((2, 1), 320.0)))
+
+    def test_multilayer_rollout_couples_pdgcn_and_fdm(self):
+        """验证多层推理会叠加 PD-GCN 增量、FDM 层间传导并钳制底层。"""
+
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        result = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+        )
+
+        expected = torch.tensor(
+            [
+                [
+                    [[2.90], [2.90]],
+                    [[1.10], [1.10]],
+                    [[0.00], [0.00]],
+                ]
+            ]
+        )
+        self.assertEqual(tuple(result.shape), (1, 3, 2, 1))
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
+    def test_multilayer_rollout_rejects_unstable_fdm_by_default(self):
+        """验证显式 FDM 系数超过稳定阈值时默认报错。"""
+
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+        model.config = PDGCNConfig(inverse_pe=1.0, k_ratio=1.0, dt_star=1.0)
+
+        with self.assertRaisesRegex(ValueError, "FDM coefficient"):
+            rollout_multilayer_fdm(
+                model,
+                make_graph(),
+                1,
+                scale_params,
+                num_layers=2,
+                layer_spacing=1.0,
+            )
 
 
 if __name__ == "__main__":

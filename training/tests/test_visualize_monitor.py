@@ -1,28 +1,33 @@
-import shutil
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 import h5py
 import numpy as np
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from training.visualize_monitor import main as visualize_main
 
 
 class VisualizeMonitorTests(unittest.TestCase):
     def setUp(self):
-        self.root = Path("training/tests/_tmp_visualize_monitor")
-        if self.root.exists():
-            shutil.rmtree(self.root)
-        self.root.mkdir(parents=True)
+        self._tmpdir = tempfile.TemporaryDirectory(
+            prefix="_tmp_visualize_monitor_",
+            dir=Path(__file__).resolve().parent,
+        )
+        self.root = Path(self._tmpdir.name)
 
     def tearDown(self):
-        if self.root.exists():
-            shutil.rmtree(self.root)
+        self._tmpdir.cleanup()
 
-    def test_visualize_monitor_renders_aggregated_snapshot_without_history_json(self):
+    def test_visualize_monitor_exports_vtk_without_history_json(self):
         monitor_path = self.root / "metrics" / "monitor_data.h5"
-        output_dir = self.root / "figures"
-        _make_monitor_h5(monitor_path, output_dir, node_count=60000)
+        output_dir = self.root / "vtk"
+        _make_monitor_h5(monitor_path, self.root / "figures", node_count=60000)
 
         result = visualize_main(
             [
@@ -30,31 +35,31 @@ class VisualizeMonitorTests(unittest.TestCase):
                 str(monitor_path),
                 "--output-dir",
                 str(output_dir),
-                "--grid-resolution",
-                "96",
-                "--projection",
-                "xy",
             ]
         )
 
         self.assertEqual(result, 0)
         for relative_path in (
-            "loss_curve.png",
-            "temperature_stats.png",
-            "residual_epoch_0001_frame_0007.png",
-            "temperature_epoch_0001_frame_0007.png",
-            "first_slice_loss_curve.png",
-            "first_slice/residual_epoch_0001_after_slice_001.png",
-            "first_slice/temperature_epoch_0001_after_slice_001.png",
+            "epoch_temperature_residual_epoch_0001_frame_0007.vtk",
+            "first_slice_temperature_residual_epoch_0001_after_slice_001.vtk",
         ):
             path = output_dir / relative_path
             self.assertTrue(path.exists(), relative_path)
             self.assertGreater(path.stat().st_size, 0, relative_path)
+            text = path.read_text(encoding="ascii")
+            self.assertIn("SCALARS temperature float 1", text)
+            self.assertIn("SCALARS residual float 1", text)
 
-    def test_visualize_monitor_uses_streaming_aggregation_for_large_snapshot(self):
+    def test_visualize_monitor_exports_point_cloud_when_edge_index_is_missing(self):
         monitor_path = self.root / "large" / "metrics" / "monitor_data.h5"
-        output_dir = self.root / "large" / "figures"
-        _make_monitor_h5(monitor_path, output_dir, node_count=300001, include_slice=False)
+        output_dir = self.root / "large" / "vtk"
+        _make_monitor_h5(
+            monitor_path,
+            self.root / "large" / "figures",
+            node_count=300001,
+            include_slice=False,
+            include_edges=False,
+        )
 
         result = visualize_main(
             [
@@ -62,17 +67,16 @@ class VisualizeMonitorTests(unittest.TestCase):
                 str(monitor_path),
                 "--output-dir",
                 str(output_dir),
-                "--grid-resolution",
-                "64",
             ]
         )
 
         self.assertEqual(result, 0)
-        self.assertTrue((output_dir / "residual_epoch_0001_frame_0007.png").exists())
-        self.assertTrue((output_dir / "temperature_epoch_0001_frame_0007.png").exists())
+        output_path = output_dir / "epoch_temperature_residual_epoch_0001_frame_0007.vtk"
+        self.assertTrue(output_path.exists())
+        self.assertIn("VERTICES 300001 600002", output_path.read_text(encoding="ascii"))
 
 
-def _make_monitor_h5(path: Path, output_dir: Path, *, node_count: int, include_slice: bool = True):
+def _make_monitor_h5(path: Path, output_dir: Path, *, node_count: int, include_slice: bool = True, include_edges: bool = True):
     path.parent.mkdir(parents=True, exist_ok=True)
     coords = np.zeros((node_count, 3), dtype=np.float32)
     coords[:, 0] = np.linspace(0.0, 1.0, node_count, dtype=np.float32)
@@ -107,13 +111,29 @@ def _make_monitor_h5(path: Path, output_dir: Path, *, node_count: int, include_s
             slice_metrics.create_dataset(name, data=np.array([300.0], dtype=np.float64))
 
         epoch_snapshots = h5_file.create_group("epoch_snapshots")
-        _write_snapshot(epoch_snapshots, "epoch_0001", coords, residual, temperature, frame_index=7)
+        _write_snapshot(
+            epoch_snapshots,
+            "epoch_0001",
+            coords,
+            residual,
+            temperature,
+            frame_index=7,
+            include_edges=include_edges,
+        )
         h5_file.create_group("slice_snapshots")
         if include_slice:
-            _write_snapshot(h5_file["slice_snapshots"], "epoch_0001_slice_0001", coords, residual, temperature, frame_index=7)
+            _write_snapshot(
+                h5_file["slice_snapshots"],
+                "epoch_0001_slice_0001",
+                coords,
+                residual,
+                temperature,
+                frame_index=7,
+                include_edges=include_edges,
+            )
 
 
-def _write_snapshot(parent, name, coords, residual, temperature, *, frame_index: int):
+def _write_snapshot(parent, name, coords, residual, temperature, *, frame_index: int, include_edges: bool = True):
     group = parent.create_group(name)
     group.attrs["epoch"] = 0
     group.attrs["slice_index"] = 0
@@ -122,6 +142,14 @@ def _write_snapshot(parent, name, coords, residual, temperature, *, frame_index:
     group.create_dataset("coords", data=coords, chunks=(min(len(coords), 65536), 3), compression="gzip")
     group.create_dataset("residual", data=residual, chunks=(min(len(residual), 65536),), compression="gzip")
     group.create_dataset("temperature", data=temperature, chunks=(min(len(temperature), 65536),), compression="gzip")
+    if include_edges:
+        edge_index = np.vstack(
+            [
+                np.arange(max(len(coords) - 1, 0), dtype=np.int64),
+                np.arange(1, len(coords), dtype=np.int64),
+            ]
+        )
+        group.create_dataset("edge_index", data=edge_index, chunks=(2, min(edge_index.shape[1], 65536)), compression="gzip")
 
 
 if __name__ == "__main__":

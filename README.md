@@ -77,13 +77,41 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe -m pytest
 D:\ProgramData\CondaEnv\PIGNN\python.exe training\train_entry.py --config configs\pdgcn_train.example.json
 ```
 
+使用训练后的 checkpoint 执行多层 PD-GCN + 1D FDM 推理：
+
+```powershell
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_train.example.json
+```
+
 默认输出：
 
 ```text
 runs/pdgcn/checkpoint.pt
 runs/pdgcn/history.json
 runs/pdgcn/cache/case_1/
+runs/pdgcn/multilayer_prediction.h5
+runs/pdgcn/multilayer_prediction_vtk/
 ```
+
+多层推理输出 HDF5 包含：
+
+- `temperature`：真实温度，形状 `[time, layer, node, 1]`。
+- `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
+- `metadata`：JSON 字符串数据集，同时写入根属性副本；记录 checkpoint、源 HDF5、层数、层间距、`dt_star`、FDM 系数和无量纲化参数。
+
+层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。默认仅顶层保留热源，下层热源置零。
+
+推理默认同时输出 ParaView 可读取的 legacy `.vtk` 文件，文件名形如
+`temperature_step_000000_layer_000.vtk`。VTK 使用曲面节点三维坐标和计算图 `edge_index`
+作为 `POINTS + LINES`，可在 ParaView 中用 `temperature` 或 `temperature_star` 着色。
+
+训练监控快照不再生成 PNG 热力图。需要查看单层曲面温度/残差时，运行：
+
+```powershell
+D:\ProgramData\CondaEnv\PIGNN\python.exe training\visualize_monitor.py --monitor-data runs\pdgcn\metrics\monitor_data.h5
+```
+
+该命令会导出 VTK 文件，默认位于 `runs/pdgcn/figures/vtk/`。
 
 ## 训练语义
 
@@ -102,7 +130,9 @@ configs/      训练配置示例与说明
 data/         HDF5 数据读取、SI 转换、无量纲化、特征构建、静态缓存
 models/       PDGCN 模型、编码器、处理器、解码器
 pde/          PDE residual、边界条件和物理损失
-training/     训练入口、TBPTT、推理、checkpoint、监控
+training/     训练入口、TBPTT、单层 rollout、checkpoint、监控和 VTK 快照导出
+inference/    独立多层 PD-GCN + 1D FDM 推理入口、HDF5/VTK 输出和单元测试
+visualization/ 通用 VTK 导出工具
 DesignPlan/   参考资料，只读
 PIGNN/        PIGNN 参考仓库，只读
 runs/         训练输出，不进入 Git

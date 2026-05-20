@@ -503,6 +503,7 @@ def _build_monitor_snapshot(graph, residual, temperature_star, scale_params: Sca
     return {
         "frame_index": int(frame_idx),
         "coords": graph.pos.detach().cpu().numpy(),
+        "edge_index": graph.edge_index.detach().cpu().numpy(),
         "residual": residual.detach().reshape(-1).cpu().numpy(),
         "temperature": temperature_from_dimensionless(temperature_star.detach(), scale_params).reshape(-1).cpu().numpy(),
     }
