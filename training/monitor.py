@@ -1,4 +1,5 @@
 import json
+import time
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,10 +44,14 @@ class LossMonitor:
         total_epochs: Optional[int] = None,
         history_path=None,
         print_fn: Callable[[str], None] = print,
+        clock: Callable[[], float] = time.perf_counter,
     ):
         self.total_epochs = int(total_epochs) if total_epochs is not None else None
         self.history_path = Path(history_path) if history_path is not None else None
         self.print_fn = print_fn
+        self.clock = clock
+        self.start_time = float(self.clock())
+        self.last_epoch_time = self.start_time
         self.records = []
 
     def __call__(self, epoch_record):
@@ -54,10 +59,14 @@ class LossMonitor:
         loss = float(epoch_record["loss"])
         self.records.append({"epoch": epoch, "loss": loss})
 
-        if self.total_epochs is None:
-            self.print_fn(f"Epoch {epoch + 1} - loss={loss:.8g}")
-        else:
-            self.print_fn(f"Epoch {epoch + 1}/{self.total_epochs} - loss={loss:.8g}")
+        self.print_fn(
+            _format_epoch_message(
+                epoch=epoch,
+                loss=loss,
+                total_epochs=self.total_epochs,
+                timing=self._tick_timing(epoch),
+            )
+        )
 
         self._write_history()
 
@@ -69,6 +78,19 @@ class LossMonitor:
             json.dumps({"history": self.records}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _tick_timing(self, epoch: int):
+        return _tick_timing(
+            clock=self.clock,
+            start_time=self.start_time,
+            last_epoch_time=self.last_epoch_time,
+            total_epochs=self.total_epochs,
+            epoch=epoch,
+            update_last_epoch_time=self._set_last_epoch_time,
+        )
+
+    def _set_last_epoch_time(self, value: float):
+        self.last_epoch_time = float(value)
 
 
 class TrainingProcessMonitor:
@@ -92,6 +114,7 @@ class TrainingProcessMonitor:
         model_config=None,
         train_config=None,
         print_fn: Callable[[str], None] = print,
+        clock: Callable[[], float] = time.perf_counter,
     ):
         if int(interval_epochs) <= 0:
             raise ValueError(f"interval_epochs must be positive, got {interval_epochs}.")
@@ -109,6 +132,9 @@ class TrainingProcessMonitor:
         self.model_config = _json_ready_value(_dataclass_or_value(model_config))
         self.train_config = _json_ready_value(_dataclass_or_value(train_config))
         self.print_fn = print_fn
+        self.clock = clock
+        self.start_time = float(self.clock())
+        self.last_epoch_time = self.start_time
         self.records = []
         self.slice_records = []
         self._initialize_hdf5()
@@ -119,10 +145,14 @@ class TrainingProcessMonitor:
 
         epoch = int(record["epoch"])
         loss = float(record.get("loss_total", record.get("loss", 0.0)))
-        if self.total_epochs is None:
-            self.print_fn(f"Epoch {epoch + 1} - loss={loss:.8g}")
-        else:
-            self.print_fn(f"Epoch {epoch + 1}/{self.total_epochs} - loss={loss:.8g}")
+        self.print_fn(
+            _format_epoch_message(
+                epoch=epoch,
+                loss=loss,
+                total_epochs=self.total_epochs,
+                timing=self._tick_timing(epoch),
+            )
+        )
 
         snapshot = (monitor_payload or {}).get("snapshot")
         with h5py.File(self.metrics_path, "a") as h5_file:
@@ -186,6 +216,59 @@ class TrainingProcessMonitor:
         payload = {"history": self.records, "slice_records": self.slice_records}
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
         self.history_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _tick_timing(self, epoch: int):
+        return _tick_timing(
+            clock=self.clock,
+            start_time=self.start_time,
+            last_epoch_time=self.last_epoch_time,
+            total_epochs=self.total_epochs,
+            epoch=epoch,
+            update_last_epoch_time=self._set_last_epoch_time,
+        )
+
+    def _set_last_epoch_time(self, value: float):
+        self.last_epoch_time = float(value)
+
+
+def _format_epoch_message(*, epoch: int, loss: float, total_epochs: Optional[int], timing):
+    if total_epochs is None:
+        prefix = f"Epoch {int(epoch) + 1}"
+    else:
+        prefix = f"Epoch {int(epoch) + 1}/{int(total_epochs)}"
+    parts = [
+        prefix,
+        f"loss={float(loss):.8g}",
+        f"epoch_time={_format_duration(timing['epoch_seconds'])}",
+        f"elapsed={_format_duration(timing['elapsed_seconds'])}",
+    ]
+    if timing.get("eta_seconds") is not None:
+        parts.append(f"eta={_format_duration(timing['eta_seconds'])}")
+    return " - ".join(parts)
+
+
+def _tick_timing(*, clock, start_time: float, last_epoch_time: float, total_epochs, epoch: int, update_last_epoch_time):
+    now = float(clock())
+    epoch_seconds = max(0.0, now - float(last_epoch_time))
+    elapsed_seconds = max(0.0, now - float(start_time))
+    update_last_epoch_time(now)
+    eta_seconds = None
+    if total_epochs is not None:
+        completed_epochs = max(int(epoch) + 1, 1)
+        remaining_epochs = max(int(total_epochs) - completed_epochs, 0)
+        eta_seconds = (elapsed_seconds / completed_epochs) * remaining_epochs
+    return {
+        "epoch_seconds": epoch_seconds,
+        "elapsed_seconds": elapsed_seconds,
+        "eta_seconds": eta_seconds,
+    }
+
+
+def _format_duration(seconds: float):
+    total_seconds = max(0, int(round(float(seconds))))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def _create_metric_group(h5_file, group_name: str, fields):
