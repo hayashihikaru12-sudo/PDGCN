@@ -31,7 +31,7 @@
         "Q0": 3100000000.0,
         "K0": 5.9,
         "rho": 1575,
-        "Cp": 1300.0,
+        "Cp": 1600.0,
         "heat_source_effective_thickness": 0.00015
       }
     }
@@ -45,9 +45,9 @@
       "layer_norm": true
     },
     "physics_loss": {
-      "k_ratio": 0.05,
+      "k_ratio": 0.12,
       "lambda_outflow": 1.0,
-      "thermal_loss_beta": 0.3,
+      "thermal_loss_beta": 10.0,
       "thermal_loss_base_temperature_star": 0.0,
       "residual_time_scheme": "explicit"
     },

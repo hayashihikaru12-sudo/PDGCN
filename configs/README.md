@@ -1,115 +1,289 @@
 # `pdgcn_train.example.json` 配置说明
 
-`pdgcn_train.example.json` 是 PDGCN 固定拓扑训练入口的示例配置。运行命令：
+`configs/pdgcn_train.example.json` 是 PDGCN 训练、监控和多层推理共用的示例配置文件。训练入口命令为：
 
 ```powershell
 D:\ProgramData\CondaEnv\PIGNN\python.exe training\train_entry.py --config configs\pdgcn_train.example.json
 ```
 
-配置中的相对路径均以配置文件所在目录 `configs/` 为基准解析。
-
-## 顶层结构
-
-| 参数 | 类型 | 含义 |
-| --- | --- | --- |
-| `outputs` | object | 训练产物输出位置，包含 checkpoint 和训练历史。 |
-| `datasets` | array | 训练数据集列表。当前训练入口一次运行一个数据集；一个目录可包含多个 `.h5` 切片。 |
-| `hyperparameters` | object | 模型、物理损失和训练超参数。 |
-| `inference` | object | 可选多层 PD-GCN + 1D FDM 推理配置。 |
-
-## `datasets[]`
-
-| 参数 | 类型 | 示例 | 含义 |
-| --- | --- | --- | --- |
-| `name` | string | `case_1` | 数据集名称。 |
-| `h5_dir` | string | `../HDF5_outputs` | 训练输入 HDF5 目录。目录内 `.h5`/`.hdf5` 文件按自然升序遍历。 |
-| `cache_dir` | string | `../runs/pdgcn/cache/case_1` | 共享静态缓存目录。缓存缺失时由排序后的第一个 HDF5 文件生成。 |
-| `scale` | object | 见下节 | 无量纲化和 PDE 系数派生所需的 SI 标尺参数。 |
-| `scan_velocity` | number 或 null | `null` | 可选真实扫描速度，单位 `m/s`。若设置，必须与 HDF5 根属性 `velocity_speed` 转换到 SI 后一致。 |
-
-静态缓存只保存拓扑、边界节点、节点类型、节点数、边数和特征维度等静态信息。动态帧数据始终从各 HDF5 切片文件读取，并在读取阶段转换为 SI。
-
-## 单位约定
-
-HDF5 原始数据固定使用生成程序的原生单位：
-
-| HDF5 字段 | 原始单位 | 进入模型/PDE 前的转换 |
-| --- | --- | --- |
-| `dynamic/xyz` | `mm` | 乘 `1e-3` 转为 `m` |
-| `dynamic/fiber` | 无量纲方向向量 | 代码内归一化 |
-| `dynamic/Q` | 面热流 `W/mm^2` | 乘 `1e6` 转为 `W/m^2`，再除以 `heat_source_effective_thickness` 得到 `W/m^3` |
-| `path/heat_center_step_distance` | `mm` | 乘 `1e-3` 转为 `m` |
-| `path/slice_path_length` | `mm` | 乘 `1e-3` 转为 `m` |
-| 根属性 `velocity_speed` | `mm/s` | 乘 `1e-3` 转为 `m/s` |
-
-`datasets[].scale` 必须按 SI 填写。PDE loss 和无量纲化不接触任何 HDF5 原始 mm 数值。
-
-| 参数 | 含义 | 单位 |
-| --- | --- | --- |
-| `L0` | 特征长度 | `m` |
-| `v0` | 特征扫描速度 | `m/s` |
-| `T_amb` | 环境温度基准 | `°C` |
-| `delta_T0` | 特征温升；数值上与 K 温差相同 | `°C` |
-| `Q0` | 特征体积热源强度 | `W/m^3` |
-| `K0` | 特征导热系数 | `W/(m·°C)` |
-| `rho` | 密度 | `kg/m^3` |
-| `Cp` | 比热容 | `J/(kg·°C)` |
-| `heat_source_effective_thickness` | 面热流等效作用厚度，用于 `W/mm^2 -> W/m^3` | `m` |
-| `eps` | 可选数值下界，默认 `1e-12` | 无量纲 |
-
-`heat_source_effective_thickness` 是必填工况参数，示例中的 `0.001 m` 仅用于演示，训练前必须替换为实际铺放热源等效作用厚度。
-
-不建议手动配置 `inverse_pe`、`pi_q` 和 `dt_star`。训练入口会根据 `scale` 与首个 HDF5 文件中的路径步长自动派生这些量，即使写入模型配置也会被覆盖。
-
-## 训练语义
-
-- 目录内切片按文件名自然升序训练，保证顺序可复现。
-- 每个 HDF5 文件是独立序列，文件之间不继承温度状态。
-- 每个文件开始时重新初始化温度；若 `warmup_steps > 0`，使用当前最新模型参数连续前向传播 warmup 帧，不反向传播、不更新参数。
-- 模型参数和优化器状态在同一次 run 内持续更新。
-- epoch loss 是该 epoch 内所有文件所有 TBPTT 窗口损失的平均值。
-
-## 常用训练参数
-
-| 参数 | 含义 |
-| --- | --- |
-| `lr` | Adam 学习率。 |
-| `epochs` | 最大训练轮数。 |
-| `tbptt_window` | TBPTT 时间窗口长度。 |
-| `warmup_steps` | 每个文件开头的模型伪时间 warmup 步数。 |
-| `grad_clip_norm` | 梯度裁剪阈值，`null` 表示不裁剪。 |
-| `loss_threshold` | 提前停止阈值，`null` 表示不按 loss 提前停止。 |
-| `device` | 训练设备，`null` 表示自动选择。 |
-
-## 多层推理参数
-
-运行命令：
+多层推理入口命令为：
 
 ```powershell
 D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_train.example.json
 ```
 
-| 参数 | 含义 |
-| --- | --- |
-| `num_layers` | 多层堆叠层数，必须 `>= 2`。 |
-| `layer_spacing` | 层间距，单位 `m`。内部转换为 `layer_spacing / L0`。 |
-| `output_path` | 输出 HDF5 路径，保存 `temperature`、`temperature_star` 和 `metadata`。 |
-| `dataset_index` | 使用 `datasets[]` 中的哪个数据集，默认 `0`。 |
-| `h5_path` | 可选输入 HDF5 文件；为 `null` 时使用数据目录中自然升序的第一个文件。 |
-| `steps` | 可选推理步数；为 `null` 时使用输入 HDF5 的全部帧。 |
-| `warmup_steps` | 可选推理 warmup 步数；为 `null` 时沿用训练配置。 |
-| `bottom_temperature_star` | 底层恒温边界的无量纲温度，默认 `0.0`。 |
-| `top_heat_source_only` | 是否仅顶层保留热源，默认 `true`。 |
-| `allow_unstable_fdm` | 是否允许显式 FDM 系数 `C_n > 0.5`，默认 `false`。 |
-| `write_vtk` | 是否同时写出 ParaView legacy `.vtk` 文件，默认 `true`。 |
-| `vtk_output_dir` | 可选 VTK 输出目录；为 `null` 时使用 `<output_path stem>_vtk/`。 |
+配置文件中的相对路径均以配置文件所在目录 `configs/` 为基准解析。例如 `../case_1_HDF` 会解析到仓库根目录下的 `case_1_HDF`。
 
-VTK 文件按时间步和层输出，例如 `temperature_step_000000_layer_000.vtk`。文件使用曲面节点三维坐标和计算图 `edge_index` 写为 `POINTS + LINES`，点标量包含 `temperature` 和 `temperature_star`。
+## 顶层结构
 
-FDM 系数定义为：
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `monitoring` | object | 训练过程监控配置，控制是否记录 loss、温度场快照和 VTK 可视化数据。 |
+| `inference` | object | 多层 PDGCN + 厚度方向 1D FDM 推理配置。训练时不会直接使用这些参数。 |
+| `outputs` | object | 训练产物输出路径，包括 checkpoint 和 history JSON。 |
+| `datasets` | array | 训练数据集列表。当前训练入口一次只支持使用第一个数据集，但一个数据集目录内可以包含多个 `.h5`/`.hdf5` 切片文件。 |
+| `hyperparameters` | object | 模型结构、物理损失和训练超参数。 |
+
+## `monitoring`
+
+示例：
+
+```json
+"monitoring": { "enabled": true }
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `true` | 是否启用训练监控。启用后会写入 `monitor_data.h5`，并按间隔保存温度和残差快照。 |
+| `interval_epochs` | integer | `10` | 监控快照记录间隔。示例文件未显式写出时使用默认值。 |
+| `temperature_frame_index` | integer 或 `null` | `null` | 指定用于温度场快照的帧索引；为 `null` 时使用首个 HDF5 文件的中间帧。 |
+| `figures_dir` | string 或 `null` | `null` | 监控图像输出目录；为 `null` 时使用 `history_path` 同级的 `figures/`。 |
+| `metrics_path` | string 或 `null` | `null` | 监控 HDF5 文件路径；为 `null` 时使用 `history_path` 同级的 `metrics/monitor_data.h5`。 |
+
+## `outputs`
+
+示例：
+
+```json
+"outputs": {
+  "checkpoint_path": "../runs/pdgcn/checkpoint.pt",
+  "history_path": "../runs/pdgcn/history.json"
+}
+```
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `checkpoint_path` | string | 模型权重、优化器状态和元数据保存路径。 |
+| `history_path` | string 或 `null` | 训练历史 JSON 保存路径。为 `null` 时会使用 checkpoint 路径派生。 |
+
+## `datasets[]`
+
+示例：
+
+```json
+"datasets": [
+  {
+    "name": "case_1",
+    "h5_dir": "../case_1_HDF",
+    "cache_dir": "../runs/pdgcn/cache/case_1",
+    "scale": {
+      "L0": 0.051764991760253906,
+      "v0": 0.08,
+      "T_amb": 120,
+      "delta_T0": 230,
+      "Q0": 3100000000.0,
+      "K0": 5.9,
+      "rho": 1575,
+      "Cp": 1300.0,
+      "heat_source_effective_thickness": 0.00015
+    }
+  }
+]
+```
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `name` | string | 数据集名称，仅用于记录和区分实验。 |
+| `h5_dir` | string | 训练输入 HDF5 目录。目录内 `.h5`/`.hdf5` 文件按自然升序遍历，每个文件作为一个独立序列训练。 |
+| `cache_dir` | string | 静态拓扑缓存目录。缓存不存在时，训练入口会用目录内排序后的第一个 HDF5 文件生成缓存。 |
+| `scale` | object | 无量纲化和 PDE 系数派生所需的物理标尺参数。详见下一节。 |
+| `scan_velocity` | number 或 `null` | 可选真实扫描速度，单位 `m/s`。若设置，必须与 HDF5 根属性 `velocity_speed` 转换到 SI 后一致。示例文件未写出该字段时使用 HDF5 属性。 |
+
+静态缓存只保存拓扑、边界节点、节点类型、节点数、边数和特征维度等静态信息。动态帧数据始终从各 HDF5 文件读取，并在读取阶段转换为 SI 单位。
+
+## `datasets[].scale`
+
+`scale` 必须使用 SI 单位。HDF5 原始数据使用生成程序的原生单位，进入模型和 PDE 前会做如下转换：
+
+| HDF5 字段 | 原始单位 | 进入模型/PDE 前的转换 |
+| --- | --- | --- |
+| `dynamic/xyz` | `mm` | 乘 `1e-3` 转为 `m`，再除以 `L0` 得到无量纲坐标。 |
+| `dynamic/fiber` | 无量纲方向向量 | 在代码内归一化。 |
+| `dynamic/Q` | 面热流 `W/mm^2` | 乘 `1e6` 转为 `W/m^2`，再除以 `heat_source_effective_thickness` 得到体热源 `W/m^3`。 |
+| `path/heat_center_step_distance` | `mm` | 乘 `1e-3` 转为 `m`，用于自动派生 `dt` 和 `dt_star`。 |
+| `path/slice_path_length` | `mm` | 乘 `1e-3` 转为 `m`，用于校验路径长度。 |
+| 根属性 `velocity_speed` | `mm/s` | 乘 `1e-3` 转为 `m/s`。 |
+
+| 参数 | 单位 | 说明 |
+| --- | --- | --- |
+| `L0` | `m` | 特征长度。坐标、边位移和边距离都会除以该值。 |
+| `v0` | `m/s` | 特征速度。扫描速度会除以该值进入模型和 PDE。 |
+| `T_amb` | `degC` | 温度基准。无量纲温度定义为 `(T - T_amb) / delta_T0`。 |
+| `delta_T0` | `degC` 或 `K` 温差 | 特征温升。只作为温差尺度使用，数值上摄氏温差和开尔文温差相同。 |
+| `Q0` | `W/m^3` | 特征体热源强度。`dynamic/Q` 转为 `W/m^3` 后会除以该值。 |
+| `K0` | `W/(m·K)` | 特征导热系数，通常取纤维方向主导热系数。用于派生 `inverse_pe`。 |
+| `rho` | `kg/m^3` | 密度。用于派生 PDE 热扩散和热源系数。 |
+| `Cp` | `J/(kg·K)` | 比热容。用于派生 PDE 热扩散和热源系数。 |
+| `heat_source_effective_thickness` | `m` | 面热流转体热源的等效作用厚度。该值越小，等效体热源越强。 |
+| `eps` | 无量纲 | 可选数值下界，默认 `1e-12`，用于距离、归一化和除法稳定性。 |
+
+训练入口会根据 `scale` 和首个 HDF5 文件自动派生：
+
+```text
+dt = heat_center_step_distance / velocity_speed
+dt_star = dt / (L0 / v0)
+inverse_pe = K0 / (rho * Cp * v0 * L0)
+pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
+```
+
+不建议在配置中手动写入 `inverse_pe`、`pi_q` 或 `dt_star`。即使写入模型配置，也会被训练入口自动覆盖。
+
+## `hyperparameters.model`
+
+示例：
+
+```json
+"model": {
+  "hidden_size": 64,
+  "message_passing_num": 3,
+  "gamma_upwind": 0.8,
+  "dropout": 0.0,
+  "layer_norm": true
+}
+```
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `hidden_size` | integer | Encoder、Processor 和 Decoder 的隐空间维度。值越大表达能力越强，但显存和训练时间也会增加。 |
+| `message_passing_num` | integer | 消息传递层数。增加层数可以扩大图上的信息传播范围，但也更容易过平滑或训练变慢。 |
+| `gamma_upwind` | number | 上风项权重相关参数，用于加强流向方向上的信息传播偏置。 |
+| `dropout` | number | MLP dropout 比例。当前示例为 `0.0`，表示不使用 dropout。 |
+| `layer_norm` | boolean | 是否在 MLP 中使用 LayerNorm。通常有助于稳定训练。 |
+
+模型默认输入输出约定：
+
+| 项 | 维度 | 说明 |
+| --- | --- | --- |
+| 节点特征 | `8` | `[x*, y*, z*, fx, fy, fz, T*, Q*]`。 |
+| 边特征 | `7` | `[dx*, dy*, dz*, d*, cos_theta, cos_phi, cos_phi_sq]`。 |
+| 全局特征 | `1` | 无量纲扫描速度 `v_scan / v0`。 |
+| 模型输出 | `1` | 无量纲温度增量 `delta_T*`。 |
+
+## `hyperparameters.physics_loss`
+
+示例：
+
+```json
+"physics_loss": {
+  "k_ratio": 0.05,
+  "lambda_outflow": 1.0,
+  "thermal_loss_beta": 0.3,
+  "thermal_loss_base_temperature_star": 0.0,
+  "residual_time_scheme": "explicit"
+}
+```
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `k_ratio` | number | 横向或厚度方向导热系数与主导热系数的比值，即 `K_perp / K_parallel`。示例 `0.05` 表示横向导热明显弱于纤维方向。 |
+| `lambda_outflow` | number | 出流边界 Neumann 软约束损失权重。越大越强调 downwind 边界法向温度梯度接近零。 |
+| `thermal_loss_beta` | number | 单层训练中的等效热耗散系数，作用项为 `beta * (T* - T_base*)`。值越大，温度越容易被拉回基底温度。 |
+| `thermal_loss_base_temperature_star` | number | 热耗散基底温度的无量纲值。`0.0` 对应真实温度 `T_amb`。 |
+| `residual_time_scheme` | string | PDE 空间项和热耗散项的时间离散方式。可选 `"explicit"` 或 `"backward"`。 |
+
+当前总损失为：
+
+```text
+loss_total = loss_pde + lambda_outflow * loss_outflow
+```
+
+其中 `loss_beta` 会被记录到训练历史和监控文件中，但当前不作为独立项直接加到 `loss_total`。`thermal_loss_beta` 已经通过 PDE residual 进入 `loss_pde`。
+
+PDE residual 的主要形式为：
+
+```text
+residual =
+  (T_next* - T_current*) / dt_star
+  + convection
+  - inverse_pe * diffusion
+  - pi_q * Q*
+  + beta * (T_eval* - T_base*)
+```
+
+当 `residual_time_scheme = "explicit"` 时，`convection`、`diffusion` 和热耗散项使用 `T_current*` 评估；当为 `"backward"` 时使用 `T_next*` 评估，通常更偏稳定。
+
+## `hyperparameters.training`
+
+示例：
+
+```json
+"training": {
+  "lr": 0.0001,
+  "epochs": 1000,
+  "tbptt_window": 5,
+  "warmup_steps": 30,
+  "grad_clip_norm": null,
+  "loss_threshold": 0.02,
+  "device": null
+}
+```
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `lr` | number | Adam 学习率。 |
+| `epochs` | integer | 最大训练轮数。 |
+| `tbptt_window` | integer | 截断反向传播的时间窗口长度。窗口越大，跨时间步梯度越完整，但显存消耗越高。 |
+| `warmup_steps` | integer | 每个 HDF5 文件开始训练前的伪时间 warmup 步数。`0` 表示直接从冷态初温开始。 |
+| `grad_clip_norm` | number 或 `null` | 梯度裁剪阈值。为 `null` 时不裁剪。 |
+| `loss_threshold` | number 或 `null` | 提前停止阈值。epoch 平均 loss 低于该值时停止训练；为 `null` 时禁用该规则。 |
+| `device` | string 或 `null` | 训练设备。为 `null` 时自动选择 CUDA，若 CUDA 不可用则使用 CPU。也可显式写 `"cpu"` 或 `"cuda"`。 |
+
+训练语义：
+
+- 一个 HDF5 文件是一条独立序列，文件之间不继承温度状态。
+- 同一 HDF5 文件内，温度状态会随 frame 自回归推进。
+- 每个文件开始时先初始化温度；若 `warmup_steps > 0`，会用当前模型前向传播若干步生成伪初温，不反向传播、不更新参数。
+- epoch loss 是该 epoch 内所有文件、所有 TBPTT 窗口损失的平均值。
+
+## `inference`
+
+示例：
+
+```json
+"inference": {
+  "num_layers": 4,
+  "layer_spacing": 0.00015,
+  "output_path": "../runs/pdgcn/multilayer_prediction.h5",
+  "dataset_index": 0,
+  "h5_path": null,
+  "steps": null,
+  "warmup_steps": null,
+  "bottom_temperature_star": 0.0,
+  "top_heat_source_only": true,
+  "allow_unstable_fdm": false,
+  "write_vtk": true,
+  "vtk_output_dir": null
+}
+```
+
+| 参数 | 类型 | 说明 |
+| --- | --- | --- |
+| `num_layers` | integer | 多层堆叠层数，必须大于等于 `2`。 |
+| `layer_spacing` | number | 层间距，单位 `m`。内部会转为 `layer_spacing / L0`。 |
+| `output_path` | string | 多层推理输出 HDF5 路径。 |
+| `dataset_index` | integer | 使用 `datasets[]` 中的第几个数据集，示例为 `0`。 |
+| `h5_path` | string 或 `null` | 可选输入 HDF5 文件。为 `null` 时使用所选数据集目录中自然升序的第一个文件。 |
+| `steps` | integer 或 `null` | 推理步数。为 `null` 时使用输入 HDF5 的全部帧。 |
+| `warmup_steps` | integer 或 `null` | 推理前 warmup 步数。为 `null` 时沿用训练配置中的 `warmup_steps`。 |
+| `bottom_temperature_star` | number | 底层恒温边界的无量纲温度。`0.0` 对应真实温度 `T_amb`。 |
+| `top_heat_source_only` | boolean | 是否只在顶层保留热源。`true` 表示下方层不直接施加 `Q`。 |
+| `allow_unstable_fdm` | boolean | 是否允许显式 FDM 系数超过稳定性建议范围。通常保持 `false`。 |
+| `write_vtk` | boolean | 是否同步输出 ParaView legacy `.vtk` 文件。 |
+| `vtk_output_dir` | string 或 `null` | VTK 输出目录。为 `null` 时使用 `<output_path stem>_vtk/`。 |
+
+多层推理中厚度方向显式 FDM 系数为：
 
 ```text
 C_n = dt_star * inverse_pe * k_ratio / layer_spacing_star^2
+layer_spacing_star = layer_spacing / L0
 ```
 
-其中 `k_ratio = K_perp / K_parallel`，对应厚度方向法向导热能力。
+当 `allow_unstable_fdm = false` 且 `C_n` 超过稳定性限制时，推理入口会拒绝运行。
+
+## 调参注意事项
+
+- `Q0` 是热源无量纲化标尺，不是直接削弱真实热输入的旋钮。真实热输入主要由 HDF5 中的 `dynamic/Q`、`heat_source_effective_thickness`、`rho`、`Cp`、`dt` 和吸收率建模方式决定。
+- `heat_source_effective_thickness` 越小，`W/mm^2 -> W/m^3` 后的体热源越大。若温度明显偏高，应优先检查该值是否等于真实受热厚度或是否还需要乘以吸收率。
+- `thermal_loss_beta` 控制等效散热强度。单层训练温度偏高时，可以尝试增大该值，或改用更明确的边界换热/层间导热模型。
+- `warmup_steps` 会在每个 HDF5 文件开始时用当前模型生成伪初温。局部窗口热源固定时，较大的 warmup 可能显著抬高初始温度。
+- `residual_time_scheme = "backward"` 通常比 `"explicit"` 更稳定，但训练代价和收敛行为可能不同，需要结合监控结果判断。
