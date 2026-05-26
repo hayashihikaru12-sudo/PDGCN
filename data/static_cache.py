@@ -14,6 +14,7 @@ from .hdf5_units import (
     resolve_heat_source_effective_thickness,
     velocity_mm_per_s_to_m_per_s,
 )
+from .velocity import resolve_velocity_direction_local
 
 
 STATIC_FILE = "static.pt"
@@ -44,6 +45,7 @@ def build_static_cache(
             h5_path,
             h5_file["dynamic/xyz"].shape,
             h5_file["dynamic/fiber"].shape,
+            h5_file["dynamic/normal"].shape,
             h5_file["dynamic/Q"].shape,
         )
 
@@ -74,18 +76,36 @@ def build_static_cache(
         "node_feature_size": 8,
         "edge_feature_size": 7,
         "global_size": 1,
-        "dynamic_node_base_size": 7,
-        "dynamic_node_base_layout": ["x", "y", "z", "fx", "fy", "fz", "Q"],
+        "dynamic_node_base_size": 13,
+        "dynamic_node_base_layout": [
+            "x",
+            "y",
+            "z",
+            "fx",
+            "fy",
+            "fz",
+            "nx",
+            "ny",
+            "nz",
+            "vx",
+            "vy",
+            "vz",
+            "Q",
+        ],
         "global_layout": ["scan_velocity"],
         "source_h5": str(h5_path),
         "source_num_frames": int(num_frames),
         "hdf5_native_units": {
             "dynamic/xyz": "mm",
+            "dynamic/normal": "unit vector",
             "dynamic/Q": "W/mm^2",
+            "velocity_direction_local": "unit vector",
             "velocity_speed": "mm/s",
         },
         "pipeline_units": {
             "coordinates": "m",
+            "normal": "unit vector",
+            "velocity_direction": "unit vector projected to node tangent plane",
             "heat_source": "W/m^3",
             "scan_velocity": "m/s",
         },
@@ -119,7 +139,7 @@ class HDF5FrameReader:
         try:
             missing = [
                 key
-                for key in ("dynamic/xyz", "dynamic/fiber", "dynamic/Q")
+                for key in ("dynamic/xyz", "dynamic/fiber", "dynamic/normal", "dynamic/Q")
                 if key not in self.h5_file
             ]
             if missing:
@@ -129,11 +149,13 @@ class HDF5FrameReader:
 
             self.xyz = self.h5_file["dynamic/xyz"]
             self.fiber = self.h5_file["dynamic/fiber"]
+            self.normal = self.h5_file["dynamic/normal"]
             self.q = self.h5_file["dynamic/Q"]
             self.num_frames, self.num_nodes = _validate_dynamic_shapes(
                 self.h5_path,
                 self.xyz.shape,
                 self.fiber.shape,
+                self.normal.shape,
                 self.q.shape,
             )
             if expected_num_nodes is not None and self.num_nodes != int(expected_num_nodes):
@@ -146,11 +168,12 @@ class HDF5FrameReader:
                 heat_source_effective_thickness=heat_source_effective_thickness,
             )
             self.velocity = _resolve_scan_velocity(self.h5_file, scan_velocity)
+            self.velocity_direction = resolve_velocity_direction_local(self.h5_file)
         except Exception:
             self.h5_file.close()
             raise
 
-        self.node_feature_size = 7
+        self.node_feature_size = 13
         self.global_size = 1
         self.pin_memory = bool(pin_memory and torch.cuda.is_available())
         self._node_buffer = _allocate_cpu_buffer(
@@ -167,7 +190,9 @@ class HDF5FrameReader:
         idx = int(frame_idx)
         self._node_array[:, 0:3] = length_mm_to_m(self.xyz[idx, :, :])
         self._node_array[:, 3:6] = self.fiber[idx, :, :]
-        self._node_array[:, 6:7] = heat_flux_w_per_mm2_to_volume_w_per_m3(
+        self._node_array[:, 6:9] = self.normal[idx, :, :]
+        self._node_array[:, 9:12] = self.velocity_direction.reshape(1, 3)
+        self._node_array[:, 12:13] = heat_flux_w_per_mm2_to_volume_w_per_m3(
             self.q[idx, :, :],
             self.heat_source_effective_thickness,
         )
@@ -177,6 +202,7 @@ class HDF5FrameReader:
     def close(self):
         self.xyz = None
         self.fiber = None
+        self.normal = None
         self.q = None
         self._node_array = None
         self._global_array = None
@@ -208,6 +234,7 @@ def _validate_static_h5(h5_file):
     required = (
         "dynamic/xyz",
         "dynamic/fiber",
+        "dynamic/normal",
         "dynamic/Q",
         "edge_index",
         "boundary_nodes/upwind",
@@ -219,12 +246,16 @@ def _validate_static_h5(h5_file):
         raise KeyError(f"Missing required HDF5 datasets: {missing}")
 
 
-def _validate_dynamic_shapes(h5_path, xyz_shape, fiber_shape, q_shape):
+def _validate_dynamic_shapes(h5_path, xyz_shape, fiber_shape, normal_shape, q_shape):
     if len(xyz_shape) != 3 or xyz_shape[2] != 3:
         raise ValueError(f"HDF5 file {h5_path} dynamic/xyz must have shape [T, N, 3], got {xyz_shape}.")
     if fiber_shape != xyz_shape:
         raise ValueError(
             f"HDF5 file {h5_path} dynamic/fiber shape {fiber_shape} must match dynamic/xyz shape {xyz_shape}."
+        )
+    if normal_shape != xyz_shape:
+        raise ValueError(
+            f"HDF5 file {h5_path} dynamic/normal shape {normal_shape} must match dynamic/xyz shape {xyz_shape}."
         )
     if len(q_shape) != 3 or q_shape[:2] != xyz_shape[:2] or q_shape[2] != 1:
         raise ValueError(

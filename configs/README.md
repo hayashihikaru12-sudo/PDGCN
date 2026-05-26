@@ -12,7 +12,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\train_entry.py --config config
 D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_train.example.json
 ```
 
-配置文件中的相对路径均以配置文件所在目录 `configs/` 为基准解析。例如 `../case_1_HDF` 会解析到仓库根目录下的 `case_1_HDF`。
+配置文件中的相对路径均以配置文件所在目录 `configs/` 为基准解析。例如 `../case_3_HDF` 会解析到仓库根目录下的 `case_3_HDF`。
 
 ## 顶层结构
 
@@ -63,9 +63,9 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 ```json
 "datasets": [
   {
-    "name": "case_1",
-    "h5_dir": "../case_1_HDF",
-    "cache_dir": "../runs/pdgcn/cache/case_1",
+    "name": "case_3",
+    "h5_dir": "../case_3_HDF",
+    "cache_dir": "../runs/pdgcn/cache/case_3",
     "scale": {
       "L0": 0.051764991760253906,
       "v0": 0.08,
@@ -99,9 +99,11 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 | --- | --- | --- |
 | `dynamic/xyz` | `mm` | 乘 `1e-3` 转为 `m`，再除以 `L0` 得到无量纲坐标。 |
 | `dynamic/fiber` | 无量纲方向向量 | 在代码内归一化。 |
+| `dynamic/normal` | 无量纲单位法向 | 在代码内归一化，并用于把速度方向投影到接收节点切平面。 |
 | `dynamic/Q` | 面热流 `W/mm^2` | 乘 `1e6` 转为 `W/m^2`，再除以 `heat_source_effective_thickness` 得到体热源 `W/m^3`。 |
 | `path/heat_center_step_distance` | `mm` | 乘 `1e-3` 转为 `m`，用于自动派生 `dt` 和 `dt_star`。 |
 | `path/slice_path_length` | `mm` | 乘 `1e-3` 转为 `m`，用于校验路径长度。 |
+| 根属性 `velocity_direction_local` | 无量纲方向向量 | 作为速度基准方向；会逐节点投影到曲面切平面。若局部坐标系为 `nip_local_velocity_side_normal` 且该属性缺失，使用 `[1, 0, 0]`。 |
 | 根属性 `velocity_speed` | `mm/s` | 乘 `1e-3` 转为 `m/s`。 |
 
 | 参数 | 单位 | 说明 |
@@ -155,9 +157,11 @@ pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
 | 项 | 维度 | 说明 |
 | --- | --- | --- |
 | 节点特征 | `8` | `[x*, y*, z*, fx, fy, fz, T*, Q*]`。 |
-| 边特征 | `7` | `[dx*, dy*, dz*, d*, cos_theta, cos_phi, cos_phi_sq]`。 |
-| 全局特征 | `1` | 无量纲扫描速度 `v_scan / v0`。 |
+| 边特征 | `7` | `[dx*, dy*, dz*, d*, cos_theta, cos_phi, cos_phi_sq]`，其中 `cos_theta` 为接收节点切向速度方向与边方向的夹角余弦。 |
+| 全局特征 | `1` | 无量纲扫描速度大小 `v_scan / v0`。 |
 | 模型输出 | `1` | 无量纲温度增量 `delta_T*`。 |
+
+升级到包含 `dynamic/normal` 的数据后，需要删除旧 `cache_dir` 并重建静态缓存；旧 checkpoint 的 `cos_theta` 物理语义也不同，正式实验建议重新训练。
 
 ## `hyperparameters.physics_loss`
 
@@ -252,6 +256,7 @@ residual =
   "top_heat_source_only": true,
   "allow_unstable_fdm": false,
   "write_vtk": true,
+  "vtk_interval": 20,
   "vtk_output_dir": null
 }
 ```
@@ -269,6 +274,7 @@ residual =
 | `top_heat_source_only` | boolean | 是否只在顶层保留热源。`true` 表示下方层不直接施加 `Q`。 |
 | `allow_unstable_fdm` | boolean | 是否允许显式 FDM 系数超过稳定性建议范围。通常保持 `false`。 |
 | `write_vtk` | boolean | 是否同步输出 ParaView legacy `.vtk` 文件。 |
+| `vtk_interval` | integer | VTK 快照输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
 | `vtk_output_dir` | string 或 `null` | VTK 输出目录。为 `null` 时使用 `<output_path stem>_vtk/`。 |
 
 多层推理中厚度方向显式 FDM 系数为：
@@ -280,10 +286,18 @@ layer_spacing_star = layer_spacing / L0
 
 当 `allow_unstable_fdm = false` 且 `C_n` 超过稳定性限制时，推理入口会拒绝运行。
 
+多层推理的温度更新为：
+
+```text
+T_next = T_current + delta_T_net + delta_T_fdm
+```
+
+其中 `thermal_loss_beta` 只参与单层训练阶段的 PDE residual，不再作为多层推理阶段的正向补偿项加入温度更新。
+
 ## 调参注意事项
 
 - `Q0` 是热源无量纲化标尺，不是直接削弱真实热输入的旋钮。真实热输入主要由 HDF5 中的 `dynamic/Q`、`heat_source_effective_thickness`、`rho`、`Cp`、`dt` 和吸收率建模方式决定。
 - `heat_source_effective_thickness` 越小，`W/mm^2 -> W/m^3` 后的体热源越大。若温度明显偏高，应优先检查该值是否等于真实受热厚度或是否还需要乘以吸收率。
-- `thermal_loss_beta` 控制等效散热强度。单层训练温度偏高时，可以尝试增大该值，或改用更明确的边界换热/层间导热模型。
+- `thermal_loss_beta` 控制单层训练中的等效散热强度。多层推理时它不会再直接放大温度；层间传热由 1D FDM 项负责。
 - `warmup_steps` 会在每个 HDF5 文件开始时用当前模型生成伪初温。局部窗口热源固定时，较大的 warmup 可能显著抬高初始温度。
 - `residual_time_scheme = "backward"` 通常比 `"explicit"` 更稳定，但训练代价和收敛行为可能不同，需要结合监控结果判断。

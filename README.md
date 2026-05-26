@@ -28,6 +28,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe
 ```text
 dynamic/xyz
 dynamic/fiber
+dynamic/normal
 dynamic/Q
 edge_index
 boundary_nodes/upwind
@@ -39,9 +40,13 @@ path/heat_center_step_distance
 HDF5 原始切片采用生成程序的原生单位：几何为 `mm`，速度为 `mm/s`，`dynamic/Q` 为面热流 `W/mm^2`。PDGCN 预处理阶段会强制转换为 SI 后再无量纲化：
 
 - `dynamic/xyz`: `mm -> m`
+- `dynamic/normal`: 曲面逐节点单位法向，参与速度方向向曲面切平面的投影。
 - `velocity_speed`: `mm/s -> m/s`
+- `velocity_direction_local`: 局部坐标中的速度方向；若 HDF5 坐标系为 `nip_local_velocity_side_normal`，默认 `[1, 0, 0]`。
 - `path/heat_center_step_distance`、`path/slice_path_length`: `mm -> m`
 - `dynamic/Q`: `W/mm^2 -> W/m^3`，转换公式为 `q''' = q'' * 1e6 / heat_source_effective_thickness`
+
+边特征中的 `cos_theta` 使用接收节点处的切向速度方向计算：先将 `velocity_direction_local` 投影到 `dynamic/normal` 给出的节点切平面，再与边方向取点积。旧静态缓存不包含法向和速度方向，升级数据后需要删除并重建 `datasets[].cache_dir`。
 
 因此训练配置中的 `datasets[].scale` 必须使用 SI：`L0` 为 `m`，`v0` 为 `m/s`，`Q0` 为 `W/m^3`，`K0` 为 `W/(m·°C)`，`rho` 为 `kg/m^3`，`Cp` 为 `J/(kg·°C)`。`heat_source_effective_thickness` 为必填字段，单位 `m`，应按实际工况填写。
 
@@ -88,7 +93,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 ```text
 runs/pdgcn/checkpoint.pt
 runs/pdgcn/history.json
-runs/pdgcn/cache/case_1/
+runs/pdgcn/cache/case_3/
 runs/pdgcn/multilayer_prediction.h5
 runs/pdgcn/multilayer_prediction_vtk/
 ```
@@ -97,11 +102,11 @@ runs/pdgcn/multilayer_prediction_vtk/
 
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
-- `metadata`：JSON 字符串数据集，同时写入根属性副本；记录 checkpoint、源 HDF5、层数、层间距、`dt_star`、FDM 系数和无量纲化参数。
+- `metadata`：JSON 字符串数据集，同时写入根属性副本；记录 checkpoint、源 HDF5、层数、层间距、`dt_star`、FDM 系数、VTK 输出间隔和无量纲化参数。
 
 层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。默认仅顶层保留热源，下层热源置零。
 
-推理默认同时输出 ParaView 可读取的 legacy `.vtk` 文件，文件名形如
+推理默认每隔 20 帧输出 ParaView 可读取的 legacy `.vtk` 快照，文件名形如
 `temperature_step_000000_layer_000.vtk`。VTK 使用曲面节点三维坐标和计算图 `edge_index`
 作为 `POINTS + LINES`，可在 ParaView 中用 `temperature` 或 `temperature_star` 着色。
 

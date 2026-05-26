@@ -12,6 +12,7 @@ from .dimensionless import (
 )
 from .initial_condition import generate_initial_temperature
 from .loader import GraphRawData
+from .velocity import tangent_velocity_direction
 
 
 def build_node_type(num_nodes: int, boundary_nodes, *, device=None) -> torch.Tensor:
@@ -60,13 +61,15 @@ def build_node_features(nodes_star, fibers, temperature_star, q_star) -> torch.T
     )
 
 
-def build_edge_features(nodes_star, edge_index, fibers, eps: float = 1e-12) -> torch.Tensor:
+def build_edge_features(nodes_star, edge_index, fibers, normals, velocity_direction, eps: float = 1e-12) -> torch.Tensor:
     """根据节点坐标和纤维方向构建 PD-GCN 边特征。
 
     参数:
         nodes_star: 无量纲节点坐标，形状 ``[N, 3]``。
         edge_index: 图边索引，形状 ``[2, E]``，第一行为 source，第二行为 receiver。
         fibers: 节点纤维方向，形状 ``[N, 3]``。
+        normals: 节点曲面法向，形状 ``[N, 3]``。
+        velocity_direction: 文件级速度方向，形状 ``[3]``，会投影到接收节点切平面。
         eps: 距离和向量范数下界，用于避免除零。
 
     返回:
@@ -79,7 +82,8 @@ def build_edge_features(nodes_star, edge_index, fibers, eps: float = 1e-12) -> t
     distance = torch.linalg.norm(delta, dim=-1, keepdim=True).clamp_min(eps)
     direction = delta / distance
 
-    cos_theta = direction[:, 0:1]
+    tangent_velocity = tangent_velocity_direction(velocity_direction, normals, eps=eps)
+    cos_theta = torch.sum(tangent_velocity[receiver] * direction, dim=-1, keepdim=True).clamp(-1.0, 1.0)
 
     fibers_unit = _normalize_vectors(fibers, eps=eps)
     fiber_mid = _normalize_vectors(fibers_unit[source] + fibers_unit[receiver], eps=eps)
@@ -150,7 +154,14 @@ def build_graph(
         temperature_star = temperature_to_dimensionless(temperature.reshape(raw_data.xyz.shape[0], 1), scale_params)
 
     node_features = build_node_features(nodes_star, raw_data.fiber, temperature_star, q_star)
-    edge_features = build_edge_features(nodes_star, raw_data.edge_index, raw_data.fiber, eps=scale_params.eps)
+    edge_features = build_edge_features(
+        nodes_star,
+        raw_data.edge_index,
+        raw_data.fiber,
+        raw_data.normal,
+        raw_data.velocity_direction,
+        eps=scale_params.eps,
+    )
     node_type = build_node_type(raw_data.xyz.shape[0], raw_data.boundary_nodes, device=device)
     global_attr = build_global_condition(scan_velocity, scale_params, device=device, dtype=dtype)
 

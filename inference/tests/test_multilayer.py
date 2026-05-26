@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch_geometric.data import Data
 
 from data import ScaleParams
+from inference.io import _should_write_vtk_step
 from inference.multilayer import rollout_multilayer_fdm
 from models import PDGCNConfig
 
@@ -67,6 +68,29 @@ class MultilayerRolloutTests(unittest.TestCase):
         )
 
         self.assertTrue(torch.allclose(result[:, -1], torch.full_like(result[:, -1], -0.25)))
+
+    def test_multilayer_rollout_does_not_apply_thermal_loss_compensation(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+        model.config = PDGCNConfig(thermal_loss_beta=10.0)
+
+        result = rollout_multilayer_fdm(
+            model,
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+        )
+
+        expected = torch.tensor([[[[2.90], [2.90]], [[1.10], [1.10]], [[0.00], [0.00]]]])
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
+    def test_vtk_interval_writes_every_nth_step_from_zero(self):
+        written = [step for step in range(45) if _should_write_vtk_step(step, 20)]
+
+        self.assertEqual(written, [0, 20, 40])
 
 
 if __name__ == "__main__":

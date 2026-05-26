@@ -29,14 +29,17 @@ def make_h5(path: Path):
         dtype=np.float32,
     )
     fiber = np.tile(np.array([[[1.0, 0.0, 0.0]]], dtype=np.float32), (2, 4, 1))
+    normal = np.tile(np.array([[[0.0, 0.0, 1.0]]], dtype=np.float32), (2, 4, 1))
     q = np.array([[[0.0], [1.0], [0.5], [0.0]], [[0.0], [0.8], [0.4], [0.0]]], dtype=np.float32)
     edge_index = np.array([[0, 1, 2, 0], [1, 3, 3, 2]], dtype=np.int64)
 
     with h5py.File(path, "w") as h5_file:
         h5_file.attrs["velocity_speed"] = 2.0
+        h5_file.attrs["velocity_direction_local"] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
         dynamic = h5_file.create_group("dynamic")
         dynamic.create_dataset("xyz", data=xyz)
         dynamic.create_dataset("fiber", data=fiber)
+        dynamic.create_dataset("normal", data=normal)
         dynamic.create_dataset("Q", data=q)
         h5_file.create_dataset("edge_index", data=edge_index)
         boundary = h5_file.create_group("boundary_nodes")
@@ -331,9 +334,12 @@ class RunConfigTests(unittest.TestCase):
             self.assertEqual(tuple(h5_file["temperature_star"].shape), (2, 3, 4, 1))
             self.assertIn("metadata", h5_file)
             self.assertIn("metadata", h5_file.attrs)
+            metadata = json.loads(h5_file.attrs["metadata"])
+            self.assertEqual(metadata["vtk_interval"], 20)
         vtk_dir = output_path.with_name(f"{output_path.stem}_vtk")
         vtk_files = sorted(vtk_dir.glob("temperature_step_*_layer_*.vtk"))
-        self.assertEqual(len(vtk_files), 6)
+        self.assertEqual(len(vtk_files), 3)
+        self.assertTrue(all("temperature_step_000000" in path.name for path in vtk_files))
         vtk_text = vtk_files[0].read_text(encoding="ascii")
         self.assertIn("SCALARS temperature float 1", vtk_text)
         self.assertIn("SCALARS temperature_star float 1", vtk_text)

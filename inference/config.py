@@ -16,6 +16,7 @@ class InferenceRunConfig:
     allow_unstable_fdm: bool = False
     return_dimensionless: bool = False
     write_vtk: bool = True
+    vtk_interval: int = 20
     vtk_output_dir: Optional[str] = None
 
     def __post_init__(self):
@@ -29,3 +30,5 @@ class InferenceRunConfig:
             raise ValueError(f"inference.steps must be positive when set, got {self.steps}.")
         if self.warmup_steps is not None and int(self.warmup_steps) < 0:
             raise ValueError(f"inference.warmup_steps must be non-negative when set, got {self.warmup_steps}.")
+        if int(self.vtk_interval) <= 0:
+            raise ValueError(f"inference.vtk_interval must be positive, got {self.vtk_interval}.")

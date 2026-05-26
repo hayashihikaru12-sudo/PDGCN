@@ -100,6 +100,7 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         "top_heat_source_only": bool(inference_config.top_heat_source_only),
         "bottom_temperature_star": float(inference_config.bottom_temperature_star),
         "write_vtk": bool(inference_config.write_vtk),
+        "vtk_interval": int(inference_config.vtk_interval),
         "vtk_output_dir": str(selected_vtk_dir) if bool(inference_config.write_vtk) else None,
         "hdf5_timing": timing,
         "scale_params": asdict(scale_params),
@@ -126,6 +127,7 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         top_heat_source_only=bool(inference_config.top_heat_source_only),
         allow_unstable_fdm=bool(inference_config.allow_unstable_fdm),
         write_vtk=bool(inference_config.write_vtk),
+        vtk_interval=int(inference_config.vtk_interval),
         vtk_output_dir=selected_vtk_dir,
     )
 
@@ -173,10 +175,14 @@ def write_multilayer_hdf5(
     top_heat_source_only: bool,
     allow_unstable_fdm: bool,
     write_vtk: bool = True,
+    vtk_interval: int = 20,
     vtk_output_dir=None,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    vtk_interval = int(vtk_interval)
+    if vtk_interval <= 0:
+        raise ValueError(f"vtk_interval must be positive, got {vtk_interval}.")
     metadata_json = json.dumps(metadata, ensure_ascii=False)
     vtk_output_dir = Path(vtk_output_dir) if vtk_output_dir is not None else output_path.with_name(f"{output_path.stem}_vtk")
     graph_cache = {}
@@ -204,7 +210,7 @@ def write_multilayer_hdf5(
             temperature_star_dataset[int(step)] = temperature_star.numpy()
             temperature = temperature_from_dimensionless(temperature_star, scale_params)
             temperature_dataset[int(step)] = temperature.numpy()
-            if bool(write_vtk):
+            if bool(write_vtk) and _should_write_vtk_step(step, vtk_interval):
                 _write_multilayer_step_vtk(
                     vtk_output_dir,
                     step=int(step),
@@ -212,6 +218,7 @@ def write_multilayer_hdf5(
                     temperature=temperature,
                     temperature_star=temperature_star,
                 )
+            graph_cache.pop(int(step), None)
 
         rollout_multilayer_fdm(
             model,
@@ -228,6 +235,10 @@ def write_multilayer_hdf5(
             top_heat_source_only=bool(top_heat_source_only),
             allow_unstable_fdm=bool(allow_unstable_fdm),
         )
+
+
+def _should_write_vtk_step(step: int, vtk_interval: int) -> bool:
+    return int(step) % int(vtk_interval) == 0
 
 
 def _write_multilayer_step_vtk(vtk_output_dir, *, step: int, graph, temperature, temperature_star):

@@ -11,12 +11,15 @@ from .hdf5_units import (
     length_mm_to_m,
     resolve_heat_source_effective_thickness,
 )
+from .velocity import resolve_velocity_direction_local
 
 
 @dataclass(frozen=True)
 class GraphRawData:
     xyz: torch.Tensor
     fiber: torch.Tensor
+    normal: torch.Tensor
+    velocity_direction: torch.Tensor
     q: torch.Tensor
     edge_index: torch.Tensor
     boundary_nodes: Dict[str, torch.Tensor]
@@ -30,6 +33,7 @@ class HDF5Loader:
     REQUIRED_DATASETS = (
         "dynamic/xyz",
         "dynamic/fiber",
+        "dynamic/normal",
         "dynamic/Q",
         "edge_index",
         "boundary_nodes/upwind",
@@ -69,6 +73,7 @@ class HDF5Loader:
         返回:
             ``GraphRawData`` 数据对象，包含：
             ``xyz`` 形状 ``[N, 3]``、``fiber`` 形状 ``[N, 3]``、
+            ``normal`` 形状 ``[N, 3]``、``velocity_direction`` 形状 ``[3]``、
             ``q`` 形状 ``[N, 1]``、``edge_index`` 形状 ``[2, E]``、
             ``boundary_nodes`` 字典以及帧索引信息。
         """
@@ -85,6 +90,7 @@ class HDF5Loader:
 
             xyz_all = h5_file["dynamic/xyz"]
             fiber_all = h5_file["dynamic/fiber"]
+            normal_all = h5_file["dynamic/normal"]
             q_all = h5_file["dynamic/Q"]
             num_frames = int(xyz_all.shape[0])
 
@@ -93,6 +99,12 @@ class HDF5Loader:
 
             xyz = _as_tensor(length_mm_to_m(xyz_all[frame_idx]), dtype=torch.float32, device=device)
             fiber = _as_tensor(fiber_all[frame_idx], dtype=torch.float32, device=device)
+            normal = _as_tensor(normal_all[frame_idx], dtype=torch.float32, device=device)
+            velocity_direction = _as_tensor(
+                resolve_velocity_direction_local(h5_file),
+                dtype=torch.float32,
+                device=device,
+            )
             q = _as_tensor(
                 heat_flux_w_per_mm2_to_volume_w_per_m3(
                     q_all[frame_idx],
@@ -108,11 +120,13 @@ class HDF5Loader:
                 for name in ("upwind", "downwind", "side")
             }
 
-        self._validate_shapes(xyz, fiber, q, edge_index, boundary_nodes)
+        self._validate_shapes(xyz, fiber, normal, q, edge_index, boundary_nodes)
 
         return GraphRawData(
             xyz=xyz,
             fiber=fiber,
+            normal=normal,
+            velocity_direction=velocity_direction,
             q=q,
             edge_index=edge_index,
             boundary_nodes=boundary_nodes,
@@ -135,7 +149,7 @@ class HDF5Loader:
             raise KeyError(f"Missing required HDF5 datasets: {missing}")
 
     @staticmethod
-    def _validate_shapes(xyz, fiber, q, edge_index, boundary_nodes):
+    def _validate_shapes(xyz, fiber, normal, q, edge_index, boundary_nodes):
         """校验单帧图数据的张量形状和索引范围。
 
         参数:
@@ -153,6 +167,8 @@ class HDF5Loader:
             raise ValueError(f"dynamic/xyz frame must have shape [N, 3], got {tuple(xyz.shape)}.")
         if fiber.shape != xyz.shape:
             raise ValueError(f"dynamic/fiber frame must match xyz shape {tuple(xyz.shape)}, got {tuple(fiber.shape)}.")
+        if normal.shape != xyz.shape:
+            raise ValueError(f"dynamic/normal frame must match xyz shape {tuple(xyz.shape)}, got {tuple(normal.shape)}.")
         if q.ndim != 2 or q.shape[0] != xyz.shape[0] or q.shape[1] != 1:
             raise ValueError(f"dynamic/Q frame must have shape [N, 1], got {tuple(q.shape)}.")
         if edge_index.ndim != 2 or edge_index.shape[0] != 2:

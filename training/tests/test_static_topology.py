@@ -79,14 +79,17 @@ def make_h5(path: Path):
         dtype=np.float32,
     )
     fiber = np.tile(np.array([[[1.0, 0.0, 0.0]]], dtype=np.float32), (2, 4, 1))
+    normal = np.tile(np.array([[[0.0, 0.0, 1.0]]], dtype=np.float32), (2, 4, 1))
     q = np.array([[[0.0], [1.0], [0.5], [0.0]], [[0.0], [0.8], [0.4], [0.0]]], dtype=np.float32)
     edge_index = np.array([[0, 1, 2, 0], [1, 3, 3, 2]], dtype=np.int64)
 
     with h5py.File(path, "w") as h5_file:
         h5_file.attrs["velocity_speed"] = 2.0
+        h5_file.attrs["velocity_direction_local"] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
         dynamic = h5_file.create_group("dynamic")
         dynamic.create_dataset("xyz", data=xyz)
         dynamic.create_dataset("fiber", data=fiber)
+        dynamic.create_dataset("normal", data=normal)
         dynamic.create_dataset("Q", data=q)
         h5_file.create_dataset("edge_index", data=edge_index)
         boundary = h5_file.create_group("boundary_nodes")
@@ -161,6 +164,19 @@ class StaticTopologyTests(unittest.TestCase):
         self.assertTrue(torch.allclose(graph_fast.global_attr, graph_ref.global_attr, atol=1e-6))
         reader.close()
 
+    def test_edge_cos_theta_uses_receiver_tangent_velocity(self):
+        tilted_h5_path = self.root / "tilted_normal.h5"
+        make_h5(tilted_h5_path)
+        with h5py.File(tilted_h5_path, "a") as h5_file:
+            normal = h5_file["dynamic/normal"][()]
+            normal[:, 1, :] = np.array([1.0, 0.0, 1.0], dtype=np.float32) / np.sqrt(2.0)
+            h5_file["dynamic/normal"][...] = normal
+
+        raw = HDF5Loader(tilted_h5_path, scale_params=self.scale).load_graph_data(0)
+        graph = build_graph(raw, self.scale, scan_velocity=0.002, initial_temperature=torch.full((4, 1), 300.0))
+
+        self.assertAlmostEqual(float(graph.edge_attr[0, 4]), float(1.0 / np.sqrt(2.0)), places=6)
+
     def test_hdf5_reader_converts_native_units_to_si(self):
         reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, scale_params=self.scale, pin_memory=False)
         try:
@@ -170,7 +186,9 @@ class StaticTopologyTests(unittest.TestCase):
 
         self.assertAlmostEqual(float(node_base[1, 0]), 0.001)
         self.assertAlmostEqual(float(global_condition[0]), 0.002)
-        self.assertAlmostEqual(float(node_base[1, 6]), 1.0e9)
+        self.assertAlmostEqual(float(node_base[1, 12]), 1.0e9)
+        self.assertTrue(torch.allclose(node_base[1, 6:9], torch.tensor([0.0, 0.0, 1.0])))
+        self.assertTrue(torch.allclose(node_base[1, 9:12], torch.tensor([1.0, 0.0, 0.0])))
 
     def test_hdf5_reader_requires_effective_thickness_for_heat_flux_conversion(self):
         with self.assertRaisesRegex(ValueError, "heat_source_effective_thickness"):
@@ -321,6 +339,15 @@ class StaticTopologyTests(unittest.TestCase):
             del h5_file["dynamic/Q"]
 
         with self.assertRaisesRegex(KeyError, "dynamic/Q"):
+            HDF5FrameReader(bad_h5_path, expected_num_nodes=4, scale_params=self.scale, pin_memory=False)
+
+    def test_hdf5_frame_reader_rejects_missing_normal_dataset(self):
+        bad_h5_path = self.root / "missing_normal.h5"
+        make_h5(bad_h5_path)
+        with h5py.File(bad_h5_path, "a") as h5_file:
+            del h5_file["dynamic/normal"]
+
+        with self.assertRaisesRegex(KeyError, "dynamic/normal"):
             HDF5FrameReader(bad_h5_path, expected_num_nodes=4, scale_params=self.scale, pin_memory=False)
 
     def test_hdf5_frame_reader_rejects_node_count_mismatch(self):

@@ -6,6 +6,7 @@ import torch
 from torch_geometric.data import Data
 
 from data.dimensionless import ScaleParams, temperature_from_dimensionless
+from data.velocity import tangent_velocity_direction
 from data.static_cache import STATIC_FILE, HDF5FrameReader
 from pde import apply_dirichlet_boundary, total_loss
 
@@ -77,7 +78,7 @@ class GpuFeatureBuilder:
         self.scale_params = scale_params
         self.device = static_state.device
         self.dtype = dtype
-        self.node_base = torch.empty(static_state.num_nodes, 7, device=self.device, dtype=dtype)
+        self.node_base = torch.empty(static_state.num_nodes, 13, device=self.device, dtype=dtype)
         self.global_raw = torch.empty(1, device=self.device, dtype=dtype)
         self.x = torch.empty(static_state.num_nodes, 8, device=self.device, dtype=dtype)
         self.edge_attr = torch.empty(static_state.num_edges, 7, device=self.device, dtype=dtype)
@@ -98,8 +99,8 @@ class GpuFeatureBuilder:
         """用当前帧基础特征更新复用图对象。
 
         参数:
-            node_base_cpu: CPU 张量，形状 ``[N, 7]``，列为
-                ``[x, y, z, fx, fy, fz, Q]``，仍为真实单位基础特征。
+            node_base_cpu: CPU 张量，形状 ``[N, 13]``，列为
+                ``[x, y, z, fx, fy, fz, nx, ny, nz, vx, vy, vz, Q]``。
             global_cpu: CPU 张量，形状 ``[G]``，当前只使用第 1 个值作为真实扫描速度。
             temperature_star: 当前无量纲温度，形状 ``[N, 1]``。
 
@@ -118,7 +119,9 @@ class GpuFeatureBuilder:
 
         coords_star = self.node_base[:, 0:3] / float(self.scale_params.L0)
         fibers_unit = _normalize_vectors(self.node_base[:, 3:6], eps=float(self.scale_params.eps))
-        q_star = self.node_base[:, 6:7] / float(self.scale_params.Q0)
+        normals_unit = _normalize_vectors(self.node_base[:, 6:9], eps=float(self.scale_params.eps))
+        velocity_direction = self.node_base[:, 9:12]
+        q_star = self.node_base[:, 12:13] / float(self.scale_params.Q0)
         temperature = temperature_star.to(device=self.device, dtype=self.dtype, non_blocking=True).reshape(-1, 1)
 
         self.x[:, 0:3] = coords_star
@@ -131,12 +134,17 @@ class GpuFeatureBuilder:
         delta = coords_star[receiver] - coords_star[source]
         distance = torch.linalg.norm(delta, dim=-1, keepdim=True).clamp_min(float(self.scale_params.eps))
         direction = delta / distance
+        tangent_velocity = tangent_velocity_direction(
+            velocity_direction,
+            normals_unit,
+            eps=float(self.scale_params.eps),
+        )
         fiber_mid = _normalize_vectors(fibers_unit[source] + fibers_unit[receiver], eps=float(self.scale_params.eps))
         cos_phi = torch.sum(fiber_mid * direction, dim=-1, keepdim=True).clamp(-1.0, 1.0)
 
         self.edge_attr[:, 0:3] = delta
         self.edge_attr[:, 3:4] = distance
-        self.edge_attr[:, 4:5] = direction[:, 0:1]
+        self.edge_attr[:, 4:5] = torch.sum(tangent_velocity[receiver] * direction, dim=-1, keepdim=True).clamp(-1.0, 1.0)
         self.edge_attr[:, 5:6] = cos_phi
         self.edge_attr[:, 6:7] = cos_phi.square()
 

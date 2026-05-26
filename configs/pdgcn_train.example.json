@@ -12,6 +12,7 @@
     "top_heat_source_only": true,
     "allow_unstable_fdm": false,
     "write_vtk": true,
+    "vtk_interval": 20,
     "vtk_output_dir": null
   },
   "outputs": {
@@ -20,9 +21,9 @@
   },
   "datasets": [
     {
-      "name": "case_1",
-      "h5_dir": "../case_1_HDF",
-      "cache_dir": "../runs/pdgcn/cache/case_1",
+      "name": "case_3",
+      "h5_dir": "../case_3_HDF",
+      "cache_dir": "../runs/pdgcn/cache/case_3",
       "scale": {
         "L0": 0.051764991760253906,
         "v0": 0.08,

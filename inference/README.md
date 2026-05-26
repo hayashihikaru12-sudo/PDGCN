@@ -19,7 +19,7 @@
    - 使用 1D FDM 计算厚度方向层间传热；
    - 对迎风/侧边节点施加 Dirichlet 边界；
    - 对底层全节点施加恒温边界。
-7. 写出多层温度序列 HDF5，并在启用时写出逐时间步、逐层 VTK 文件。
+7. 写出多层温度序列 HDF5，并在启用时按 `vtk_interval` 写出逐层 VTK 快照。
 
 ## 使用方法
 
@@ -35,7 +35,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py `
   --config configs\pdgcn_train.example.json `
   --checkpoint runs\pdgcn\checkpoint.pt `
-  --h5 case_1_HDF\xxx.h5 `
+  --h5 case_3_HDF\xxx.h5 `
   --output runs\pdgcn\multilayer_prediction.h5
 ```
 
@@ -63,6 +63,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
     "top_heat_source_only": true,
     "allow_unstable_fdm": false,
     "write_vtk": true,
+    "vtk_interval": 20,
     "vtk_output_dir": null
   }
 }
@@ -81,6 +82,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `top_heat_source_only`：是否仅顶层保留热源，默认 `true`。
 - `allow_unstable_fdm`：是否允许显式 FDM 系数 `C_n > 0.5`。
 - `write_vtk`：是否输出 ParaView VTK 文件，默认 `true`。
+- `vtk_interval`：VTK 快照输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
 - `vtk_output_dir`：VTK 输出目录；为 `null` 时使用 `<output_path stem>_vtk/`。
 
 ## FDM 更新公式
@@ -95,14 +97,13 @@ layer_spacing_star = layer_spacing / L0
 多层温度更新为：
 
 ```text
-T_next = T_curr + delta_T_net + beta * T_curr * dt_star + delta_T_fdm
+T_next = T_curr + delta_T_net + delta_T_fdm
 ```
 
 其中：
 
 - `delta_T_net` 来自训练好的单层 PDGCN；
 - `delta_T_fdm` 来自厚度方向 1D FDM；
-- `beta` 对应模型配置中的 `thermal_loss_beta`；
 - 默认 `layer=0` 为顶层，`layer=num_layers-1` 为底层。
 
 若 `C_n > 0.5` 且 `allow_unstable_fdm=false`，推理会直接报错，避免显式差分不稳定。
@@ -113,7 +114,7 @@ HDF5 输出包含：
 
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
-- `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、FDM 系数和尺度参数。
+- `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、FDM 系数、VTK 输出间隔和尺度参数。
 
 VTK 输出默认目录为：
 
@@ -121,7 +122,7 @@ VTK 输出默认目录为：
 <output_path stem>_vtk/
 ```
 
-文件名格式：
+VTK 仅按 `vtk_interval` 写出快照。默认文件名格式：
 
 ```text
 temperature_step_000000_layer_000.vtk

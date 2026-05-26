@@ -12,6 +12,10 @@ class InferenceConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "layer_spacing"):
             InferenceRunConfig(num_layers=2, layer_spacing=0.0)
 
+    def test_rejects_non_positive_vtk_interval(self):
+        with self.assertRaisesRegex(ValueError, "vtk_interval"):
+            InferenceRunConfig(num_layers=2, layer_spacing=0.1, vtk_interval=0)
+
 
 if __name__ == "__main__":
     unittest.main()

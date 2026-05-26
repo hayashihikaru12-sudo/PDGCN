@@ -88,12 +88,7 @@ def rollout_multilayer_fdm(
                 k_ratio=getattr(model.config, "k_ratio", 0.0),
                 layer_spacing_star=layer_spacing_star,
             )
-            compensation = (
-                float(getattr(model.config, "thermal_loss_beta", 0.0))
-                * current_temperature
-                * float(getattr(model.config, "dt_star", 1.0))
-            )
-            next_temperature = current_temperature + delta_net + compensation + delta_fdm
+            next_temperature = current_temperature + delta_net + delta_fdm
             next_temperature = apply_dirichlet_boundary(
                 next_temperature,
                 graph_boundary_nodes(graph),
