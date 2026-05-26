@@ -54,7 +54,7 @@ HDF5 原始切片采用生成程序的原生单位：几何为 `mm`，速度为 
 
 ## 训练配置
 
-示例配置位于：
+训练示例配置位于：
 
 ```text
 configs/pdgcn_train.example.json
@@ -67,6 +67,14 @@ configs/pdgcn_train.example.json
 - `datasets[0].scale`：SI 无量纲化标尺与 PDE 系数派生参数。
 
 静态缓存默认启用。缓存缺失时，训练入口会使用目录内排序后的第一个 HDF5 文件生成；缓存存在时直接复用。
+
+推理示例配置位于：
+
+```text
+configs/pdgcn_infer.example.json
+```
+
+推理配置通过 `training_config` 引用训练配置，复用其中的数据集、尺度参数、模型超参和默认 checkpoint 路径。
 
 ## 快速开始
 
@@ -85,7 +93,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\train_entry.py --config config
 使用训练后的 checkpoint 执行多层 PD-GCN + 1D FDM 推理：
 
 ```powershell
-D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_train.example.json
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_infer.example.json
 ```
 
 默认输出：

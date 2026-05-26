@@ -1,6 +1,11 @@
-# `pdgcn_train.example.json` 配置说明
+# PDGCN 配置说明
 
-`configs/pdgcn_train.example.json` 是 PDGCN 训练、监控和多层推理共用的示例配置文件。训练入口命令为：
+训练和推理使用不同的示例配置文件管理：
+
+- `configs/pdgcn_train.example.json`：训练、监控、数据集、模型/物理损失超参和训练产物路径。
+- `configs/pdgcn_infer.example.json`：多层推理参数，并通过 `training_config` 引用训练配置。
+
+训练入口命令为：
 
 ```powershell
 D:\ProgramData\CondaEnv\PIGNN\python.exe training\train_entry.py --config configs\pdgcn_train.example.json
@@ -9,17 +14,16 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\train_entry.py --config config
 多层推理入口命令为：
 
 ```powershell
-D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_train.example.json
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_infer.example.json
 ```
 
-配置文件中的相对路径均以配置文件所在目录 `configs/` 为基准解析。例如 `../case_3_HDF` 会解析到仓库根目录下的 `case_3_HDF`。
+配置文件中的相对路径均以各自配置文件所在目录为基准解析。例如 `pdgcn_infer.example.json` 中的 `training_config` 相对推理配置文件所在目录解析；训练配置中的 `datasets[].h5_dir` 和 `outputs.checkpoint_path` 继续相对训练配置文件所在目录解析。
 
 ## 顶层结构
 
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `monitoring` | object | 训练过程监控配置，控制是否记录 loss、温度场快照和 VTK 可视化数据。 |
-| `inference` | object | 多层 PDGCN + 厚度方向 1D FDM 推理配置。训练时不会直接使用这些参数。 |
 | `outputs` | object | 训练产物输出路径，包括 checkpoint 和 history JSON。 |
 | `datasets` | array | 训练数据集列表。当前训练入口一次只支持使用第一个数据集，但一个数据集目录内可以包含多个 `.h5`/`.hdf5` 切片文件。 |
 | `hyperparameters` | object | 模型结构、物理损失和训练超参数。 |
@@ -241,28 +245,34 @@ residual =
 
 ## `inference`
 
-示例：
+推理配置位于 `configs/pdgcn_infer.example.json`。示例：
 
 ```json
-"inference": {
-  "num_layers": 4,
-  "layer_spacing": 0.00015,
-  "output_path": "../runs/pdgcn/multilayer_prediction.h5",
-  "dataset_index": 0,
-  "h5_path": null,
-  "steps": null,
-  "warmup_steps": null,
-  "bottom_temperature_star": 0.0,
-  "top_heat_source_only": true,
-  "allow_unstable_fdm": false,
-  "write_vtk": true,
-  "vtk_interval": 20,
-  "vtk_output_dir": null
+{
+  "training_config": "pdgcn_train.example.json",
+  "inference": {
+    "num_layers": 4,
+    "layer_spacing": 0.00015,
+    "output_path": "../runs/pdgcn/multilayer_prediction.h5",
+    "dataset_index": 0,
+    "h5_path": null,
+    "steps": null,
+    "warmup_steps": null,
+    "bottom_temperature_star": 0.0,
+    "top_heat_source_only": true,
+    "allow_unstable_fdm": false,
+    "write_vtk": true,
+    "vtk_interval": 20,
+    "vtk_output_dir": null
+  }
 }
 ```
 
+`training_config` 指向训练配置文件，推理入口会从该文件读取 `datasets`、`outputs`、`hyperparameters` 和训练 `warmup_steps/device` 默认值。
+
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
+| `training_config` | string | 被引用的训练配置路径，相对推理配置文件所在目录解析。 |
 | `num_layers` | integer | 多层堆叠层数，必须大于等于 `2`。 |
 | `layer_spacing` | number | 层间距，单位 `m`。内部会转为 `layer_spacing / L0`。 |
 | `output_path` | string | 多层推理输出 HDF5 路径。 |

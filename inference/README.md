@@ -4,7 +4,7 @@
 
 ## 推理流程
 
-1. 读取训练 JSON 配置，解析其中的 `datasets`、`outputs`、`hyperparameters` 和 `inference`。
+1. 读取推理 JSON 配置，并通过 `training_config` 引用的训练配置解析 `datasets`、`outputs` 和 `hyperparameters`。
 2. 选择输入 HDF5：
    - 若 `inference.h5_path` 非空，使用该文件；
    - 否则使用 `datasets[inference.dataset_index].h5_dir` 下自然排序的第一个 HDF5 文件。
@@ -26,31 +26,32 @@
 在仓库根目录运行：
 
 ```powershell
-D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_train.example.json
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config configs\pdgcn_infer.example.json
 ```
 
 可选覆盖参数：
 
 ```powershell
 D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py `
-  --config configs\pdgcn_train.example.json `
-  --checkpoint runs\pdgcn\checkpoint.pt `
-  --h5 case_3_HDF\xxx.h5 `
-  --output runs\pdgcn\multilayer_prediction.h5
+  --config configs\pdgcn_infer.example.json `
+  --checkpoint ..\runs\pdgcn\checkpoint.pt `
+  --h5 ..\case_3_HDF\xxx.h5 `
+  --output ..\runs\pdgcn\multilayer_prediction.h5
 ```
 
 兼容入口仍可使用：
 
 ```powershell
-D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config configs\pdgcn_train.example.json
+D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config configs\pdgcn_infer.example.json
 ```
 
 ## 配置字段
 
-训练配置 JSON 顶层需要包含 `inference` 段：
+推理配置 JSON 顶层需要包含 `training_config` 和 `inference` 段：
 
 ```json
 {
+  "training_config": "pdgcn_train.example.json",
   "inference": {
     "num_layers": 4,
     "layer_spacing": 0.00015,
@@ -71,6 +72,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 
 字段说明：
 
+- `training_config`：训练配置路径，推理入口会从中读取数据集、尺度参数、模型超参和默认 checkpoint 路径。
 - `num_layers`：多层堆叠层数，必须 `>= 2`。
 - `layer_spacing`：真实层间距，单位与 `scale.L0` 一致，当前约定为 `m`。
 - `output_path`：输出 HDF5 路径。

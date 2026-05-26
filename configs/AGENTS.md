@@ -5,6 +5,7 @@
 ## 主要文件
 
 - `pdgcn_train.example.json`：示例训练配置，包含 `outputs`、`datasets` 和 `hyperparameters`。
+- `pdgcn_infer.example.json`：示例推理配置，包含 `training_config` 和 `inference`。
 
 ## 配置内容
 

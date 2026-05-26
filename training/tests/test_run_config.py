@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from data import ScaleParams
-from inference.io import run_multilayer_inference_from_config
+from inference.io import load_inference_run_context, run_multilayer_inference_from_config
 from models import PDGCN, PDGCNConfig
 from training import load_run_config, pdgcn_config_from_scale
 from training.run_config import derive_dt_star
@@ -287,8 +287,9 @@ class RunConfigTests(unittest.TestCase):
             },
             checkpoint_path,
         )
-        config_path = self.root / "infer.json"
-        payload = {
+        training_config_path = self.root / "train.json"
+        inference_config_path = self.root / "infer.json"
+        training_payload = {
             "outputs": {
                 "checkpoint_path": str(checkpoint_path.resolve()),
                 "history_path": "history.json",
@@ -316,6 +317,9 @@ class RunConfigTests(unittest.TestCase):
                 "physics_loss": {"lambda_outflow": 0.0},
                 "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
             },
+        }
+        inference_payload = {
+            "training_config": "train.json",
             "inference": {
                 "num_layers": 3,
                 "layer_spacing": 0.001,
@@ -324,9 +328,10 @@ class RunConfigTests(unittest.TestCase):
                 "warmup_steps": 0,
             },
         }
-        config_path.write_text(json.dumps(payload), encoding="utf-8")
+        training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
+        inference_config_path.write_text(json.dumps(inference_payload), encoding="utf-8")
 
-        result = run_multilayer_inference_from_config(config_path)
+        result = run_multilayer_inference_from_config(inference_config_path)
 
         self.assertEqual(result["output_path"], str(output_path.resolve()))
         with h5py.File(output_path, "r") as h5_file:
@@ -336,6 +341,7 @@ class RunConfigTests(unittest.TestCase):
             self.assertIn("metadata", h5_file.attrs)
             metadata = json.loads(h5_file.attrs["metadata"])
             self.assertEqual(metadata["vtk_interval"], 20)
+            self.assertEqual(metadata["training_config_path"], str(training_config_path.resolve()))
         vtk_dir = output_path.with_name(f"{output_path.stem}_vtk")
         vtk_files = sorted(vtk_dir.glob("temperature_step_*_layer_*.vtk"))
         self.assertEqual(len(vtk_files), 3)
@@ -343,6 +349,53 @@ class RunConfigTests(unittest.TestCase):
         vtk_text = vtk_files[0].read_text(encoding="ascii")
         self.assertIn("SCALARS temperature float 1", vtk_text)
         self.assertIn("SCALARS temperature_star float 1", vtk_text)
+
+    def test_load_inference_run_context_accepts_legacy_unified_config(self):
+        config_path = self.root / "legacy_infer.json"
+        payload = {
+            "outputs": {
+                "checkpoint_path": "checkpoint.pt",
+                "history_path": "history.json",
+            },
+            "datasets": [
+                {
+                    "name": "case_a",
+                    "h5_dir": "h5",
+                    "cache_dir": "cache/case_a",
+                    "scale": {
+                        "L0": 2.0,
+                        "v0": 2.0,
+                        "T_amb": 300.0,
+                        "delta_T0": 10.0,
+                        "Q0": 2.0,
+                        "K0": 8.0,
+                        "rho": 2.0,
+                        "Cp": 1.0,
+                        "heat_source_effective_thickness": 0.001,
+                    },
+                }
+            ],
+            "hyperparameters": {
+                "model": {"hidden_size": 8, "message_passing_num": 1},
+                "physics_loss": {"lambda_outflow": 0.0},
+                "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
+            },
+            "inference": {
+                "num_layers": 3,
+                "layer_spacing": 0.001,
+            },
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        run_config, inference_config, training_base_dir, inference_base_dir, training_config_path = (
+            load_inference_run_context(config_path)
+        )
+
+        self.assertEqual(run_config.schema, "classified")
+        self.assertEqual(inference_config.num_layers, 3)
+        self.assertEqual(training_base_dir, config_path.resolve().parent)
+        self.assertEqual(inference_base_dir, config_path.resolve().parent)
+        self.assertEqual(training_config_path, config_path.resolve())
 
     def test_load_config_rejects_manual_dt_in_scale(self):
         config_path = self.root / "manual_dt.json"

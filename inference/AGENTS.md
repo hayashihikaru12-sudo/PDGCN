@@ -4,7 +4,7 @@
 
 ## 主要职责
 
-- 从训练 JSON 配置读取 `inference` 段，并复用训练阶段的尺度参数、模型超参数和 checkpoint。
+- 从推理 JSON 配置读取 `inference` 段，并通过 `training_config` 复用训练阶段的尺度参数、模型超参数和 checkpoint。
 - 读取单个 HDF5 输入文件，按时间帧构造单层曲面 PyG 图。
 - 将训练好的单层 PDGCN 虚拟复制到多层同拓扑曲面图上，执行逐步滚动预测。
 - 在厚度方向叠加显式 1D FDM 层间导热，底层强制恒温。
@@ -16,7 +16,7 @@
 - `fdm.py`：实现厚度方向显式 FDM 系数和层间温度增量，系数为 `k_ratio * dt_star * inverse_pe / layer_spacing_star^2`。
 - `multilayer.py`：实现 `rollout_multilayer_fdm(...)`，输入单层图或图工厂，输出形状为 `[time, layer, node, 1]` 的温度序列。
 - `io.py`：负责从配置运行推理、加载 checkpoint、构造图、写 HDF5、写 VTK 和 metadata。
-- `infer_entry.py`：命令行入口，默认读取 `configs/pdgcn_train.example.json`。
+- `infer_entry.py`：命令行入口，默认读取 `configs/pdgcn_infer.example.json`。
 - `tests/`：覆盖配置校验、FDM 公式、多层 rollout 和推理输出。
 
 ## 推理约定

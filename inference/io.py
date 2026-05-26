@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict
+from dataclasses import MISSING, asdict, fields
 from pathlib import Path
 
 import h5py
@@ -13,40 +13,41 @@ from training.run_config import load_run_config, pdgcn_config_from_scale
 from training.train_entry import derive_timing_from_hdf5, discover_hdf5_files
 from visualization import write_polydata_vtk
 
+from .config import InferenceRunConfig
 from .fdm import compute_layer_fdm_coefficient
 from .multilayer import rollout_multilayer_fdm
 
 
 def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_path=None, output_path=None):
-    """Run multilayer PD-GCN + 1D FDM inference from a training JSON config."""
+    """Run multilayer PD-GCN + 1D FDM inference from an inference JSON config."""
 
     config_path = Path(config_path)
-    run_config = load_run_config(config_path)
-    if run_config.inference is None:
-        raise ValueError("Config must contain an 'inference' section for multilayer rollout.")
+    run_config, inference_config, training_base_dir, inference_base_dir, training_config_path = (
+        load_inference_run_context(config_path)
+    )
 
-    inference_config = run_config.inference
     if int(inference_config.dataset_index) >= len(run_config.datasets):
         raise IndexError(
             f"inference.dataset_index={inference_config.dataset_index} exceeds "
             f"datasets length {len(run_config.datasets)}."
         )
 
-    base_dir = config_path.resolve().parent
     dataset = run_config.datasets[int(inference_config.dataset_index)]
     scale_params = dataset.scale.to_scale_params()
-    selected_h5 = _resolve_path(
-        base_dir,
-        h5_path or inference_config.h5_path or discover_hdf5_files(_resolve_path(base_dir, dataset.h5_dir))[0],
-    )
-    selected_checkpoint = _resolve_path(
-        base_dir,
-        checkpoint
-        or (run_config.outputs.checkpoint_path if run_config.outputs is not None else run_config.data.checkpoint_path),
-    )
-    selected_output = _resolve_path(base_dir, output_path or inference_config.output_path)
+    if h5_path or inference_config.h5_path:
+        selected_h5 = _resolve_path(inference_base_dir, h5_path or inference_config.h5_path)
+    else:
+        selected_h5 = discover_hdf5_files(_resolve_path(training_base_dir, dataset.h5_dir))[0]
+    if checkpoint:
+        selected_checkpoint = _resolve_path(inference_base_dir, checkpoint)
+    else:
+        selected_checkpoint = _resolve_path(
+            training_base_dir,
+            run_config.outputs.checkpoint_path if run_config.outputs is not None else run_config.data.checkpoint_path,
+        )
+    selected_output = _resolve_path(inference_base_dir, output_path or inference_config.output_path)
     selected_vtk_dir = (
-        _resolve_path(base_dir, inference_config.vtk_output_dir)
+        _resolve_path(inference_base_dir, inference_config.vtk_output_dir)
         if inference_config.vtk_output_dir is not None
         else selected_output.with_name(f"{selected_output.stem}_vtk")
     )
@@ -93,6 +94,7 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         "checkpoint_path": str(selected_checkpoint),
         "source_h5": str(selected_h5),
         "config_path": str(config_path.resolve()),
+        "training_config_path": str(training_config_path.resolve()),
         "num_layers": int(inference_config.num_layers),
         "layer_spacing": float(inference_config.layer_spacing),
         "layer_spacing_star": float(layer_spacing_star),
@@ -140,6 +142,61 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         "fdm_coefficient": float(fdm_coefficient),
         "vtk_output_dir": str(selected_vtk_dir) if bool(inference_config.write_vtk) else None,
     }
+
+
+def load_inference_run_context(config_path):
+    """Load split inference config or the legacy unified config."""
+
+    config_path = Path(config_path)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("inference config JSON must contain an object at the top level.")
+
+    inference_base_dir = config_path.resolve().parent
+    if "training_config" not in payload:
+        run_config = load_run_config(config_path)
+        if run_config.inference is None:
+            raise ValueError("Config must contain an 'inference' section for multilayer rollout.")
+        return run_config, run_config.inference, inference_base_dir, inference_base_dir, config_path.resolve()
+
+    unknown = sorted(set(payload) - {"training_config", "inference"})
+    if unknown:
+        raise ValueError(f"Unknown keys in inference config: {unknown}")
+    training_config_value = payload.get("training_config")
+    if not isinstance(training_config_value, str) or not training_config_value:
+        raise ValueError("'training_config' must be a non-empty string path.")
+
+    training_config_path = _resolve_path(inference_base_dir, training_config_value)
+    run_config = load_run_config(training_config_path)
+    inference_config = _build_inference_run_config(payload.get("inference"))
+    return (
+        run_config,
+        inference_config,
+        training_config_path.resolve().parent,
+        inference_base_dir,
+        training_config_path,
+    )
+
+
+def _build_inference_run_config(value) -> InferenceRunConfig:
+    if value is None:
+        raise ValueError("Missing required 'inference' section in inference config.")
+    if not isinstance(value, dict):
+        raise ValueError("'inference' section must be an object.")
+
+    field_defs = fields(InferenceRunConfig)
+    valid = {field.name for field in field_defs}
+    unknown = sorted(set(value) - valid)
+    if unknown:
+        raise ValueError(f"Unknown keys in 'inference' section: {unknown}")
+    missing = [
+        field.name
+        for field in field_defs
+        if field.default is MISSING and field.default_factory is MISSING and field.name not in value
+    ]
+    if missing:
+        raise ValueError(f"Missing required keys in 'inference' section: {missing}")
+    return InferenceRunConfig(**dict(value))
 
 
 def load_model_from_checkpoint(checkpoint_path, fallback_model_config: PDGCNConfig, device):

@@ -8,7 +8,9 @@ if __package__ is None or __package__ == "":
         sys.path.insert(0, str(repo_root))
 
 from inference.io import run_multilayer_inference_from_config
-from training.train_entry import DEFAULT_CONFIG_PATH
+
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "pdgcn_infer.example.json"
 
 
 def main(argv=None):
