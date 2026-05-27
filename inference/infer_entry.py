@@ -32,6 +32,12 @@ def main(argv=None):
     print(f"steps: {result['steps']}")
     print(f"num_layers: {result['num_layers']}")
     print(f"fdm_coefficient: {result['fdm_coefficient']}")
+    print(f"cloud_interval: {result['cloud_interval']}")
+    print(f"inference_seconds: {result['inference_seconds']:.6f}")
+    print(f"average_inference_seconds: {result['average_inference_seconds']:.6f}")
+    print(f"max_inference_seconds: {result['max_inference_seconds']:.6f}")
+    print(f"min_inference_seconds: {result['min_inference_seconds']:.6f}")
+    print(f"total_seconds: {result['total_seconds']:.6f}")
     return 0
 
 

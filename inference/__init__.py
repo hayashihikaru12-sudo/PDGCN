@@ -5,6 +5,7 @@ __all__ = [
     "InferenceRunConfig",
     "compute_layer_fdm_coefficient",
     "compute_layer_fdm_delta",
+    "render_multilayer_clouds_from_hdf5",
     "rollout_multilayer_fdm",
 ]
 
@@ -14,4 +15,8 @@ def __getattr__(name):
         from .multilayer import rollout_multilayer_fdm
 
         return rollout_multilayer_fdm
+    if name == "render_multilayer_clouds_from_hdf5":
+        from .io import render_multilayer_clouds_from_hdf5
+
+        return render_multilayer_clouds_from_hdf5
     raise AttributeError(name)

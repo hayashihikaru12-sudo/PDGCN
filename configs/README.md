@@ -261,8 +261,12 @@ residual =
     "bottom_temperature_star": 0.0,
     "top_heat_source_only": true,
     "allow_unstable_fdm": false,
-    "write_vtk": true,
-    "vtk_interval": 20,
+    "layer_fiber_angles_deg": [0.0, 45.0, -45.0, 90.0],
+    "normal_offset_sign": -1,
+    "write_vtk": false,
+    "cloud_interval": 20,
+    "layer_batch_size": null,
+    "cloud_max_nodes_per_layer": null,
     "vtk_output_dir": null
   }
 }
@@ -283,8 +287,12 @@ residual =
 | `bottom_temperature_star` | number | 底层恒温边界的无量纲温度。`0.0` 对应真实温度 `T_amb`。 |
 | `top_heat_source_only` | boolean | 是否只在顶层保留热源。`true` 表示下方层不直接施加 `Q`。 |
 | `allow_unstable_fdm` | boolean | 是否允许显式 FDM 系数超过稳定性建议范围。通常保持 `false`。 |
-| `write_vtk` | boolean | 是否同步输出 ParaView legacy `.vtk` 文件。 |
-| `vtk_interval` | integer | VTK 快照输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
+| `layer_fiber_angles_deg` | number array 或 `null` | 每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。为 `null` 时所有层使用 `0.0`。 |
+| `normal_offset_sign` | integer | 法向偏移方向，只能为 `-1` 或 `1`。默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。 |
+| `write_vtk` | boolean | 兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。 |
+| `cloud_interval` | integer | 合并三维云图输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
+| `layer_batch_size` | integer 或 `null` | 每次模型前向处理的层数；为 `null` 时 CUDA 自动使用较小层批量以降低显存。 |
+| `cloud_max_nodes_per_layer` | integer 或 `null` | 兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。 |
 | `vtk_output_dir` | string 或 `null` | VTK 输出目录。为 `null` 时使用 `<output_path stem>_vtk/`。 |
 
 多层推理中厚度方向显式 FDM 系数为：

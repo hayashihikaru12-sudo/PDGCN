@@ -1,7 +1,7 @@
 {
   "training_config": "pdgcn_train.example.json",
   "inference": {
-    "num_layers": 4,
+    "num_layers": 10,
     "layer_spacing": 0.00015,
     "output_path": "../runs/pdgcn/multilayer_prediction.h5",
     "dataset_index": 0,
@@ -11,8 +11,12 @@
     "bottom_temperature_star": 0.0,
     "top_heat_source_only": true,
     "allow_unstable_fdm": false,
-    "write_vtk": true,
-    "vtk_interval": 20,
+    "layer_fiber_angles_deg": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    "normal_offset_sign": -1,
+    "write_vtk": false,
+    "cloud_interval": 20,
+    "layer_batch_size": null,
+    "cloud_max_nodes_per_layer": null,
     "vtk_output_dir": null
   }
 }

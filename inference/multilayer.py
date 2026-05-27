@@ -1,8 +1,11 @@
+import inspect
+import time
 from typing import Sequence, Union
 
 import torch
 from torch_geometric.data import Data
 
+from data import build_edge_features
 from data.dimensionless import temperature_from_dimensionless
 from pde import apply_dirichlet_boundary
 from training.graph_utils import graph_boundary_nodes, graph_to_device
@@ -28,6 +31,10 @@ def rollout_multilayer_fdm(
     bottom_temperature_star: float = 0.0,
     top_heat_source_only: bool = True,
     allow_unstable_fdm: bool = False,
+    layer_fiber_angles_deg=None,
+    normal_offset_sign: int = -1,
+    layer_batch_size=None,
+    timing_recorder=None,
 ):
     """Run multilayer PD-GCN inference coupled with explicit 1D FDM in thickness."""
 
@@ -41,7 +48,11 @@ def rollout_multilayer_fdm(
         raise ValueError(f"layer_spacing must be positive, got {layer_spacing}.")
     if int(warmup_steps) < 0:
         raise ValueError(f"warmup_steps must be non-negative, got {warmup_steps}.")
+    layer_fiber_angles_deg = _validate_layer_fiber_angles(layer_fiber_angles_deg, num_layers)
+    if int(normal_offset_sign) not in (-1, 1):
+        raise ValueError(f"normal_offset_sign must be -1 or 1, got {normal_offset_sign}.")
 
+    initial_setup_start = time.perf_counter()
     model_device = next(model.parameters()).device
     graph0 = _graph_for_step(graph_init_or_seq, 0, steps, model_device)
     current_temperature = _initial_multilayer_temperature(
@@ -52,6 +63,8 @@ def rollout_multilayer_fdm(
         warmup_steps=int(warmup_steps),
         bottom_temperature_star=bottom_temperature_star,
     )
+    initial_setup_seconds = time.perf_counter() - initial_setup_start
+    effective_layer_batch_size = _resolve_layer_batch_size(layer_batch_size, num_layers, model_device)
 
     layer_spacing_star = float(layer_spacing) / float(scale_params.L0)
     fdm_coefficient = compute_layer_fdm_coefficient(
@@ -71,15 +84,18 @@ def rollout_multilayer_fdm(
     model.eval()
     try:
         for step in range(steps):
+            step_start = time.perf_counter()
             graph = graph0 if step == 0 else _graph_for_step(graph_init_or_seq, step, steps, model_device)
-            graph_step = _build_multilayer_graph(
+            delta_net = _forward_model_by_layer_batches(
+                model,
                 graph,
                 current_temperature,
+                effective_layer_batch_size=effective_layer_batch_size,
+                layer_spacing_star=layer_spacing_star,
+                layer_fiber_angles_deg=layer_fiber_angles_deg,
+                normal_offset_sign=int(normal_offset_sign),
                 top_heat_source_only=top_heat_source_only,
             )
-            delta_net = model(graph_step).reshape(num_layers, graph.num_nodes, -1)
-            if delta_net.shape[-1] != 1:
-                raise ValueError(f"model output_size must be 1 for thermal rollout, got {delta_net.shape[-1]}.")
 
             delta_fdm = compute_layer_fdm_delta(
                 current_temperature,
@@ -106,10 +122,17 @@ def rollout_multilayer_fdm(
                 else temperature_from_dimensionless(next_temperature, scale_params)
             )
             if writer is not None:
-                writer(step, output.detach().cpu())
+                render_seconds = _call_writer(writer, step, output.detach().cpu(), None)
+            else:
+                render_seconds = 0.0
             if return_all:
                 outputs.append(output.detach().cpu())
             current_temperature = next_temperature
+            if timing_recorder is not None:
+                inference_seconds = time.perf_counter() - step_start - float(render_seconds or 0.0)
+                if step == 0:
+                    inference_seconds += initial_setup_seconds
+                timing_recorder(max(0.0, inference_seconds))
     finally:
         if was_training:
             model.train()
@@ -117,6 +140,93 @@ def rollout_multilayer_fdm(
     if return_all:
         return torch.stack(outputs, dim=0)
     return None
+
+
+def _resolve_layer_batch_size(layer_batch_size, num_layers: int, device):
+    if layer_batch_size is not None:
+        batch_size = int(layer_batch_size)
+        if batch_size <= 0:
+            raise ValueError(f"layer_batch_size must be positive when set, got {layer_batch_size}.")
+        return min(batch_size, int(num_layers))
+    if getattr(device, "type", None) == "cuda":
+        return min(int(num_layers), 4)
+    return int(num_layers)
+
+
+def _forward_model_by_layer_batches(
+    model,
+    graph,
+    current_temperature,
+    *,
+    effective_layer_batch_size: int,
+    layer_spacing_star: float,
+    layer_fiber_angles_deg,
+    normal_offset_sign: int,
+    top_heat_source_only: bool,
+):
+    num_layers, num_nodes, _ = current_temperature.shape
+    delta_net = None
+    layer_start = 0
+    batch_size = int(effective_layer_batch_size)
+    while layer_start < num_layers:
+        layer_end = min(num_layers, layer_start + batch_size)
+        try:
+            layer_indices = torch.arange(layer_start, layer_end, device=current_temperature.device, dtype=torch.long)
+            graph_step = _build_multilayer_graph(
+                graph,
+                current_temperature[layer_start:layer_end],
+                layer_spacing_star=layer_spacing_star,
+                layer_fiber_angles_deg=layer_fiber_angles_deg,
+                normal_offset_sign=int(normal_offset_sign),
+                top_heat_source_only=top_heat_source_only,
+                layer_indices=layer_indices,
+            )
+            delta_chunk = model(graph_step).reshape(layer_end - layer_start, num_nodes, -1)
+            if delta_chunk.shape[-1] != 1:
+                raise ValueError(f"model output_size must be 1 for thermal rollout, got {delta_chunk.shape[-1]}.")
+            if delta_net is None:
+                delta_net = torch.empty(
+                    (num_layers, num_nodes, 1),
+                    device=delta_chunk.device,
+                    dtype=delta_chunk.dtype,
+                )
+            delta_net[layer_start:layer_end] = delta_chunk
+            layer_start = layer_end
+        except torch.cuda.OutOfMemoryError as error:
+            if getattr(current_temperature.device, "type", None) != "cuda" or batch_size <= 1:
+                raise RuntimeError(
+                    "CUDA out of memory during multilayer inference even with layer_batch_size=1. "
+                    "Reduce graph size, run fewer layers, or use a GPU with more memory."
+                ) from error
+            if "graph_step" in locals():
+                del graph_step
+            if "delta_chunk" in locals():
+                del delta_chunk
+            torch.cuda.empty_cache()
+            batch_size = max(1, batch_size // 2)
+    return delta_net
+
+
+def _call_writer(writer, step, output, graph_step):
+    if _writer_accepts_graph(writer):
+        result = writer(step, output, graph_step)
+    else:
+        result = writer(step, output)
+    return 0.0 if result is None else float(result)
+
+
+def _writer_accepts_graph(writer):
+    try:
+        signature = inspect.signature(writer)
+    except (TypeError, ValueError):
+        return True
+    positional_count = 0
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
+            positional_count += 1
+    return positional_count >= 3
 
 
 def _graph_for_step(graph_init_or_seq, step: int, steps: int, device):
@@ -164,23 +274,77 @@ def _initial_multilayer_temperature(
     return output
 
 
-def _build_multilayer_graph(graph, temperature_star, *, top_heat_source_only: bool):
+def _build_multilayer_graph(
+    graph,
+    temperature_star,
+    *,
+    layer_spacing_star: float = 0.0,
+    layer_fiber_angles_deg=None,
+    normal_offset_sign: int = -1,
+    top_heat_source_only: bool,
+    layer_indices=None,
+):
+    return _build_multilayer_graph_impl(
+        graph,
+        temperature_star,
+        layer_spacing_star=layer_spacing_star,
+        layer_fiber_angles_deg=layer_fiber_angles_deg,
+        normal_offset_sign=normal_offset_sign,
+        top_heat_source_only=top_heat_source_only,
+        layer_indices=layer_indices,
+    )
+
+
+def _build_multilayer_graph_impl(
+    graph,
+    temperature_star,
+    *,
+    layer_spacing_star: float,
+    layer_fiber_angles_deg,
+    normal_offset_sign: int,
+    top_heat_source_only: bool,
+    layer_indices,
+):
     num_layers, num_nodes, _ = temperature_star.shape
     edge_index = graph.edge_index
     edge_count = edge_index.shape[1]
     device = graph.x.device
 
+    multilayer_geometry = _build_multilayer_geometry(
+        graph,
+        num_layers,
+        layer_spacing_star=float(layer_spacing_star),
+        layer_fiber_angles_deg=layer_fiber_angles_deg,
+        normal_offset_sign=int(normal_offset_sign),
+        layer_indices=layer_indices,
+    )
+
     x = graph.x.repeat(num_layers, 1)
+    x[:, 0:3] = multilayer_geometry["pos"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype)
+    x[:, 3:6] = multilayer_geometry["fiber"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype)
     x[:, 6:7] = temperature_star.reshape(num_layers * num_nodes, 1).to(device=device, dtype=x.dtype)
-    if top_heat_source_only and num_layers > 1:
-        x[num_nodes:, 7:8] = 0.0
+    absolute_layer_indices = _as_layer_indices(layer_indices, num_layers, device, dtype=torch.long)
+    if top_heat_source_only:
+        non_top_mask = absolute_layer_indices != 0
+        if torch.any(non_top_mask):
+            x_view = x.reshape(num_layers, num_nodes, -1)
+            x_view[non_top_mask, :, 7:8] = 0.0
 
     offsets = (torch.arange(num_layers, device=device, dtype=edge_index.dtype) * num_nodes).reshape(num_layers, 1, 1)
     edge_index_batched = (edge_index.reshape(1, 2, edge_count) + offsets).permute(1, 0, 2).reshape(
         2,
         num_layers * edge_count,
     )
-    edge_attr = graph.edge_attr.repeat(num_layers, 1)
+    if multilayer_geometry["normal"] is not None and getattr(graph, "velocity_direction", None) is not None:
+        edge_attr = build_edge_features(
+            x[:, 0:3],
+            edge_index_batched,
+            x[:, 3:6],
+            multilayer_geometry["normal"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype),
+            graph.velocity_direction,
+        )
+    else:
+        edge_attr = graph.edge_attr.repeat(num_layers, 1)
 
     data = Data(
         x=x,
@@ -189,8 +353,104 @@ def _build_multilayer_graph(graph, temperature_star, *, top_heat_source_only: bo
         global_attr=graph.global_attr,
     )
     data.num_nodes = num_layers * num_nodes
+    data.layer_count = num_layers
+    data.nodes_per_layer = num_nodes
     if hasattr(graph, "node_type"):
         data.node_type = graph.node_type.repeat(num_layers)
-    if getattr(graph, "pos", None) is not None:
-        data.pos = graph.pos.repeat(num_layers, 1)
+    data.pos = x[:, 0:3]
+    if multilayer_geometry["normal"] is not None:
+        data.normal = multilayer_geometry["normal"].reshape(num_layers * num_nodes, 3)
+    if getattr(graph, "velocity_direction", None) is not None:
+        data.velocity_direction = graph.velocity_direction
     return data
+
+
+def _validate_layer_fiber_angles(layer_fiber_angles_deg, num_layers: int):
+    if layer_fiber_angles_deg is None:
+        return [0.0] * int(num_layers)
+    if len(layer_fiber_angles_deg) != int(num_layers):
+        raise ValueError(
+            "layer_fiber_angles_deg length must match num_layers, "
+            f"got {len(layer_fiber_angles_deg)} for num_layers={num_layers}."
+        )
+    angles = [float(angle) for angle in layer_fiber_angles_deg]
+    if abs(angles[0]) > 1e-12:
+        raise ValueError("layer_fiber_angles_deg[0] must be 0.0 for the base layer.")
+    return angles
+
+
+def _build_multilayer_geometry(
+    graph,
+    num_layers: int,
+    *,
+    layer_spacing_star: float,
+    layer_fiber_angles_deg,
+    normal_offset_sign: int,
+    layer_indices=None,
+):
+    if layer_fiber_angles_deg is None:
+        layer_fiber_angles_deg = [0.0] * int(num_layers)
+    pos0 = getattr(graph, "pos", None)
+    if pos0 is None:
+        pos0 = graph.x[:, 0:3]
+    fiber0 = graph.x[:, 3:6]
+    normal0 = getattr(graph, "normal", None)
+
+    absolute_layer_indices = _as_layer_indices(layer_indices, num_layers, pos0.device, dtype=torch.long)
+
+    if normal0 is None:
+        return {
+            "pos": pos0.reshape(1, graph.num_nodes, 3).repeat(num_layers, 1, 1),
+            "fiber": fiber0.reshape(1, graph.num_nodes, 3).repeat(num_layers, 1, 1),
+            "normal": None,
+        }
+
+    normal_unit = _normalize_vectors(normal0.to(device=pos0.device, dtype=pos0.dtype))
+    layer_index = absolute_layer_indices.to(device=pos0.device, dtype=pos0.dtype).reshape(num_layers, 1, 1)
+    pos_layers = pos0.reshape(1, graph.num_nodes, 3) + (
+        float(normal_offset_sign) * layer_index * float(layer_spacing_star) * normal_unit.reshape(1, graph.num_nodes, 3)
+    )
+
+    angle_values = torch.as_tensor(layer_fiber_angles_deg, device=pos0.device, dtype=pos0.dtype)
+    if int(absolute_layer_indices.max().item()) >= int(angle_values.numel()):
+        raise ValueError(
+            "layer_fiber_angles_deg length must cover all requested absolute layer indices, "
+            f"got {angle_values.numel()} angles for max layer index {int(absolute_layer_indices.max().item())}."
+        )
+    angles = angle_values[absolute_layer_indices].reshape(num_layers, 1, 1)
+    angles = torch.deg2rad(angles)
+    fiber_layers = _rotate_vectors_about_axis(
+        fiber0.reshape(1, graph.num_nodes, 3).expand(num_layers, -1, -1),
+        normal_unit.reshape(1, graph.num_nodes, 3).expand(num_layers, -1, -1),
+        angles,
+    )
+    normal_layers = normal_unit.reshape(1, graph.num_nodes, 3).expand(num_layers, -1, -1)
+    return {"pos": pos_layers, "fiber": fiber_layers, "normal": normal_layers}
+
+
+def _as_layer_indices(layer_indices, num_layers: int, device, dtype):
+    if layer_indices is None:
+        return torch.arange(int(num_layers), device=device, dtype=dtype)
+    indices = torch.as_tensor(layer_indices, device=device, dtype=dtype).reshape(-1)
+    if indices.numel() != int(num_layers):
+        raise ValueError(
+            f"layer_indices length must match temperature layer count {num_layers}, got {indices.numel()}."
+        )
+    if indices.numel() == 0 or int(indices.min().item()) < 0:
+        raise ValueError("layer_indices must contain non-negative layer indices.")
+    return indices
+
+
+def _rotate_vectors_about_axis(vectors, axes, angles):
+    cos_angle = torch.cos(angles)
+    sin_angle = torch.sin(angles)
+    rotated = (
+        vectors * cos_angle
+        + torch.cross(axes, vectors, dim=-1) * sin_angle
+        + axes * (axes * vectors).sum(dim=-1, keepdim=True) * (1.0 - cos_angle)
+    )
+    return _normalize_vectors(rotated)
+
+
+def _normalize_vectors(vectors, eps: float = 1e-12):
+    return vectors / torch.linalg.norm(vectors, dim=-1, keepdim=True).clamp_min(eps)

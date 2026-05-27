@@ -5,8 +5,8 @@ import torch.nn as nn
 from torch_geometric.data import Data
 
 from data import ScaleParams
-from inference.io import _should_write_vtk_step
-from inference.multilayer import rollout_multilayer_fdm
+from inference.io import _should_write_cloud_step
+from inference.multilayer import _build_multilayer_graph, rollout_multilayer_fdm
 from models import PDGCNConfig
 
 
@@ -15,8 +15,10 @@ class ConstantDeltaModel(nn.Module):
         super().__init__()
         self.config = PDGCNConfig()
         self.delta = nn.Parameter(torch.tensor(1.0))
+        self.call_count = 0
 
     def forward(self, graph):
+        self.call_count += 1
         return self.delta.expand(graph.x.shape[0], 1)
 
 
@@ -28,6 +30,26 @@ def make_graph():
         global_attr=torch.tensor([1.0]),
     )
     graph.num_nodes = 2
+    graph.x[:, 6:7] = 2.0
+    graph.upwind_nodes = torch.empty(0, dtype=torch.long)
+    graph.side_nodes = torch.empty(0, dtype=torch.long)
+    graph.downwind_nodes = torch.empty(0, dtype=torch.long)
+    return graph
+
+
+def make_geometric_graph():
+    graph = Data(
+        x=torch.zeros(2, 8),
+        edge_index=torch.tensor([[0], [1]], dtype=torch.long),
+        edge_attr=torch.tensor([[1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]], dtype=torch.float32),
+        global_attr=torch.tensor([1.0]),
+        pos=torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=torch.float32),
+        normal=torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]], dtype=torch.float32),
+        velocity_direction=torch.tensor([1.0, 0.0, 0.0], dtype=torch.float32),
+    )
+    graph.num_nodes = 2
+    graph.x[:, 0:3] = graph.pos
+    graph.x[:, 3:6] = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=torch.float32)
     graph.x[:, 6:7] = 2.0
     graph.upwind_nodes = torch.empty(0, dtype=torch.long)
     graph.side_nodes = torch.empty(0, dtype=torch.long)
@@ -87,10 +109,132 @@ class MultilayerRolloutTests(unittest.TestCase):
         expected = torch.tensor([[[[2.90], [2.90]], [[1.10], [1.10]], [[0.00], [0.00]]]])
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
-    def test_vtk_interval_writes_every_nth_step_from_zero(self):
-        written = [step for step in range(45) if _should_write_vtk_step(step, 20)]
+    def test_cloud_interval_writes_every_nth_step_from_zero(self):
+        written = [step for step in range(12) if _should_write_cloud_step(step, 5)]
 
-        self.assertEqual(written, [0, 20, 40])
+        self.assertEqual(written, [0, 5, 10])
+
+    def test_multilayer_graph_offsets_nodes_along_normal(self):
+        graph = make_geometric_graph()
+        temperature = torch.full((3, 2, 1), 2.0)
+
+        multilayer = _build_multilayer_graph(
+            graph,
+            temperature,
+            layer_spacing_star=0.15,
+            layer_fiber_angles_deg=[0.0, 45.0, 90.0],
+            normal_offset_sign=-1,
+            top_heat_source_only=True,
+        )
+
+        expected_z = torch.tensor([0.0, 0.0, -0.15, -0.15, -0.30, -0.30])
+        self.assertTrue(torch.allclose(multilayer.pos[:, 2], expected_z, atol=1e-6))
+
+    def test_multilayer_graph_rotates_fibers_without_projection(self):
+        graph = make_geometric_graph()
+        temperature = torch.full((2, 2, 1), 2.0)
+
+        multilayer = _build_multilayer_graph(
+            graph,
+            temperature,
+            layer_spacing_star=0.15,
+            layer_fiber_angles_deg=[0.0, 90.0],
+            normal_offset_sign=-1,
+            top_heat_source_only=True,
+        )
+
+        self.assertTrue(torch.allclose(multilayer.x[0:2, 3:6], torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])))
+        self.assertTrue(torch.allclose(multilayer.x[2:4, 3:6], torch.tensor([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]), atol=1e-6))
+        self.assertAlmostEqual(float(multilayer.edge_attr[0, 6]), 1.0, places=6)
+        self.assertAlmostEqual(float(multilayer.edge_attr[1, 6]), 0.0, places=6)
+
+    def test_multilayer_rollout_calls_model_once_per_step(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+
+        rollout_multilayer_fdm(
+            model,
+            make_geometric_graph(),
+            3,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            layer_fiber_angles_deg=[0.0, 45.0, -45.0, 90.0],
+        )
+
+        self.assertEqual(model.call_count, 3)
+
+    def test_multilayer_rollout_batches_model_by_layer(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+
+        rollout_multilayer_fdm(
+            model,
+            make_geometric_graph(),
+            3,
+            scale_params,
+            num_layers=5,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            layer_fiber_angles_deg=[0.0, 15.0, 30.0, 45.0, 60.0],
+            layer_batch_size=2,
+        )
+
+        self.assertEqual(model.call_count, 9)
+
+    def test_layer_batched_rollout_matches_full_layer_rollout(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        angles = [0.0, 15.0, 30.0, 45.0, 60.0]
+
+        full = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_geometric_graph(),
+            2,
+            scale_params,
+            num_layers=5,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            layer_fiber_angles_deg=angles,
+        )
+        batched = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_geometric_graph(),
+            2,
+            scale_params,
+            num_layers=5,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            layer_fiber_angles_deg=angles,
+            layer_batch_size=2,
+        )
+
+        self.assertTrue(torch.allclose(full, batched, atol=1e-6))
+
+    def test_multilayer_graph_uses_absolute_layer_indices_for_batches(self):
+        graph = make_geometric_graph()
+        temperature = torch.full((2, 2, 1), 2.0)
+
+        multilayer = _build_multilayer_graph(
+            graph,
+            temperature,
+            layer_spacing_star=0.15,
+            layer_fiber_angles_deg=[0.0, 45.0, 90.0, 180.0],
+            normal_offset_sign=-1,
+            top_heat_source_only=True,
+            layer_indices=torch.tensor([2, 3], dtype=torch.long),
+        )
+
+        expected_z = torch.tensor([-0.30, -0.30, -0.45, -0.45])
+        self.assertTrue(torch.allclose(multilayer.pos[:, 2], expected_z, atol=1e-6))
+        self.assertTrue(
+            torch.allclose(
+                multilayer.x[0:2, 3:6],
+                torch.tensor([[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]]),
+                atol=1e-6,
+            )
+        )
+        self.assertTrue(torch.allclose(multilayer.x[:, 7:8], torch.zeros_like(multilayer.x[:, 7:8])))
 
 
 if __name__ == "__main__":

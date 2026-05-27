@@ -176,6 +176,8 @@ def build_graph(
     graph.num_nodes = raw_data.xyz.shape[0]
     graph.frame_idx = raw_data.frame_idx
     graph.num_frames = raw_data.num_frames
+    graph.normal = raw_data.normal
+    graph.velocity_direction = raw_data.velocity_direction
     graph.upwind_nodes = raw_data.boundary_nodes["upwind"]
     graph.downwind_nodes = raw_data.boundary_nodes["downwind"]
     graph.side_nodes = raw_data.boundary_nodes["side"]

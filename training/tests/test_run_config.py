@@ -326,6 +326,7 @@ class RunConfigTests(unittest.TestCase):
                 "output_path": str(output_path.resolve()),
                 "steps": 2,
                 "warmup_steps": 0,
+                "cloud_interval": 1,
             },
         }
         training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
@@ -340,15 +341,20 @@ class RunConfigTests(unittest.TestCase):
             self.assertIn("metadata", h5_file)
             self.assertIn("metadata", h5_file.attrs)
             metadata = json.loads(h5_file.attrs["metadata"])
-            self.assertEqual(metadata["vtk_interval"], 20)
+            self.assertEqual(metadata["cloud_interval"], 1)
             self.assertEqual(metadata["training_config_path"], str(training_config_path.resolve()))
+            self.assertIn("inference_seconds", metadata)
+            self.assertIn("average_inference_seconds", metadata)
+            self.assertIn("max_inference_seconds", metadata)
+            self.assertIn("min_inference_seconds", metadata)
+            self.assertIn("render_seconds", metadata)
+            self.assertEqual(metadata["render_seconds"], 0.0)
+            self.assertEqual(metadata["rendered_steps"], [])
+            self.assertLessEqual(metadata["min_inference_seconds"], metadata["average_inference_seconds"])
+            self.assertLessEqual(metadata["average_inference_seconds"], metadata["max_inference_seconds"])
         vtk_dir = output_path.with_name(f"{output_path.stem}_vtk")
-        vtk_files = sorted(vtk_dir.glob("temperature_step_*_layer_*.vtk"))
-        self.assertEqual(len(vtk_files), 3)
-        self.assertTrue(all("temperature_step_000000" in path.name for path in vtk_files))
-        vtk_text = vtk_files[0].read_text(encoding="ascii")
-        self.assertIn("SCALARS temperature float 1", vtk_text)
-        self.assertIn("SCALARS temperature_star float 1", vtk_text)
+        vtk_files = sorted(vtk_dir.glob("temperature_step_*.vtk"))
+        self.assertEqual(vtk_files, [])
 
     def test_load_inference_run_context_accepts_legacy_unified_config(self):
         config_path = self.root / "legacy_infer.json"

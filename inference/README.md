@@ -14,12 +14,14 @@
    - 若 metadata 不包含模型配置，则使用当前 JSON 配置派生的模型配置。
 5. 按时间帧构造单层曲面图，节点特征包含坐标、纤维方向、当前温度和热源。
 6. 在每个时间步执行多层滚动：
+   - 按 `layer_spacing` 沿节点曲面法向偏移下层节点坐标；
+   - 按 `layer_fiber_angles_deg` 绕节点法向旋转各层纤维方向；
    - 使用同一个单层 PDGCN 对每层预测面内温度增量；
    - 默认仅顶层保留热源，下层热源置零；
    - 使用 1D FDM 计算厚度方向层间传热；
    - 对迎风/侧边节点施加 Dirichlet 边界；
    - 对底层全节点施加恒温边界。
-7. 写出多层温度序列 HDF5，并在启用时按 `vtk_interval` 写出逐层 VTK 快照。
+7. 写出多层温度序列 HDF5。VTK 云图不由推理入口生成，需使用 `render_entry.py` 从 HDF5 结果离线渲染。
 
 ## 使用方法
 
@@ -63,8 +65,12 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
     "bottom_temperature_star": 0.0,
     "top_heat_source_only": true,
     "allow_unstable_fdm": false,
-    "write_vtk": true,
-    "vtk_interval": 20,
+    "layer_fiber_angles_deg": [0.0, 45.0, -45.0, 90.0],
+    "normal_offset_sign": -1,
+    "write_vtk": false,
+    "cloud_interval": 20,
+    "layer_batch_size": null,
+    "cloud_max_nodes_per_layer": null,
     "vtk_output_dir": null
   }
 }
@@ -83,8 +89,12 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `bottom_temperature_star`：底层恒温边界的无量纲温度，默认 `0.0`。
 - `top_heat_source_only`：是否仅顶层保留热源，默认 `true`。
 - `allow_unstable_fdm`：是否允许显式 FDM 系数 `C_n > 0.5`。
-- `write_vtk`：是否输出 ParaView VTK 文件，默认 `true`。
-- `vtk_interval`：VTK 快照输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
+- `layer_fiber_angles_deg`：每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。
+- `normal_offset_sign`：法向偏移方向，只能为 `-1` 或 `1`；默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。
+- `write_vtk`：兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。
+- `cloud_interval`：合并三维云图输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
+- `layer_batch_size`：每次模型前向处理的层数；为 `null` 时 CUDA 默认自动按较小层批量推理，降低 30 层等大规模工况显存占用。
+- `cloud_max_nodes_per_layer`：兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。
 - `vtk_output_dir`：VTK 输出目录；为 `null` 时使用 `<output_path stem>_vtk/`。
 
 ## FDM 更新公式
@@ -116,7 +126,7 @@ HDF5 输出包含：
 
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
-- `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、FDM 系数、VTK 输出间隔和尺度参数。
+- `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、FDM 系数、合并三维云图输出间隔、尺度参数、总推理/渲染耗时和逐帧推理耗时统计。
 
 VTK 输出默认目录为：
 
@@ -124,20 +134,27 @@ VTK 输出默认目录为：
 <output_path stem>_vtk/
 ```
 
-VTK 仅按 `vtk_interval` 写出快照。默认文件名格式：
+VTK 仅由 `render_entry.py` 从已生成的 HDF5 结果离线生成，并按 `cloud_interval` 写出合并三维拓扑云图快照。默认文件名格式：
 
 ```text
-temperature_step_000000_layer_000.vtk
-temperature_step_000000_layer_001.vtk
+temperature_step_000000.vtk
 ```
 
-每个 VTK 文件包含：
+每个 VTK 文件合并包含所有层：
 
-- 曲面节点三维坐标；
-- 计算图 `edge_index` 写成的线单元；
+- 法向偏移后的三维节点坐标；
+- 从真实 `edge_index` 恢复的 Gmsh 三角网格面，以及相邻层之间生成的 `UNSTRUCTURED_GRID` wedge 体单元；
 - 点标量 `temperature`、`temperature_star`、`layer_index`、`time_step`。
 
 在 ParaView 中打开 `.vtk` 后，可选择 `temperature` 或 `temperature_star` 进行着色。
+
+从已生成的 HDF5 结果离线渲染：
+
+```powershell
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\render_entry.py `
+  --prediction ..\runs\pdgcn\multilayer_prediction.h5 `
+  --cloud-interval 20
+```
 
 ## 测试
 
