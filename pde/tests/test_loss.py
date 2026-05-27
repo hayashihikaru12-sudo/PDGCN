@@ -1,7 +1,7 @@
 import torch
 import unittest
 
-from pde.loss import apply_dirichlet_boundary, compute_outflow_loss, total_loss
+from pde.loss import apply_dirichlet_boundary, compute_graph_gradient_loss, compute_outflow_loss, total_loss
 
 
 def _edge_attr(distance, cos_theta, cos_phi_sq=None):
@@ -67,6 +67,23 @@ def test_compute_outflow_loss_matches_weighted_gradient():
     assert torch.allclose(loss, torch.tensor(expected_gradient**2), atol=1e-6)
 
 
+def test_compute_graph_gradient_loss_uses_only_internal_edges():
+    """验证图梯度平滑损失只统计两端均为内部节点的边。"""
+
+    edge_index = torch.tensor([[0, 1, 2], [1, 2, 3]], dtype=torch.long)
+    edge_attr = _edge_attr(distance=[1.0, 2.0, 1.0], cos_theta=[0.0, 0.0, 0.0])
+    T = torch.tensor([[0.0], [2.0], [8.0], [10.0]])
+    boundary_nodes = {
+        "upwind": torch.tensor([0]),
+        "side": torch.empty(0, dtype=torch.long),
+        "downwind": torch.tensor([3]),
+    }
+
+    loss = compute_graph_gradient_loss(T, edge_index, edge_attr, boundary_nodes)
+
+    assert torch.allclose(loss, torch.tensor(9.0), atol=1e-6)
+
+
 def test_total_loss_returns_scalar_and_components_are_consistent():
     """验证总损失为标量且分量加权关系正确。
 
@@ -110,6 +127,73 @@ def test_total_loss_returns_scalar_and_components_are_consistent():
         components["loss_total"],
         components["loss_pde"] + 0.25 * components["loss_outflow"],
     )
+    assert "loss_smooth" in components
+
+
+def test_total_loss_adds_weighted_graph_gradient_regularization():
+    """验证总损失会按权重加入图梯度平滑正则。"""
+
+    edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+    edge_attr = _edge_attr(distance=[2.0], cos_theta=[0.0])
+    T_next = torch.tensor([[1.0], [5.0]])
+
+    components = total_loss(
+        T_next=T_next,
+        T_current=T_next,
+        v_scan_star=0.0,
+        Q_star=torch.zeros_like(T_next),
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        inverse_pe=0.0,
+        pi_q=0.0,
+        lambda_outflow=0.0,
+        gradient_regularization=0.25,
+        return_components=True,
+    )
+
+    assert torch.allclose(components["loss_smooth"], torch.tensor(4.0), atol=1e-6)
+    assert torch.allclose(components["loss_total"], torch.tensor(1.0), atol=1e-6)
+
+
+def test_total_loss_smooth_component_is_zero_without_internal_edges():
+    """验证空边或边界边不会产生平滑正则损失。"""
+
+    T_next = torch.tensor([[1.0], [5.0]])
+    empty_components = total_loss(
+        T_next=T_next,
+        T_current=T_next,
+        v_scan_star=0.0,
+        Q_star=torch.zeros_like(T_next),
+        dt_star=1.0,
+        edge_index=torch.empty((2, 0), dtype=torch.long),
+        edge_attr=torch.empty((0, 7), dtype=torch.float32),
+        inverse_pe=0.0,
+        pi_q=0.0,
+        gradient_regularization=1.0,
+        return_components=True,
+    )
+    assert torch.allclose(empty_components["loss_smooth"], torch.tensor(0.0))
+
+    boundary_components = total_loss(
+        T_next=T_next,
+        T_current=T_next,
+        v_scan_star=0.0,
+        Q_star=torch.zeros_like(T_next),
+        dt_star=1.0,
+        edge_index=torch.tensor([[0], [1]], dtype=torch.long),
+        edge_attr=_edge_attr(distance=[1.0], cos_theta=[0.0]),
+        boundary_nodes={
+            "upwind": torch.tensor([0]),
+            "side": torch.empty(0, dtype=torch.long),
+            "downwind": torch.tensor([1]),
+        },
+        inverse_pe=0.0,
+        pi_q=0.0,
+        gradient_regularization=1.0,
+        return_components=True,
+    )
+    assert torch.allclose(boundary_components["loss_smooth"], torch.tensor(0.0))
 
 
 def test_total_loss_pde_component_includes_thermal_loss_term():

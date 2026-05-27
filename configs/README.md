@@ -175,6 +175,7 @@ pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
 "physics_loss": {
   "k_ratio": 0.05,
   "lambda_outflow": 1.0,
+  "gradient_regularization": 0.001,
   "thermal_loss_beta": 0.3,
   "thermal_loss_base_temperature_star": 0.0,
   "residual_time_scheme": "explicit"
@@ -185,6 +186,7 @@ pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
 | --- | --- | --- |
 | `k_ratio` | number | 横向或厚度方向导热系数与主导热系数的比值，即 `K_perp / K_parallel`。示例 `0.05` 表示横向导热明显弱于纤维方向。 |
 | `lambda_outflow` | number | 出流边界 Neumann 软约束损失权重。越大越强调 downwind 边界法向温度梯度接近零。 |
+| `gradient_regularization` | number | 图梯度平滑损失权重，作用于边界钳制后的预测温度 `T_next_bc*`，抑制相邻内部节点的高频温度振荡。推荐从 `1e-4` 到 `1e-2` 调参；过大可能抹平热峰。 |
 | `thermal_loss_beta` | number | 单层训练中的等效热耗散系数，作用项为 `beta * (T* - T_base*)`。值越大，温度越容易被拉回基底温度。 |
 | `thermal_loss_base_temperature_star` | number | 热耗散基底温度的无量纲值。`0.0` 对应真实温度 `T_amb`。 |
 | `residual_time_scheme` | string | PDE 空间项和热耗散项的时间离散方式。可选 `"explicit"` 或 `"backward"`。 |
@@ -192,10 +194,15 @@ pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
 当前总损失为：
 
 ```text
-loss_total = loss_pde + lambda_outflow * loss_outflow
+loss_total = loss_pde + lambda_outflow * loss_outflow + gradient_regularization * loss_smooth
 ```
 
 其中 `loss_beta` 会被记录到训练历史和监控文件中，但当前不作为独立项直接加到 `loss_total`。`thermal_loss_beta` 已经通过 PDE residual 进入 `loss_pde`。
+`loss_smooth` 为内部边上的一阶图梯度平方均值：
+
+```text
+loss_smooth = mean_edges(((T_i* - T_j*) / d_ij*)^2)
+```
 
 PDE residual 的主要形式为：
 

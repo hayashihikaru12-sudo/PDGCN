@@ -33,6 +33,7 @@
     "physics_loss": {
       "k_ratio": 0.12,
       "lambda_outflow": 1.0,
+      "gradient_regularization": 0.001,
       "thermal_loss_beta": 10.0,
       "thermal_loss_base_temperature_star": 0.0,
       "residual_time_scheme": "backward"

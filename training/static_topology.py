@@ -286,6 +286,7 @@ def train_static_topology_sequences(
             "loss_pde": _mean_records(window_records, "loss_pde"),
             "loss_outflow": _mean_records(window_records, "loss_outflow"),
             "loss_beta": _mean_records(window_records, "loss_beta"),
+            "loss_smooth": _mean_records(window_records, "loss_smooth"),
             "temperature_mean": _mean_records(window_records, "temperature_mean"),
             "temperature_max": _max_records(window_records, "temperature_max"),
             "temperature_min": _min_records(window_records, "temperature_min"),
@@ -471,6 +472,7 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
         pi_q=model.config.pi_q,
         k_ratio=model.config.k_ratio,
         lambda_outflow=model.config.lambda_outflow,
+        gradient_regularization=model.config.gradient_regularization,
         dirichlet_temperature_star=model.config.dirichlet_temperature_star,
         thermal_loss_beta=model.config.thermal_loss_beta,
         thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
@@ -485,6 +487,7 @@ def _detach_loss_record(components):
         "loss_pde": float(components["loss_pde"].detach().cpu()),
         "loss_outflow": float(components["loss_outflow"].detach().cpu()),
         "loss_beta": float(components["loss_beta"].detach().cpu()),
+        "loss_smooth": float(components["loss_smooth"].detach().cpu()),
     }
 
 
@@ -494,6 +497,7 @@ def _aggregate_component_records(records):
         "loss_pde": _mean_records(records, "loss_pde"),
         "loss_outflow": _mean_records(records, "loss_outflow"),
         "loss_beta": _mean_records(records, "loss_beta"),
+        "loss_smooth": _mean_records(records, "loss_smooth"),
     }
 
 

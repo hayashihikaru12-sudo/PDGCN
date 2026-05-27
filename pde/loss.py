@@ -83,6 +83,34 @@ def compute_outflow_loss(T, edge_index, edge_attr, outflow_nodes, *, eps: float 
     return normal_gradient.square().mean()
 
 
+def compute_graph_gradient_loss(T, edge_index, edge_attr, boundary_nodes=None, *, eps: float = 1e-12):
+    """计算内部边上的一阶图梯度平滑损失。"""
+
+    T_2d, _ = _as_time_node(T, name="T")
+    device = T_2d.device
+    dtype = T_2d.dtype
+    edge_index = edge_index.to(device=device)
+    edge_attr = edge_attr.to(device=device, dtype=dtype)
+    if edge_index.numel() == 0:
+        return T_2d.new_zeros(())
+
+    sender = edge_index[0]
+    receiver = edge_index[1]
+    interior_nodes = _interior_nodes(T_2d.shape[1], boundary_nodes, device=device)
+    if interior_nodes.numel() == 0:
+        return T_2d.new_zeros(())
+
+    interior_mask = torch.zeros(T_2d.shape[1], device=device, dtype=torch.bool)
+    interior_mask[interior_nodes] = True
+    edge_mask = interior_mask[sender] & interior_mask[receiver]
+    if not bool(edge_mask.any().item()):
+        return T_2d.new_zeros(())
+
+    distance = edge_attr[edge_mask, 3].clamp_min(eps)
+    gradient = (T_2d[:, receiver[edge_mask]] - T_2d[:, sender[edge_mask]]) / distance.reshape(1, -1)
+    return gradient.square().mean()
+
+
 def total_loss(
     *,
     T_next,
@@ -97,6 +125,7 @@ def total_loss(
     pi_q: float = 1.0,
     k_ratio: float = 0.05,
     lambda_outflow: float = 1.0,
+    gradient_regularization: float = 0.0,
     dirichlet_temperature_star: float = 0.0,
     thermal_loss_beta: float = 0.0,
     thermal_loss_base_temperature_star=0.0,
@@ -120,6 +149,7 @@ def total_loss(
         pi_q: 无量纲热源强度系数。
         k_ratio: 横向/纵向导热系数比。
         lambda_outflow: 出流边界损失权重。
+        gradient_regularization: 图梯度平滑损失权重，用于抑制预测温度的高频振荡。
         dirichlet_temperature_star: 硬 Dirichlet 边界的无量纲温度值。
         thermal_loss_beta: 无量纲层间等效热耗散系数 ``beta``。
         thermal_loss_base_temperature_star: 无量纲基底温度 ``T_base*``，
@@ -132,7 +162,7 @@ def total_loss(
     返回:
         若 ``return_components=False``，返回标量总损失张量；
         否则返回字典，包含 ``loss_total``、``loss_pde``、``loss_outflow``、
-        ``residual`` 和 ``T_next_bc``。
+        ``loss_smooth``、``residual`` 和 ``T_next_bc``。
     """
 
     T_next_bc = apply_dirichlet_boundary(
@@ -188,7 +218,8 @@ def total_loss(
 
     outflow_nodes = _concat_boundary_nodes(boundary_nodes, ("downwind",), device=residual_2d.device)
     loss_outflow = compute_outflow_loss(T_next_bc, edge_index, edge_attr, outflow_nodes, eps=eps)
-    loss_total = loss_pde + float(lambda_outflow) * loss_outflow
+    loss_smooth = compute_graph_gradient_loss(T_next_bc, edge_index, edge_attr, boundary_nodes, eps=eps)
+    loss_total = loss_pde + float(lambda_outflow) * loss_outflow + float(gradient_regularization) * loss_smooth
 
     if not return_components:
         return loss_total
@@ -198,6 +229,7 @@ def total_loss(
         "loss_pde": loss_pde,
         "loss_outflow": loss_outflow,
         "loss_beta": loss_beta,
+        "loss_smooth": loss_smooth,
         "residual": residual,
         "T_next_bc": T_next_bc,
         "thermal_loss_term": _restore_layout(thermal_loss_term_2d, t_next_layout),

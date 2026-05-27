@@ -82,6 +82,7 @@ class RunConfigTests(unittest.TestCase):
                 "inverse_pe": 999.0,
                 "pi_q": 999.0,
                 "dt_star": 999.0,
+                "gradient_regularization": 0.001,
                 "thermal_loss_beta": 0.25,
                 "thermal_loss_base_temperature_star": 0.0,
                 "residual_time_scheme": "backward",
@@ -92,6 +93,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(config.inverse_pe, 0.5)
         self.assertAlmostEqual(config.pi_q, 0.125)
         self.assertAlmostEqual(config.dt_star, 1.0)
+        self.assertAlmostEqual(config.gradient_regularization, 0.001)
         self.assertAlmostEqual(config.thermal_loss_beta, 0.25)
         self.assertAlmostEqual(config.thermal_loss_base_temperature_star, 0.0)
         self.assertEqual(config.residual_time_scheme, "backward")
@@ -136,6 +138,7 @@ class RunConfigTests(unittest.TestCase):
                 },
                 "physics_loss": {
                     "lambda_outflow": 0.0,
+                    "gradient_regularization": 0.001,
                     "thermal_loss_beta": 0.25,
                     "residual_time_scheme": "backward",
                 },
@@ -619,6 +622,7 @@ class RunConfigTests(unittest.TestCase):
                 "pi_q": 999.0,
                 "dt_star": 999.0,
                 "lambda_outflow": 0.0,
+                "gradient_regularization": 0.001,
                 "thermal_loss_beta": 0.25,
                 "thermal_loss_base_temperature_star": 0.0,
                 "residual_time_scheme": "backward",
@@ -652,6 +656,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(metadata["hdf5_timing"]["dt_star"], 0.25)
         self.assertAlmostEqual(metadata["hdf5_timing"]["step_distance"], 0.0005)
         self.assertAlmostEqual(metadata["hdf5_timing"]["velocity_speed"], 0.002)
+        self.assertAlmostEqual(metadata["model_config"]["gradient_regularization"], 0.001)
         self.assertAlmostEqual(metadata["model_config"]["thermal_loss_beta"], 0.25)
         self.assertAlmostEqual(metadata["model_config"]["thermal_loss_base_temperature_star"], 0.0)
         self.assertEqual(metadata["model_config"]["residual_time_scheme"], "backward")
@@ -660,6 +665,7 @@ class RunConfigTests(unittest.TestCase):
         history_payload = json.loads(history_path.read_text(encoding="utf-8"))
         self.assertNotIn("slice_records", history_payload)
         self.assertIn("loss_beta", history_payload["history"][0])
+        self.assertIn("loss_smooth", history_payload["history"][0])
         figures_dir = history_path.parent / "figures"
         self.assertFalse((figures_dir / "loss_curve.png").exists())
         monitor_path = history_path.parent / "metrics" / "monitor_data.h5"
@@ -673,6 +679,7 @@ class RunConfigTests(unittest.TestCase):
             self.assertIn("slice_snapshots", monitor_h5)
             self.assertEqual(monitor_h5["epoch_metrics/epoch"].shape, (1,))
             self.assertEqual(monitor_h5["epoch_metrics/loss_beta"].shape, (1,))
+            self.assertEqual(monitor_h5["epoch_metrics/loss_smooth"].shape, (1,))
             self.assertEqual(monitor_h5["slice_metrics/epoch"].shape, (0,))
             self.assertEqual(len(monitor_h5["slice_snapshots"].keys()), 0)
             self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/coords"].shape, (4, 3))
@@ -755,6 +762,7 @@ class RunConfigTests(unittest.TestCase):
                     "loss_pde": 0.8,
                     "loss_outflow": 0.2,
                     "loss_beta": 0.0,
+                    "loss_smooth": 0.0,
                     "temperature_mean": 300.0,
                     "temperature_max": 301.0,
                     "temperature_min": 299.0,

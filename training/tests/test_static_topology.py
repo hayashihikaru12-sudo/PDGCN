@@ -224,6 +224,7 @@ class StaticTopologyTests(unittest.TestCase):
             "loss_pde",
             "loss_outflow",
             "loss_beta",
+            "loss_smooth",
             "temperature_mean",
             "temperature_max",
             "temperature_min",

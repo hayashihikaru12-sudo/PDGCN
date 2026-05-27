@@ -2,6 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import h5py
+
 from training.monitor import LossMonitor, TrainingProcessMonitor
 
 
@@ -54,6 +56,9 @@ class MonitorTimingTests(unittest.TestCase):
             self.assertIn("epoch_time=00:00:03", messages[0])
             self.assertIn("elapsed=00:00:03", messages[0])
             self.assertIn("eta=00:00:03", messages[0])
+            with h5py.File(Path(tmpdir) / "monitor_data.h5", "r") as h5_file:
+                self.assertIn("loss_smooth", h5_file["epoch_metrics"])
+                self.assertIn("loss_smooth", h5_file["slice_metrics"])
 
 
 if __name__ == "__main__":

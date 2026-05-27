@@ -94,6 +94,7 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
             pi_q=model.config.pi_q,
             k_ratio=model.config.k_ratio,
             lambda_outflow=model.config.lambda_outflow,
+            gradient_regularization=model.config.gradient_regularization,
             dirichlet_temperature_star=model.config.dirichlet_temperature_star,
             thermal_loss_beta=model.config.thermal_loss_beta,
             thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
