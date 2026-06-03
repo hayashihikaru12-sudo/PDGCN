@@ -31,6 +31,20 @@ class InferenceConfigTests(unittest.TestCase):
         self.assertAlmostEqual(config.delta_smoothing_alpha, 0.3)
         self.assertEqual(config.delta_smoothing_steps, 2)
 
+    def test_accepts_disabled_pdgcn_inplane_flag(self):
+        config = InferenceRunConfig(num_layers=2, layer_spacing=0.1, use_pdgcn_inplane=False)
+
+        self.assertFalse(config.use_pdgcn_inplane)
+
+    def test_accepts_top_layer_only_pdgcn_inplane_flag(self):
+        config = InferenceRunConfig(
+            num_layers=2,
+            layer_spacing=0.1,
+            pdgcn_inplane_top_layer_only=True,
+        )
+
+        self.assertTrue(config.pdgcn_inplane_top_layer_only)
+
     def test_rejects_invalid_delta_smoothing_alpha(self):
         with self.assertRaisesRegex(ValueError, "delta_smoothing_alpha"):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, delta_smoothing_alpha=-0.1)

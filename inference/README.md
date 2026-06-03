@@ -68,6 +68,8 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
     "layer_fiber_angles_deg": [0.0, 45.0, -45.0, 90.0],
     "normal_offset_sign": -1,
     "write_vtk": false,
+    "use_pdgcn_inplane": true,
+    "pdgcn_inplane_top_layer_only": false,
     "cloud_interval": 20,
     "layer_batch_size": null,
     "delta_smoothing_alpha": 0.2,
@@ -93,6 +95,8 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `layer_fiber_angles_deg`：每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。
 - `normal_offset_sign`：法向偏移方向，只能为 `-1` 或 `1`；默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。
 - `write_vtk`：兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。
+- `use_pdgcn_inplane`：是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。
+- `pdgcn_inplane_top_layer_only`：当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。
 - `cloud_interval`：合并三维云图输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
 - `layer_batch_size`：每次模型前向处理的层数；为 `null` 时 CUDA 默认自动按较小层批量推理，降低 30 层等大规模工况显存占用。
 - `delta_smoothing_alpha`：推理端网络增量图低通强度，范围 `[0, 1]`；默认 `0.2`，设为 `0` 可关闭。
@@ -160,10 +164,10 @@ temperature_step_000000.vtk
 从已生成的 HDF5 结果离线渲染：
 
 ```powershell
-D:\ProgramData\CondaEnv\PIGNN\python.exe inference\render_entry.py `
-  --prediction ..\runs\pdgcn\multilayer_prediction.h5 `
-  --cloud-interval 20
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\render_entry.py --cloud-interval 20
 ```
+
+若未传入 `--prediction`，渲染入口会读取默认配置 `configs/pdgcn_infer.example.json`，并使用其中的 `inference.output_path` 作为 HDF5 输入。可通过 `--config` 指定其他推理配置，或继续用 `--prediction` 手动覆盖。
 
 ## 测试
 

@@ -265,6 +265,8 @@ residual_transport =
     "layer_fiber_angles_deg": [0.0, 45.0, -45.0, 90.0],
     "normal_offset_sign": -1,
     "write_vtk": false,
+    "use_pdgcn_inplane": true,
+    "pdgcn_inplane_top_layer_only": false,
     "cloud_interval": 20,
     "layer_batch_size": null,
     "delta_smoothing_alpha": 0.2,
@@ -292,6 +294,8 @@ residual_transport =
 | `layer_fiber_angles_deg` | number array 或 `null` | 每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。为 `null` 时所有层使用 `0.0`。 |
 | `normal_offset_sign` | integer | 法向偏移方向，只能为 `-1` 或 `1`。默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。 |
 | `write_vtk` | boolean | 兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。 |
+| `use_pdgcn_inplane` | boolean | 是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。 |
+| `pdgcn_inplane_top_layer_only` | boolean | 当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。 |
 | `cloud_interval` | integer | 合并三维云图输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
 | `layer_batch_size` | integer 或 `null` | 每次模型前向处理的层数；为 `null` 时 CUDA 自动使用较小层批量以降低显存。 |
 | `delta_smoothing_alpha` | number | 推理端网络增量图低通强度，范围 `[0, 1]`。默认 `0.2`；设为 `0` 可关闭平滑。 |
@@ -317,7 +321,7 @@ T_inplane = T_src + delta_T_inplane
 T_next = T_inplane + delta_T_fdm(T_inplane)
 ```
 
-其中 `delta_T_source` 只由显式表面热源模块作用于顶层；`delta_T_inplane` 由无源 PD-GCN 对所有层计算；`delta_T_fdm` 由厚度方向 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
+其中 `delta_T_source` 只由显式表面热源模块作用于顶层；`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`delta_T_fdm` 由厚度方向 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
 
 ## 调参注意事项
 

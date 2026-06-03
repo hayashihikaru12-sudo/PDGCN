@@ -27,6 +27,8 @@ class InferenceRunConfig:
     normal_offset_sign: int = -1
     return_dimensionless: bool = False
     write_vtk: bool = True
+    use_pdgcn_inplane: bool = True
+    pdgcn_inplane_top_layer_only: bool = False
     cloud_interval: int = 20
     layer_batch_size: Optional[int] = None
     delta_smoothing_alpha: float = 0.2

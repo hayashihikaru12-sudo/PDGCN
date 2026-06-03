@@ -32,18 +32,18 @@
       "layer_norm": true
     },
     "physics_loss": {
-      "k_ratio": 0.05,
+      "k_ratio": 0.001,
       "lambda_outflow": 1.0,
       "gradient_regularization": 0.001,
-      "residual_time_scheme": "explicit"
+      "residual_time_scheme": "backward"
     },
     "training": {
       "lr": 0.0001,
       "epochs": 1000,
       "tbptt_window": 5,
-      "warmup_steps": 30,
+      "warmup_steps": 0,
       "grad_clip_norm": null,
-      "loss_threshold": 0.02,
+      "loss_threshold": 4.0,
       "device": null
     }
   }

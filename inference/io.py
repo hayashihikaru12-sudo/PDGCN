@@ -118,6 +118,8 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         "layer_batch_size": None if inference_config.layer_batch_size is None else int(inference_config.layer_batch_size),
         "delta_smoothing_alpha": float(inference_config.delta_smoothing_alpha),
         "delta_smoothing_steps": int(inference_config.delta_smoothing_steps),
+        "use_pdgcn_inplane": bool(inference_config.use_pdgcn_inplane),
+        "pdgcn_inplane_top_layer_only": bool(inference_config.pdgcn_inplane_top_layer_only),
         "vtk_output_dir": str(selected_vtk_dir),
         "hdf5_timing": timing,
         "scale_params": asdict(scale_params),
@@ -147,6 +149,8 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         layer_batch_size=inference_config.layer_batch_size,
         delta_smoothing_alpha=float(inference_config.delta_smoothing_alpha),
         delta_smoothing_steps=int(inference_config.delta_smoothing_steps),
+        use_pdgcn_inplane=bool(inference_config.use_pdgcn_inplane),
+        pdgcn_inplane_top_layer_only=bool(inference_config.pdgcn_inplane_top_layer_only),
     )
     return {
         "output_path": str(selected_output),
@@ -252,6 +256,8 @@ def write_multilayer_hdf5(
     layer_batch_size=None,
     delta_smoothing_alpha: float = 0.2,
     delta_smoothing_steps: int = 1,
+    use_pdgcn_inplane: bool = True,
+    pdgcn_inplane_top_layer_only: bool = False,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -307,6 +313,8 @@ def write_multilayer_hdf5(
             layer_batch_size=layer_batch_size,
             delta_smoothing_alpha=float(delta_smoothing_alpha),
             delta_smoothing_steps=int(delta_smoothing_steps),
+            use_pdgcn_inplane=bool(use_pdgcn_inplane),
+            pdgcn_inplane_top_layer_only=bool(pdgcn_inplane_top_layer_only),
             timing_recorder=step_inference_seconds.append,
         )
         timing_summary["total_seconds"] = time.perf_counter() - start_total

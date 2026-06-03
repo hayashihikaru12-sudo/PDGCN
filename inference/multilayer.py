@@ -35,6 +35,8 @@ def rollout_multilayer_fdm(
     layer_batch_size=None,
     delta_smoothing_alpha: float = 0.2,
     delta_smoothing_steps: int = 1,
+    use_pdgcn_inplane: bool = True,
+    pdgcn_inplane_top_layer_only: bool = False,
     timing_recorder=None,
 ):
     """Run multilayer PD-GCN inference coupled with explicit 1D FDM in thickness."""
@@ -100,22 +102,44 @@ def rollout_multilayer_fdm(
                 graph_boundary_nodes(graph),
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            delta_net = _forward_model_by_layer_batches(
-                model,
-                graph,
-                source_temperature,
-                effective_layer_batch_size=effective_layer_batch_size,
-                layer_spacing_star=layer_spacing_star,
-                layer_fiber_angles_deg=layer_fiber_angles_deg,
-                normal_offset_sign=int(normal_offset_sign),
-            )
-            delta_net = _smooth_delta_by_graph(
-                delta_net,
-                graph.edge_index,
-                graph_boundary_nodes(graph),
-                alpha=float(delta_smoothing_alpha),
-                steps=delta_smoothing_steps,
-            )
+            if bool(use_pdgcn_inplane):
+                if bool(pdgcn_inplane_top_layer_only):
+                    delta_net = torch.zeros_like(source_temperature)
+                    delta_top = _forward_model_by_layer_batches(
+                        model,
+                        graph,
+                        source_temperature[0:1],
+                        effective_layer_batch_size=1,
+                        layer_spacing_star=layer_spacing_star,
+                        layer_fiber_angles_deg=layer_fiber_angles_deg,
+                        normal_offset_sign=int(normal_offset_sign),
+                    )
+                    delta_net[0:1] = _smooth_delta_by_graph(
+                        delta_top,
+                        graph.edge_index,
+                        graph_boundary_nodes(graph),
+                        alpha=float(delta_smoothing_alpha),
+                        steps=delta_smoothing_steps,
+                    )
+                else:
+                    delta_net = _forward_model_by_layer_batches(
+                        model,
+                        graph,
+                        source_temperature,
+                        effective_layer_batch_size=effective_layer_batch_size,
+                        layer_spacing_star=layer_spacing_star,
+                        layer_fiber_angles_deg=layer_fiber_angles_deg,
+                        normal_offset_sign=int(normal_offset_sign),
+                    )
+                    delta_net = _smooth_delta_by_graph(
+                        delta_net,
+                        graph.edge_index,
+                        graph_boundary_nodes(graph),
+                        alpha=float(delta_smoothing_alpha),
+                        steps=delta_smoothing_steps,
+                    )
+            else:
+                delta_net = torch.zeros_like(source_temperature)
             inplane_temperature = apply_dirichlet_boundary(
                 source_temperature + delta_net,
                 graph_boundary_nodes(graph),

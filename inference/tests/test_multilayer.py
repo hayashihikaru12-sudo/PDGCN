@@ -172,6 +172,44 @@ class MultilayerRolloutTests(unittest.TestCase):
         expected = torch.tensor([[[[2.90], [2.90]], [[1.10], [1.10]], [[0.00], [0.00]]]])
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
+    def test_rollout_can_disable_pdgcn_inplane_update(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+
+        result = rollout_multilayer_fdm(
+            model,
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+        )
+
+        expected = torch.tensor([[[[1.90], [1.90]], [[0.10], [0.10]], [[0.00], [0.00]]]])
+        self.assertEqual(model.call_count, 0)
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
+    def test_rollout_can_apply_pdgcn_inplane_only_to_top_layer(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+
+        result = rollout_multilayer_fdm(
+            model,
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            pdgcn_inplane_top_layer_only=True,
+        )
+
+        expected = torch.tensor([[[[2.85], [2.85]], [[0.15], [0.15]], [[0.00], [0.00]]]])
+        self.assertEqual(model.call_count, 1)
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
     def test_explicit_source_heats_only_top_layer_when_fdm_is_off(self):
         scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
         graph = make_graph()
