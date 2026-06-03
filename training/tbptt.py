@@ -4,7 +4,7 @@ import torch
 
 from pde import apply_dirichlet_boundary, total_loss
 
-from .graph_utils import clone_graph_with_temperature, graph_boundary_nodes, graph_heat_source, graph_temperature
+from .graph_utils import clone_graph_with_temperature, graph_boundary_nodes, graph_explicit_source_delta, graph_temperature
 
 
 def iter_tbptt_windows(graph_seq: Sequence, window_size: int):
@@ -27,7 +27,7 @@ def iter_tbptt_windows(graph_seq: Sequence, window_size: int):
             yield window
 
 
-def rollout_window(model, window: Sequence, initial_temperature_star):
+def rollout_window(model, window: Sequence, initial_temperature_star, *, return_source_temperatures: bool = False):
     """在一个 TBPTT 窗口内自回归滚动预测温度。
 
     参数:
@@ -45,19 +45,28 @@ def rollout_window(model, window: Sequence, initial_temperature_star):
         raise ValueError("window must contain at least one graph.")
 
     predictions = []
+    source_temperatures = []
     current_temperature = initial_temperature_star
     for graph in window:
-        graph_step = clone_graph_with_temperature(graph, current_temperature)
+        source_temperature = apply_dirichlet_boundary(
+            current_temperature + graph_explicit_source_delta(graph, model.config),
+            graph_boundary_nodes(graph),
+            value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+        )
+        graph_step = clone_graph_with_temperature(graph, source_temperature)
         delta_temperature = model(graph_step)
-        next_temperature = current_temperature + delta_temperature
+        next_temperature = source_temperature + delta_temperature
         next_temperature = apply_dirichlet_boundary(
             next_temperature,
             graph_boundary_nodes(graph_step),
             value=getattr(model.config, "dirichlet_temperature_star", 0.0),
         )
         predictions.append(next_temperature)
+        source_temperatures.append(source_temperature)
         current_temperature = next_temperature
 
+    if return_source_temperatures:
+        return torch.stack(predictions, dim=0), current_temperature, torch.stack(source_temperatures, dim=0)
     return torch.stack(predictions, dim=0), current_temperature
 
 
@@ -75,33 +84,33 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
         ``final_temperature`` 形状 ``[N, 1]``，用于下一个窗口的初值。
     """
 
-    prediction_seq, final_temperature = rollout_window(model, window, initial_temperature_star)
+    prediction_seq, final_temperature, source_temperature_seq = rollout_window(
+        model,
+        window,
+        initial_temperature_star,
+        return_source_temperatures=True,
+    )
     losses = []
-    current_temperature = initial_temperature_star
 
     for step, graph in enumerate(window):
         prediction = prediction_seq[step]
+        source_temperature = source_temperature_seq[step]
         loss = total_loss(
             T_next=prediction,
-            T_current=current_temperature,
+            T_current=source_temperature,
             v_scan_star=graph.global_attr,
-            Q_star=graph_heat_source(graph),
             dt_star=model.config.dt_star,
             edge_index=graph.edge_index,
             edge_attr=graph.edge_attr,
             boundary_nodes=graph_boundary_nodes(graph),
             inverse_pe=model.config.inverse_pe,
-            pi_q=model.config.pi_q,
             k_ratio=model.config.k_ratio,
             lambda_outflow=model.config.lambda_outflow,
             gradient_regularization=model.config.gradient_regularization,
             dirichlet_temperature_star=model.config.dirichlet_temperature_star,
-            thermal_loss_beta=model.config.thermal_loss_beta,
-            thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
             residual_time_scheme=model.config.residual_time_scheme,
         )
         losses.append(loss)
-        current_temperature = prediction
 
     return torch.stack(losses).mean(), final_temperature
 

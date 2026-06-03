@@ -49,7 +49,7 @@ def make_graph(num_nodes=3, temperature=0.0):
     """
 
     graph = Data(
-        x=torch.zeros(num_nodes, 8),
+        x=torch.zeros(num_nodes, 7),
         edge_index=torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
         edge_attr=torch.tensor(
             [

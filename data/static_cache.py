@@ -9,7 +9,7 @@ import torch
 
 from .dimensionless import ScaleParams
 from .hdf5_units import (
-    heat_flux_w_per_mm2_to_volume_w_per_m3,
+    heat_flux_w_per_mm2_to_w_per_m2,
     length_mm_to_m,
     resolve_heat_source_effective_thickness,
     velocity_mm_per_s_to_m_per_s,
@@ -73,7 +73,7 @@ def build_static_cache(
     meta = {
         "num_nodes": int(num_nodes),
         "num_edges": int(edge_index_np.shape[1]),
-        "node_feature_size": 8,
+        "node_feature_size": 7,
         "edge_feature_size": 7,
         "global_size": 1,
         "dynamic_node_base_size": 13,
@@ -90,7 +90,7 @@ def build_static_cache(
             "vx",
             "vy",
             "vz",
-            "Q",
+            "q_surface",
         ],
         "global_layout": ["scan_velocity"],
         "source_h5": str(h5_path),
@@ -98,7 +98,7 @@ def build_static_cache(
         "hdf5_native_units": {
             "dynamic/xyz": "mm",
             "dynamic/normal": "unit vector",
-            "dynamic/Q": "W/mm^2",
+            "dynamic/Q": "W/mm^2 surface heat flux",
             "velocity_direction_local": "unit vector",
             "velocity_speed": "mm/s",
         },
@@ -106,7 +106,7 @@ def build_static_cache(
             "coordinates": "m",
             "normal": "unit vector",
             "velocity_direction": "unit vector projected to node tangent plane",
-            "heat_source": "W/m^3",
+            "heat_source": "W/m^2",
             "scan_velocity": "m/s",
         },
         "heat_source_effective_thickness": float(scale_params.heat_source_effective_thickness)
@@ -192,10 +192,7 @@ class HDF5FrameReader:
         self._node_array[:, 3:6] = self.fiber[idx, :, :]
         self._node_array[:, 6:9] = self.normal[idx, :, :]
         self._node_array[:, 9:12] = self.velocity_direction.reshape(1, 3)
-        self._node_array[:, 12:13] = heat_flux_w_per_mm2_to_volume_w_per_m3(
-            self.q[idx, :, :],
-            self.heat_source_effective_thickness,
-        )
+        self._node_array[:, 12:13] = heat_flux_w_per_mm2_to_w_per_m2(self.q[idx, :, :])
         self._global_array[0] = np.float32(self.velocity)
         return self._node_buffer, self._global_buffer
 

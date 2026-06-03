@@ -49,7 +49,7 @@ def make_graph():
     """
 
     graph = Data(
-        x=torch.zeros(2, 8),
+        x=torch.zeros(2, 7),
         edge_index=torch.tensor([[0], [1]], dtype=torch.long),
         edge_attr=torch.tensor([[0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]], dtype=torch.float32),
         global_attr=torch.tensor([1.0]),

@@ -7,7 +7,7 @@ import torch
 
 from .dimensionless import ScaleParams
 from .hdf5_units import (
-    heat_flux_w_per_mm2_to_volume_w_per_m3,
+    heat_flux_w_per_mm2_to_w_per_m2,
     length_mm_to_m,
     resolve_heat_source_effective_thickness,
 )
@@ -105,14 +105,7 @@ class HDF5Loader:
                 dtype=torch.float32,
                 device=device,
             )
-            q = _as_tensor(
-                heat_flux_w_per_mm2_to_volume_w_per_m3(
-                    q_all[frame_idx],
-                    heat_source_effective_thickness,
-                ),
-                dtype=torch.float32,
-                device=device,
-            )
+            q = _as_tensor(heat_flux_w_per_mm2_to_w_per_m2(q_all[frame_idx]), dtype=torch.float32, device=device)
             edge_index = _as_tensor(h5_file["edge_index"][()], dtype=torch.long, device=device)
 
             boundary_nodes = {

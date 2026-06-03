@@ -101,7 +101,6 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         "layer_spacing": float(inference_config.layer_spacing),
         "layer_spacing_star": float(layer_spacing_star),
         "fdm_coefficient": float(fdm_coefficient),
-        "top_heat_source_only": bool(inference_config.top_heat_source_only),
         "bottom_temperature_star": float(inference_config.bottom_temperature_star),
         "layer_fiber_angles_deg": list(
             inference_config.layer_fiber_angles_deg
@@ -117,6 +116,8 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
             else int(inference_config.cloud_max_nodes_per_layer)
         ),
         "layer_batch_size": None if inference_config.layer_batch_size is None else int(inference_config.layer_batch_size),
+        "delta_smoothing_alpha": float(inference_config.delta_smoothing_alpha),
+        "delta_smoothing_steps": int(inference_config.delta_smoothing_steps),
         "vtk_output_dir": str(selected_vtk_dir),
         "hdf5_timing": timing,
         "scale_params": asdict(scale_params),
@@ -140,11 +141,12 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
             else int(run_config.training.warmup_steps)
         ),
         bottom_temperature_star=float(inference_config.bottom_temperature_star),
-        top_heat_source_only=bool(inference_config.top_heat_source_only),
         allow_unstable_fdm=bool(inference_config.allow_unstable_fdm),
         layer_fiber_angles_deg=inference_config.layer_fiber_angles_deg,
         normal_offset_sign=int(inference_config.normal_offset_sign),
         layer_batch_size=inference_config.layer_batch_size,
+        delta_smoothing_alpha=float(inference_config.delta_smoothing_alpha),
+        delta_smoothing_steps=int(inference_config.delta_smoothing_steps),
     )
     return {
         "output_path": str(selected_output),
@@ -244,11 +246,12 @@ def write_multilayer_hdf5(
     metadata,
     warmup_steps: int,
     bottom_temperature_star: float,
-    top_heat_source_only: bool,
     allow_unstable_fdm: bool,
     layer_fiber_angles_deg=None,
     normal_offset_sign: int = -1,
     layer_batch_size=None,
+    delta_smoothing_alpha: float = 0.2,
+    delta_smoothing_steps: int = 1,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -298,11 +301,12 @@ def write_multilayer_hdf5(
             writer=writer,
             warmup_steps=int(warmup_steps),
             bottom_temperature_star=float(bottom_temperature_star),
-            top_heat_source_only=bool(top_heat_source_only),
             allow_unstable_fdm=bool(allow_unstable_fdm),
             layer_fiber_angles_deg=layer_fiber_angles_deg,
             normal_offset_sign=int(normal_offset_sign),
             layer_batch_size=layer_batch_size,
+            delta_smoothing_alpha=float(delta_smoothing_alpha),
+            delta_smoothing_steps=int(delta_smoothing_steps),
             timing_recorder=step_inference_seconds.append,
         )
         timing_summary["total_seconds"] = time.perf_counter() - start_total

@@ -10,7 +10,7 @@ from models import PDGCNConfig
 from .config import TrainConfig
 
 
-DERIVED_PDGCN_FIELDS = {"inverse_pe", "pi_q", "dt_star"}
+DERIVED_PDGCN_FIELDS = {"inverse_pe", "pi_q", "source_coefficient", "dt_star"}
 PHYSICS_LOSS_FIELDS = {
     "k_ratio",
     "lambda_outflow",
@@ -66,6 +66,7 @@ class ScaleRunConfig:
     rho: float
     Cp: float
     heat_source_effective_thickness: float
+    heat_source_absorptivity: float = 1.0
     eps: float = 1e-12
 
     def __post_init__(self):
@@ -73,6 +74,11 @@ class ScaleRunConfig:
             raise ValueError(
                 "scale.heat_source_effective_thickness must be positive, "
                 f"got {self.heat_source_effective_thickness}."
+            )
+        if float(self.heat_source_absorptivity) < 0:
+            raise ValueError(
+                "scale.heat_source_absorptivity must be non-negative, "
+                f"got {self.heat_source_absorptivity}."
             )
 
     def to_scale_params(self) -> ScaleParams:
@@ -88,6 +94,7 @@ class ScaleRunConfig:
             rho=self.rho,
             Cp=self.Cp,
             heat_source_effective_thickness=self.heat_source_effective_thickness,
+            heat_source_absorptivity=self.heat_source_absorptivity,
             eps=self.eps,
         )
 
@@ -130,12 +137,20 @@ def pdgcn_config_from_scale(
 ) -> PDGCNConfig:
     """从 ``ScaleParams`` 自动派生物理系数并构造 ``PDGCNConfig``。"""
 
-    inverse_pe, pi_q = derive_pde_constants(scale_params)
+    inverse_pe, source_coefficient = derive_pde_constants(scale_params)
     dt_star = derive_dt_star(scale_params, dt)
     overrides = _filter_dataclass_kwargs(PDGCNConfig, model_overrides or {}, context="model")
     for name in DERIVED_PDGCN_FIELDS:
         overrides.pop(name, None)
-    overrides.update({"inverse_pe": inverse_pe, "pi_q": pi_q, "dt_star": dt_star})
+    overrides.update(
+        {
+            "inverse_pe": inverse_pe,
+            "source_coefficient": source_coefficient,
+            "pi_q": source_coefficient,
+            "heat_source_absorptivity": float(scale_params.heat_source_absorptivity),
+            "dt_star": dt_star,
+        }
+    )
     return PDGCNConfig(**overrides)
 
 

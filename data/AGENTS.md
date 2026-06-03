@@ -4,8 +4,8 @@
 
 ## 主要职责
 
-- 读取预生成 HDF5 数据，提取节点坐标、纤维方向、热源、边索引和边界节点。
-- 将真实物理量转换为无量纲量，保证模型输入和 PDE 损失使用一致尺度。
+- 读取预生成 HDF5 数据，提取节点坐标、纤维方向、表面热流、边索引和边界节点。
+- 将真实物理量转换为无量纲量；表面热流不进入 PD-GCN 节点特征，而是保存为图对象字段供显式热源模块使用。
 - 构建 PyTorch Geometric `Data` 对象。
 - 为固定拓扑训练生成共享静态缓存，只保存拓扑、边界节点、节点类型和特征维度等静态信息。
 - 训练时由 `HDF5FrameReader` 按切片文件读取动态基础特征。
@@ -20,6 +20,6 @@
 
 ## 数据约定
 
-用于生成静态缓存的首个 HDF5 文件需要包含 `dynamic/xyz`、`dynamic/fiber`、`dynamic/Q`、`edge_index` 以及 `boundary_nodes/upwind`、`boundary_nodes/downwind`、`boundary_nodes/side`。
+用于生成静态缓存的首个 HDF5 文件需要包含 `dynamic/xyz`、`dynamic/fiber`、`dynamic/normal`、`dynamic/Q`、`edge_index` 以及 `boundary_nodes/upwind`、`boundary_nodes/downwind`、`boundary_nodes/side`。其中 `dynamic/Q` 为表面热流，读取后转换为 `W/m^2`。
 
 后续同目录 HDF5 文件只校验动态数据集、节点数和动态形状，并复用共享静态缓存中的拓扑信息。

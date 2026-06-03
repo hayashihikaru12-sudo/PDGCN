@@ -2,6 +2,16 @@ from dataclasses import dataclass
 from typing import Optional, Sequence
 
 
+def _is_non_negative_integer(value):
+    if isinstance(value, bool):
+        return False
+    try:
+        int_value = int(value)
+    except (TypeError, ValueError):
+        return False
+    return int_value >= 0 and int_value == value
+
+
 @dataclass(frozen=True)
 class InferenceRunConfig:
     num_layers: int
@@ -12,7 +22,6 @@ class InferenceRunConfig:
     steps: Optional[int] = None
     warmup_steps: Optional[int] = None
     bottom_temperature_star: float = 0.0
-    top_heat_source_only: bool = True
     allow_unstable_fdm: bool = False
     layer_fiber_angles_deg: Optional[Sequence[float]] = None
     normal_offset_sign: int = -1
@@ -20,6 +29,8 @@ class InferenceRunConfig:
     write_vtk: bool = True
     cloud_interval: int = 20
     layer_batch_size: Optional[int] = None
+    delta_smoothing_alpha: float = 0.2
+    delta_smoothing_steps: int = 1
     cloud_max_nodes_per_layer: Optional[int] = None
     vtk_output_dir: Optional[str] = None
 
@@ -50,6 +61,16 @@ class InferenceRunConfig:
             raise ValueError(f"inference.cloud_interval must be positive, got {self.cloud_interval}.")
         if self.layer_batch_size is not None and int(self.layer_batch_size) <= 0:
             raise ValueError(f"inference.layer_batch_size must be positive when set, got {self.layer_batch_size}.")
+        if not 0.0 <= float(self.delta_smoothing_alpha) <= 1.0:
+            raise ValueError(
+                "inference.delta_smoothing_alpha must be in [0, 1], "
+                f"got {self.delta_smoothing_alpha}."
+            )
+        if not _is_non_negative_integer(self.delta_smoothing_steps):
+            raise ValueError(
+                "inference.delta_smoothing_steps must be a non-negative integer, "
+                f"got {self.delta_smoothing_steps}."
+            )
         if self.cloud_max_nodes_per_layer is not None and int(self.cloud_max_nodes_per_layer) < 3:
             raise ValueError(
                 "inference.cloud_max_nodes_per_layer must be at least 3 when set, "

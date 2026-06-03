@@ -31,7 +31,7 @@ class TrainableDeltaModel(nn.Module):
         """
 
         super().__init__()
-        self.config = PDGCNConfig(lambda_outflow=0.0, inverse_pe=0.0, pi_q=0.0)
+        self.config = PDGCNConfig(lambda_outflow=0.0, inverse_pe=0.0, source_coefficient=0.0, pi_q=0.0)
         self.delta = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, graph):
@@ -121,7 +121,7 @@ class StaticTopologyTests(unittest.TestCase):
             v0=0.002,
             T_amb=300.0,
             delta_T0=10.0,
-            Q0=2.0e9,
+            Q0=2.0e6,
             heat_source_effective_thickness=0.001,
         )
 
@@ -162,6 +162,7 @@ class StaticTopologyTests(unittest.TestCase):
         self.assertTrue(torch.allclose(graph_fast.x, graph_ref.x, atol=1e-6))
         self.assertTrue(torch.allclose(graph_fast.edge_attr, graph_ref.edge_attr, atol=1e-6))
         self.assertTrue(torch.allclose(graph_fast.global_attr, graph_ref.global_attr, atol=1e-6))
+        self.assertTrue(torch.allclose(graph_fast.q_surface_star, graph_ref.q_surface_star, atol=1e-6))
         reader.close()
 
     def test_edge_cos_theta_uses_receiver_tangent_velocity(self):
@@ -186,7 +187,7 @@ class StaticTopologyTests(unittest.TestCase):
 
         self.assertAlmostEqual(float(node_base[1, 0]), 0.001)
         self.assertAlmostEqual(float(global_condition[0]), 0.002)
-        self.assertAlmostEqual(float(node_base[1, 12]), 1.0e9)
+        self.assertAlmostEqual(float(node_base[1, 12]), 1.0e6)
         self.assertTrue(torch.allclose(node_base[1, 6:9], torch.tensor([0.0, 0.0, 1.0])))
         self.assertTrue(torch.allclose(node_base[1, 9:12], torch.tensor([1.0, 0.0, 0.0])))
 
@@ -259,6 +260,7 @@ class StaticTopologyTests(unittest.TestCase):
                     message_passing_num=1,
                     lambda_outflow=0.0,
                     inverse_pe=0.0,
+                    source_coefficient=0.0,
                     pi_q=0.0,
                 )
             )

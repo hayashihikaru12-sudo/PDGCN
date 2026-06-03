@@ -7,11 +7,11 @@ def compute_pde_residual(
     T_next,
     T_current,
     v_scan_star,
-    Q_star,
     dt_star,
     edge_index,
     edge_attr,
     *,
+    Q_star=None,
     inverse_pe: float = 1.0,
     pi_q: float = 1.0,
     k_ratio: float = 0.05,
@@ -20,7 +20,7 @@ def compute_pde_residual(
     residual_time_scheme: str = "explicit",
     eps: float = 1e-12,
 ):
-    """计算每个节点的无量纲图 PDE 残差。
+    """计算每个节点的无源曲面内输运 PDE 残差。
 
     边特征布局为 [dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]。
     输入可以是单步张量（[N]、[N, 1]），也可以是 TBPTT 窗口张量
@@ -31,16 +31,15 @@ def compute_pde_residual(
             或 ``[K, N, 1]``。
         T_current: 当前无量纲温度，形状同 ``T_next``，也可用单步温度广播到窗口。
         v_scan_star: 无量纲扫描速度，标量张量、Python 标量或长度为 ``K`` 的张量。
-        Q_star: 无量纲热源，形状同温度或可广播的 ``[N, 1]``。
+        Q_star: 兼容旧调用的保留参数；无源残差中不再使用热源项。
         dt_star: 无量纲时间步长，标量。
         edge_index: 图边索引，形状 ``[2, E]``。
         edge_attr: 原始边特征，形状 ``[E, >=7]``。
         inverse_pe: 佩克莱特数倒数 ``1 / Pe``。
-        pi_q: 无量纲热源强度系数。
+        pi_q: 兼容旧调用的保留参数；无源残差中不再使用。
         k_ratio: 横向/纵向导热系数比 ``K_perp / K_parallel``。
-        thermal_loss_beta: 无量纲层间等效热耗散系数 ``beta``。
-        thermal_loss_base_temperature_star: 下方接触面的无量纲基底温度
-            ``T_base*``，单层训练默认 ``0.0`` 表示冷源。
+        thermal_loss_beta: 兼容旧调用的保留参数；无源残差中不再使用。
+        thermal_loss_base_temperature_star: 兼容旧调用的保留参数；无源残差中不再使用。
         residual_time_scheme: PDE 空间项和热耗散项的时间离散方式；
             ``explicit`` 使用 ``T_current``，``backward`` 使用 ``T_next``。
         eps: 数值下界，用于距离和时间步长防除零。
@@ -51,21 +50,12 @@ def compute_pde_residual(
 
     T_next_2d, layout = _as_time_node(T_next, name="T_next")
     T_current_2d, _ = _as_time_node(T_current, name="T_current")
-    Q_star_2d, _ = _as_time_node(Q_star, name="Q_star")
     T_current_2d = _broadcast_to_match(T_current_2d, T_next_2d, name="T_current")
-    Q_star_2d = _broadcast_to_match(Q_star_2d, T_next_2d, name="Q_star")
     _validate_graph(edge_index, edge_attr, T_next_2d.shape[1])
 
     device = T_next_2d.device
     dtype = T_next_2d.dtype
     T_current_2d = T_current_2d.to(device=device, dtype=dtype)
-    Q_star_2d = Q_star_2d.to(device=device, dtype=dtype)
-    base_temperature_2d = _as_base_temperature(
-        thermal_loss_base_temperature_star,
-        T_next_2d,
-        device=device,
-        dtype=dtype,
-    )
     edge_index = edge_index.to(device=device)
     edge_attr = edge_attr.to(device=device, dtype=dtype)
     T_eval_2d = _select_residual_temperature(
@@ -95,8 +85,7 @@ def compute_pde_residual(
     diffusion.index_add_(1, receiver, diffusion_edge)
 
     transient = (T_next_2d - T_current_2d) / _as_scalar_tensor(dt_star, device=device, dtype=dtype).clamp_min(eps)
-    thermal_loss = float(thermal_loss_beta) * (T_eval_2d - base_temperature_2d)
-    residual = transient + convection - float(inverse_pe) * diffusion - float(pi_q) * Q_star_2d + thermal_loss
+    residual = transient + convection - float(inverse_pe) * diffusion
     return _restore_layout(residual, layout)
 
 

@@ -1,7 +1,7 @@
 """HDF5 native-unit conversion helpers.
 
 The generated slice HDF5 files use millimetre-based native units.  The data
-pipeline converts them to SI before dimensionless scaling and PDE loss.
+pipeline converts them to SI before dimensionless scaling and source splitting.
 """
 
 from typing import Optional
@@ -22,7 +22,7 @@ def resolve_heat_source_effective_thickness(
     if heat_source_effective_thickness is None:
         raise ValueError(
             "heat_source_effective_thickness is required to convert HDF5 dynamic/Q "
-            "from W/mm^2 to W/m^3."
+            "from surface heat flux to explicit temperature increments."
         )
     thickness = float(heat_source_effective_thickness)
     if thickness <= 0:
@@ -38,5 +38,9 @@ def velocity_mm_per_s_to_m_per_s(value):
     return value * MM_PER_S_TO_M_PER_S
 
 
+def heat_flux_w_per_mm2_to_w_per_m2(value):
+    return value * W_PER_MM2_TO_W_PER_M2
+
+
 def heat_flux_w_per_mm2_to_volume_w_per_m3(value, heat_source_effective_thickness: float):
-    return value * (W_PER_MM2_TO_W_PER_M2 / float(heat_source_effective_thickness))
+    return heat_flux_w_per_mm2_to_w_per_m2(value) / float(heat_source_effective_thickness)

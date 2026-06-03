@@ -2,9 +2,10 @@ from typing import Dict
 
 import torch
 
+from pde import compute_surface_source_delta_star
+
 
 TEMPERATURE_SLICE = slice(6, 7)
-HEAT_SOURCE_SLICE = slice(7, 8)
 
 
 def clone_graph_with_temperature(graph, temperature_star):
@@ -38,17 +39,37 @@ def graph_temperature(graph):
     return graph.x[:, TEMPERATURE_SLICE]
 
 
-def graph_heat_source(graph):
-    """读取图中的节点无量纲热源特征。
+def graph_surface_heat_source(graph):
+    """读取图中的无量纲表面热流。
 
     参数:
-        graph: PyG ``Data`` 图对象，``x`` 形状 ``[N, >=8]``。
+        graph: PyG ``Data`` 图对象，优先读取 ``q_surface_star`` 属性。
 
     返回:
-        热源特征张量，形状 ``[N, 1]``，对应 ``x[:, 7:8]``。
+        表面热流张量，形状 ``[N, 1]``。若图上没有热源字段，则返回零张量。
     """
 
-    return graph.x[:, HEAT_SOURCE_SLICE]
+    if hasattr(graph, "q_surface_star"):
+        return graph.q_surface_star.reshape(graph.num_nodes, 1)
+    if hasattr(graph, "q_star"):
+        return graph.q_star.reshape(graph.num_nodes, 1)
+    return torch.zeros_like(graph_temperature(graph))
+
+
+def graph_explicit_source_delta(graph, model_config):
+    """计算当前图的显式表面热源温升 ``delta_T_Q*``。"""
+
+    source_coefficient = getattr(
+        model_config,
+        "source_coefficient",
+        getattr(model_config, "pi_q", 0.0),
+    )
+    return compute_surface_source_delta_star(
+        graph_surface_heat_source(graph),
+        dt_star=getattr(model_config, "dt_star", 1.0),
+        source_coefficient=source_coefficient,
+        absorptivity=getattr(model_config, "heat_source_absorptivity", 1.0),
+    ).to(device=graph.x.device, dtype=graph.x.dtype)
 
 
 def graph_boundary_nodes(graph) -> Dict[str, torch.Tensor]:

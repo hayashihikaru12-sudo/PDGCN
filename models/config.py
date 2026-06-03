@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class PDGCNConfig:
-    node_input_size: int = 8
+    node_input_size: int = 7
     edge_input_size: int = 7
     global_input_size: int = 1
     hidden_size: int = 64
@@ -19,6 +19,8 @@ class PDGCNConfig:
 
     lambda_outflow: float = 1.0
     inverse_pe: float = 1.0
+    source_coefficient: float = 1.0
+    heat_source_absorptivity: float = 1.0
     pi_q: float = 1.0
     k_ratio: float = 0.05
     dt_star: float = 1.0
@@ -74,6 +76,12 @@ class PDGCNConfig:
             raise ValueError(f"inverse_pe must be non-negative, got {self.inverse_pe}.")
         if float(self.pi_q) < 0:
             raise ValueError(f"pi_q must be non-negative, got {self.pi_q}.")
+        if float(self.source_coefficient) < 0:
+            raise ValueError(f"source_coefficient must be non-negative, got {self.source_coefficient}.")
+        if float(self.heat_source_absorptivity) < 0:
+            raise ValueError(
+                f"heat_source_absorptivity must be non-negative, got {self.heat_source_absorptivity}."
+            )
         if float(self.k_ratio) < 0:
             raise ValueError(f"k_ratio must be non-negative, got {self.k_ratio}.")
         if float(self.dt_star) <= 0:

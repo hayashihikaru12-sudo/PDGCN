@@ -28,7 +28,7 @@ class PDGCN(nn.Module):
 
         参数:
             graph: ``torch_geometric.data.Data`` 图对象，需包含 ``x`` 形状
-                ``[N, 8]``、``edge_index`` 形状 ``[2, E]``、``edge_attr`` 形状
+                ``[N, 7]``、``edge_index`` 形状 ``[2, E]``、``edge_attr`` 形状
                 ``[E, 7]``，以及可选的 ``global_attr``。
 
         返回:

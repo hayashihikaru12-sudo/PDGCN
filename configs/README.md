@@ -75,11 +75,12 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
       "v0": 0.08,
       "T_amb": 120,
       "delta_T0": 230,
-      "Q0": 3100000000.0,
+      "Q0": 465000.0,
       "K0": 5.9,
       "rho": 1575,
-      "Cp": 1300.0,
-      "heat_source_effective_thickness": 0.00015
+      "Cp": 1600.0,
+      "heat_source_effective_thickness": 0.00015,
+      "heat_source_absorptivity": 1.0
     }
   }
 ]
@@ -104,7 +105,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 | `dynamic/xyz` | `mm` | 乘 `1e-3` 转为 `m`，再除以 `L0` 得到无量纲坐标。 |
 | `dynamic/fiber` | 无量纲方向向量 | 在代码内归一化。 |
 | `dynamic/normal` | 无量纲单位法向 | 在代码内归一化，并用于把速度方向投影到接收节点切平面。 |
-| `dynamic/Q` | 面热流 `W/mm^2` | 乘 `1e6` 转为 `W/m^2`，再除以 `heat_source_effective_thickness` 得到体热源 `W/m^3`。 |
+| `dynamic/Q` | 面热流 `W/mm^2` | 乘 `1e6` 转为表面热流 `W/m^2`，保存在图对象 `q_surface_star` 中，供显式热源模块使用。 |
 | `path/heat_center_step_distance` | `mm` | 乘 `1e-3` 转为 `m`，用于自动派生 `dt` 和 `dt_star`。 |
 | `path/slice_path_length` | `mm` | 乘 `1e-3` 转为 `m`，用于校验路径长度。 |
 | 根属性 `velocity_direction_local` | 无量纲方向向量 | 作为速度基准方向；会逐节点投影到曲面切平面。若局部坐标系为 `nip_local_velocity_side_normal` 且该属性缺失，使用 `[1, 0, 0]`。 |
@@ -116,11 +117,12 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 | `v0` | `m/s` | 特征速度。扫描速度会除以该值进入模型和 PDE。 |
 | `T_amb` | `degC` | 温度基准。无量纲温度定义为 `(T - T_amb) / delta_T0`。 |
 | `delta_T0` | `degC` 或 `K` 温差 | 特征温升。只作为温差尺度使用，数值上摄氏温差和开尔文温差相同。 |
-| `Q0` | `W/m^3` | 特征体热源强度。`dynamic/Q` 转为 `W/m^3` 后会除以该值。 |
+| `Q0` | `W/m^2` | 表面热流标尺。`dynamic/Q` 转为 `W/m^2` 后会除以该值，得到 `q_surface*`。 |
 | `K0` | `W/(m·K)` | 特征导热系数，通常取纤维方向主导热系数。用于派生 `inverse_pe`。 |
 | `rho` | `kg/m^3` | 密度。用于派生 PDE 热扩散和热源系数。 |
 | `Cp` | `J/(kg·K)` | 比热容。用于派生 PDE 热扩散和热源系数。 |
-| `heat_source_effective_thickness` | `m` | 面热流转体热源的等效作用厚度。该值越小，等效体热源越强。 |
+| `heat_source_effective_thickness` | `m` | 显式表面热源作用的等效热容量厚度。该值越小，同一表面热流造成的温升越大。 |
+| `heat_source_absorptivity` | 无量纲 | 可选热源吸收率，默认 `1.0`。 |
 | `eps` | 无量纲 | 可选数值下界，默认 `1e-12`，用于距离、归一化和除法稳定性。 |
 
 训练入口会根据 `scale` 和首个 HDF5 文件自动派生：
@@ -129,10 +131,10 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 dt = heat_center_step_distance / velocity_speed
 dt_star = dt / (L0 / v0)
 inverse_pe = K0 / (rho * Cp * v0 * L0)
-pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
+source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness * delta_T0)
 ```
 
-不建议在配置中手动写入 `inverse_pe`、`pi_q` 或 `dt_star`。即使写入模型配置，也会被训练入口自动覆盖。
+不建议在配置中手动写入 `inverse_pe`、`source_coefficient`、`pi_q` 或 `dt_star`。即使写入模型配置，也会被训练入口自动覆盖。`pi_q` 仅作为兼容别名写入 checkpoint metadata，显式热源模块使用 `source_coefficient`。
 
 ## `hyperparameters.model`
 
@@ -160,7 +162,7 @@ pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
 
 | 项 | 维度 | 说明 |
 | --- | --- | --- |
-| 节点特征 | `8` | `[x*, y*, z*, fx, fy, fz, T*, Q*]`。 |
+| 节点特征 | `7` | `[x*, y*, z*, fx, fy, fz, T*]`。热源不进入节点特征。 |
 | 边特征 | `7` | `[dx*, dy*, dz*, d*, cos_theta, cos_phi, cos_phi_sq]`，其中 `cos_theta` 为接收节点切向速度方向与边方向的夹角余弦。 |
 | 全局特征 | `1` | 无量纲扫描速度大小 `v_scan / v0`。 |
 | 模型输出 | `1` | 无量纲温度增量 `delta_T*`。 |
@@ -176,8 +178,6 @@ pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
   "k_ratio": 0.05,
   "lambda_outflow": 1.0,
   "gradient_regularization": 0.001,
-  "thermal_loss_beta": 0.3,
-  "thermal_loss_base_temperature_star": 0.0,
   "residual_time_scheme": "explicit"
 }
 ```
@@ -187,9 +187,7 @@ pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
 | `k_ratio` | number | 横向或厚度方向导热系数与主导热系数的比值，即 `K_perp / K_parallel`。示例 `0.05` 表示横向导热明显弱于纤维方向。 |
 | `lambda_outflow` | number | 出流边界 Neumann 软约束损失权重。越大越强调 downwind 边界法向温度梯度接近零。 |
 | `gradient_regularization` | number | 图梯度平滑损失权重，作用于边界钳制后的预测温度 `T_next_bc*`，抑制相邻内部节点的高频温度振荡。推荐从 `1e-4` 到 `1e-2` 调参；过大可能抹平热峰。 |
-| `thermal_loss_beta` | number | 单层训练中的等效热耗散系数，作用项为 `beta * (T* - T_base*)`。值越大，温度越容易被拉回基底温度。 |
-| `thermal_loss_base_temperature_star` | number | 热耗散基底温度的无量纲值。`0.0` 对应真实温度 `T_amb`。 |
-| `residual_time_scheme` | string | PDE 空间项和热耗散项的时间离散方式。可选 `"explicit"` 或 `"backward"`。 |
+| `residual_time_scheme` | string | PDE 空间项的时间离散方式。可选 `"explicit"` 或 `"backward"`。 |
 
 当前总损失为：
 
@@ -197,7 +195,6 @@ pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)
 loss_total = loss_pde + lambda_outflow * loss_outflow + gradient_regularization * loss_smooth
 ```
 
-其中 `loss_beta` 会被记录到训练历史和监控文件中，但当前不作为独立项直接加到 `loss_total`。`thermal_loss_beta` 已经通过 PDE residual 进入 `loss_pde`。
 `loss_smooth` 为内部边上的一阶图梯度平方均值：
 
 ```text
@@ -207,15 +204,13 @@ loss_smooth = mean_edges(((T_i* - T_j*) / d_ij*)^2)
 PDE residual 的主要形式为：
 
 ```text
-residual =
-  (T_next* - T_current*) / dt_star
+residual_transport =
+  (T_next* - T_source_applied*) / dt_star
   + convection
   - inverse_pe * diffusion
-  - pi_q * Q*
-  + beta * (T_eval* - T_base*)
 ```
 
-当 `residual_time_scheme = "explicit"` 时，`convection`、`diffusion` 和热耗散项使用 `T_current*` 评估；当为 `"backward"` 时使用 `T_next*` 评估，通常更偏稳定。
+训练时间推进采用算子分裂：先用显式表面热源得到 `T_source_applied*`，再把该温度输入无源 PD-GCN。PDE residual 的瞬态项只约束 PD-GCN 负责的无源面内输运增量。当 `residual_time_scheme = "explicit"` 时，`convection` 和 `diffusion` 使用 `T_source_applied*` 评估；当为 `"backward"` 时使用 `T_next*` 评估。
 
 ## `hyperparameters.training`
 
@@ -266,13 +261,14 @@ residual =
     "steps": null,
     "warmup_steps": null,
     "bottom_temperature_star": 0.0,
-    "top_heat_source_only": true,
     "allow_unstable_fdm": false,
     "layer_fiber_angles_deg": [0.0, 45.0, -45.0, 90.0],
     "normal_offset_sign": -1,
     "write_vtk": false,
     "cloud_interval": 20,
     "layer_batch_size": null,
+    "delta_smoothing_alpha": 0.2,
+    "delta_smoothing_steps": 1,
     "cloud_max_nodes_per_layer": null,
     "vtk_output_dir": null
   }
@@ -292,13 +288,14 @@ residual =
 | `steps` | integer 或 `null` | 推理步数。为 `null` 时使用输入 HDF5 的全部帧。 |
 | `warmup_steps` | integer 或 `null` | 推理前 warmup 步数。为 `null` 时沿用训练配置中的 `warmup_steps`。 |
 | `bottom_temperature_star` | number | 底层恒温边界的无量纲温度。`0.0` 对应真实温度 `T_amb`。 |
-| `top_heat_source_only` | boolean | 是否只在顶层保留热源。`true` 表示下方层不直接施加 `Q`。 |
 | `allow_unstable_fdm` | boolean | 是否允许显式 FDM 系数超过稳定性建议范围。通常保持 `false`。 |
 | `layer_fiber_angles_deg` | number array 或 `null` | 每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。为 `null` 时所有层使用 `0.0`。 |
 | `normal_offset_sign` | integer | 法向偏移方向，只能为 `-1` 或 `1`。默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。 |
 | `write_vtk` | boolean | 兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。 |
 | `cloud_interval` | integer | 合并三维云图输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
 | `layer_batch_size` | integer 或 `null` | 每次模型前向处理的层数；为 `null` 时 CUDA 自动使用较小层批量以降低显存。 |
+| `delta_smoothing_alpha` | number | 推理端网络增量图低通强度，范围 `[0, 1]`。默认 `0.2`；设为 `0` 可关闭平滑。 |
+| `delta_smoothing_steps` | integer | 对 `delta_T_net` 执行的图低通迭代次数，必须非负。默认 `1`；设为 `0` 可关闭平滑。 |
 | `cloud_max_nodes_per_layer` | integer 或 `null` | 兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。 |
 | `vtk_output_dir` | string 或 `null` | VTK 输出目录。为 `null` 时使用 `<output_path stem>_vtk/`。 |
 
@@ -314,15 +311,18 @@ layer_spacing_star = layer_spacing / L0
 多层推理的温度更新为：
 
 ```text
-T_next = T_current + delta_T_net + delta_T_fdm
+T_src[0] = T_current[0] + delta_T_source
+T_src[k>0] = T_current[k]
+T_inplane = T_src + delta_T_inplane
+T_next = T_inplane + delta_T_fdm(T_inplane)
 ```
 
-其中 `thermal_loss_beta` 只参与单层训练阶段的 PDE residual，不再作为多层推理阶段的正向补偿项加入温度更新。
+其中 `delta_T_source` 只由显式表面热源模块作用于顶层；`delta_T_inplane` 由无源 PD-GCN 对所有层计算；`delta_T_fdm` 由厚度方向 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
 
 ## 调参注意事项
 
-- `Q0` 是热源无量纲化标尺，不是直接削弱真实热输入的旋钮。真实热输入主要由 HDF5 中的 `dynamic/Q`、`heat_source_effective_thickness`、`rho`、`Cp`、`dt` 和吸收率建模方式决定。
-- `heat_source_effective_thickness` 越小，`W/mm^2 -> W/m^3` 后的体热源越大。若温度明显偏高，应优先检查该值是否等于真实受热厚度或是否还需要乘以吸收率。
-- `thermal_loss_beta` 控制单层训练中的等效散热强度。多层推理时它不会再直接放大温度；层间传热由 1D FDM 项负责。
-- `warmup_steps` 会在每个 HDF5 文件开始时用当前模型生成伪初温。局部窗口热源固定时，较大的 warmup 可能显著抬高初始温度。
+- `Q0` 是表面热流无量纲化标尺，不是直接削弱真实热输入的旋钮。真实热输入主要由 HDF5 中的 `dynamic/Q`、`heat_source_effective_thickness`、`rho`、`Cp`、`dt` 和吸收率决定。
+- `heat_source_effective_thickness` 越小，同一 `q''` 造成的显式温升越大。若温度明显偏高，应优先检查该值是否等于真实受热厚度或是否还需要调整吸收率。
+- `warmup_steps` 会在每个 HDF5 文件开始时先显式加热、再用当前无源 PD-GCN 生成伪初温。较大的 warmup 可能显著抬高初始温度。
 - `residual_time_scheme = "backward"` 通常比 `"explicit"` 更稳定，但训练代价和收敛行为可能不同，需要结合监控结果判断。
+- `delta_smoothing_alpha` 和 `delta_smoothing_steps` 用于抑制推理端自回归高频误差。若云图锯齿明显，可在 `0.1~0.3` 和 `1~2` 次迭代内消融；若热峰被抹平，应降低强度或关闭。

@@ -8,9 +8,9 @@ import torch
 class ScaleParams:
     """PD-GCN 数据流水线使用的特征尺度参数。
 
-    ``K0``、``rho``、``Cp`` 是可选参数：它们不参与张量级无量纲化，
-    但 ``derive_pde_constants`` 需要使用它们计算标量系数
-    ``inverse_pe`` 和 ``pi_q``。
+    ``K0``、``rho``、``Cp`` 和 ``heat_source_effective_thickness`` 是可选参数：
+    它们不参与节点张量级无量纲化，但 ``derive_pde_constants`` 需要使用它们
+    计算曲面内输运系数和显式表面热源系数。
     """
 
     L0: float
@@ -22,6 +22,7 @@ class ScaleParams:
     rho: Optional[float] = None
     Cp: Optional[float] = None
     heat_source_effective_thickness: Optional[float] = None
+    heat_source_absorptivity: float = 1.0
     eps: float = 1e-12
 
     def __post_init__(self):
@@ -44,13 +45,20 @@ class ScaleParams:
             value = getattr(self, field_name)
             if value is not None and float(value) <= 0:
                 raise ValueError(f"{field_name} must be positive when provided, got {value}.")
+        if float(self.heat_source_absorptivity) < 0:
+            raise ValueError(
+                "heat_source_absorptivity must be non-negative, "
+                f"got {self.heat_source_absorptivity}."
+            )
 
 
 def derive_pde_constants(scale_params: "ScaleParams") -> Tuple[float, float]:
-    """根据特征尺度计算 ``(inverse_pe, pi_q)``。
+    """根据特征尺度计算 ``(inverse_pe, source_coefficient)``。
 
-    ``1/Pe = K0 / (rho * Cp * v0 * L0)`` and
-    ``pi_q = Q0 * L0 / (rho * Cp * v0 * delta_T0)``.
+    ``1/Pe = K0 / (rho * Cp * v0 * L0)``。
+    当 ``Q0`` 表示表面热流尺度 ``W/m^2`` 时，显式热源系数为
+    ``Q0 * L0 / (rho * Cp * v0 * h_eff * delta_T0)``，满足
+    ``delta_T_Q* = eta * source_coefficient * dt_star * q_surface*``。
     调用前必须在 ``scale_params`` 中设置 ``K0``、``rho`` 和 ``Cp``。
 
     参数:
@@ -58,8 +66,8 @@ def derive_pde_constants(scale_params: "ScaleParams") -> Tuple[float, float]:
             其余字段提供无量纲化所需的特征标尺。
 
     返回:
-        ``(inverse_pe, pi_q)`` 二元组，均为 Python ``float``；
-        分别表示佩克莱特数倒数和无量纲热源强度。
+        ``(inverse_pe, source_coefficient)`` 二元组，均为 Python ``float``；
+        分别表示佩克莱特数倒数和显式表面热源温升系数。
     """
 
     missing = [name for name in ("K0", "rho", "Cp") if getattr(scale_params, name) is None]
@@ -81,8 +89,13 @@ def derive_pde_constants(scale_params: "ScaleParams") -> Tuple[float, float]:
         raise ValueError("rho * Cp * v0 must be positive to derive PDE constants.")
 
     inverse_pe = K0 / (denom * L0)
-    pi_q = (Q0 * L0) / (denom * delta_T0)
-    return inverse_pe, pi_q
+    if scale_params.heat_source_effective_thickness is None:
+        source_coefficient = (Q0 * L0) / (denom * delta_T0)
+    else:
+        source_coefficient = (Q0 * L0) / (
+            denom * float(scale_params.heat_source_effective_thickness) * delta_T0
+        )
+    return inverse_pe, source_coefficient
 
 
 def coordinates_to_dimensionless(coordinates, scale_params: ScaleParams):
@@ -143,28 +156,28 @@ def temperature_from_dimensionless(temperature_star, scale_params: ScaleParams):
 
 
 def heat_source_to_dimensionless(q, scale_params: ScaleParams):
-    """将真实热源强度转换为无量纲热源。
+    """将真实表面热流转换为无量纲热源标记。
 
     参数:
-        q: 热源强度张量或数组，形状通常为 ``[N, 1]``。
-        scale_params: ``ScaleParams`` 实例，使用其中的 ``Q0`` 作为热源标尺。
+        q: 表面热流张量或数组，形状通常为 ``[N, 1]``，单位 ``W/m^2``。
+        scale_params: ``ScaleParams`` 实例，使用其中的 ``Q0`` 作为表面热流标尺。
 
     返回:
-        与 ``q`` 形状一致的无量纲热源 ``q / Q0``。
+        与 ``q`` 形状一致的无量纲表面热流 ``q / Q0``。
     """
 
     return q / scale_params.Q0
 
 
 def heat_source_from_dimensionless(q_star, scale_params: ScaleParams):
-    """将无量纲热源强度还原为真实热源。
+    """将无量纲表面热流还原为真实表面热流。
 
     参数:
-        q_star: 无量纲热源张量或数组，形状通常为 ``[N, 1]``。
-        scale_params: ``ScaleParams`` 实例，使用其中的 ``Q0`` 作为热源标尺。
+        q_star: 无量纲表面热流张量或数组，形状通常为 ``[N, 1]``。
+        scale_params: ``ScaleParams`` 实例，使用其中的 ``Q0`` 作为表面热流标尺。
 
     返回:
-        与 ``q_star`` 形状一致的真实热源强度 ``q_star * Q0``。
+        与 ``q_star`` 形状一致的真实表面热流 ``q_star * Q0``。
     """
 
     return q_star * scale_params.Q0
@@ -201,25 +214,25 @@ def to_dimensionless(node_features, edge_features, global_condition, scale_param
         本函数只接收带真实单位的原始特征张量。不要对 ``build_graph``
         返回的 ``graph.x``、``graph.edge_attr`` 或 ``graph.global_attr``
         再调用本函数。``build_graph`` 已经完成坐标、边位移/距离、
-        温度、热源和扫描速度的无量纲化。若对 ``build_graph`` 构造出的图
+        温度和扫描速度的无量纲化。若对 ``build_graph`` 构造出的图
         再调用本函数，``edge_features[:, 0:4]`` 会被第二次除以 ``L0``，
         从而破坏 PDE 尺度。
 
-    期望节点布局: [x, y, z, fx, fy, fz, T, Q]。
+    期望节点布局: [x, y, z, fx, fy, fz, T]。
     期望边布局: [dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]。
     期望全局条件布局: [scan_velocity]。
 
     参数:
-        node_features: 原始节点特征张量，形状 ``[N, 8]``，列含义为
-            ``[x, y, z, fx, fy, fz, T, Q]``。
+        node_features: 原始节点特征张量，形状 ``[N, 7]``，列含义为
+            ``[x, y, z, fx, fy, fz, T]``。
         edge_features: 原始边特征张量，形状 ``[E, 7]``，列含义为
             ``[dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]``。
         global_condition: 全局工艺条件，形状通常为 ``[1]``，表示扫描速度。
-        scale_params: ``ScaleParams`` 实例，提供坐标、温度、热源和速度标尺。
+        scale_params: ``ScaleParams`` 实例，提供坐标、温度和速度标尺。
 
     返回:
         ``(node_star, edge_star, global_star)`` 三元组：
-        ``node_star`` 形状 ``[N, 8]``，坐标/温度/热源已无量纲化；
+        ``node_star`` 形状 ``[N, 7]``，坐标/温度已无量纲化；
         ``edge_star`` 形状 ``[E, 7]``，边位移和距离已无量纲化；
         ``global_star`` 形状 ``[G]``，全局速度已无量纲化。
     """
@@ -229,7 +242,6 @@ def to_dimensionless(node_features, edge_features, global_condition, scale_param
 
     node_star[:, 0:3] = coordinates_to_dimensionless(node_star[:, 0:3], scale_params)
     node_star[:, 6:7] = temperature_to_dimensionless(node_star[:, 6:7], scale_params)
-    node_star[:, 7:8] = heat_source_to_dimensionless(node_star[:, 7:8], scale_params)
 
     # 警告: 此处的 edge_features[:, 0:4] 必须仍然带真实长度单位。
     # 不要传入 build_graph/build_edge_features(nodes_star, ...) 生成的 edge_attr，

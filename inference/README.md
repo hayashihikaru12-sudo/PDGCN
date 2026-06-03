@@ -8,17 +8,18 @@
 2. 选择输入 HDF5：
    - 若 `inference.h5_path` 非空，使用该文件；
    - 否则使用 `datasets[inference.dataset_index].h5_dir` 下自然排序的第一个 HDF5 文件。
-3. 读取 HDF5 中的路径步长和扫描速度，结合 `scale` 自动派生 `dt_star`、`inverse_pe` 和 `pi_q`。
+3. 读取 HDF5 中的路径步长和扫描速度，结合 `scale` 自动派生 `dt_star`、`inverse_pe` 和 `source_coefficient`。
 4. 加载训练 checkpoint：
    - 优先使用 checkpoint metadata 中的 `model_config`；
    - 若 metadata 不包含模型配置，则使用当前 JSON 配置派生的模型配置。
-5. 按时间帧构造单层曲面图，节点特征包含坐标、纤维方向、当前温度和热源。
+5. 按时间帧构造单层曲面图，节点特征包含坐标、纤维方向和当前温度；表面热流作为独立图字段供显式热源模块读取。
 6. 在每个时间步执行多层滚动：
    - 按 `layer_spacing` 沿节点曲面法向偏移下层节点坐标；
    - 按 `layer_fiber_angles_deg` 绕节点法向旋转各层纤维方向；
-   - 使用同一个单层 PDGCN 对每层预测面内温度增量；
-   - 默认仅顶层保留热源，下层热源置零；
-   - 使用 1D FDM 计算厚度方向层间传热；
+   - 对顶层施加显式表面热源温升；
+   - 使用同一个无源单层 PDGCN 对每层预测面内温度增量；
+   - 对网络温度增量执行可选图低通平滑，抑制自回归高频误差；
+   - 使用 1D FDM 基于面内更新后的温度计算厚度方向层间传热；
    - 对迎风/侧边节点施加 Dirichlet 边界；
    - 对底层全节点施加恒温边界。
 7. 写出多层温度序列 HDF5。VTK 云图不由推理入口生成，需使用 `render_entry.py` 从 HDF5 结果离线渲染。
@@ -63,13 +64,14 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
     "steps": null,
     "warmup_steps": null,
     "bottom_temperature_star": 0.0,
-    "top_heat_source_only": true,
     "allow_unstable_fdm": false,
     "layer_fiber_angles_deg": [0.0, 45.0, -45.0, 90.0],
     "normal_offset_sign": -1,
     "write_vtk": false,
     "cloud_interval": 20,
     "layer_batch_size": null,
+    "delta_smoothing_alpha": 0.2,
+    "delta_smoothing_steps": 1,
     "cloud_max_nodes_per_layer": null,
     "vtk_output_dir": null
   }
@@ -87,13 +89,14 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `steps`：推理步数；为 `null` 时使用输入 HDF5 的全部帧。
 - `warmup_steps`：推理初温 warmup 步数；为 `null` 时沿用训练配置。
 - `bottom_temperature_star`：底层恒温边界的无量纲温度，默认 `0.0`。
-- `top_heat_source_only`：是否仅顶层保留热源，默认 `true`。
 - `allow_unstable_fdm`：是否允许显式 FDM 系数 `C_n > 0.5`。
 - `layer_fiber_angles_deg`：每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。
 - `normal_offset_sign`：法向偏移方向，只能为 `-1` 或 `1`；默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。
 - `write_vtk`：兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。
 - `cloud_interval`：合并三维云图输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
 - `layer_batch_size`：每次模型前向处理的层数；为 `null` 时 CUDA 默认自动按较小层批量推理，降低 30 层等大规模工况显存占用。
+- `delta_smoothing_alpha`：推理端网络增量图低通强度，范围 `[0, 1]`；默认 `0.2`，设为 `0` 可关闭。
+- `delta_smoothing_steps`：对 `delta_T_net` 执行的图低通迭代次数，必须非负；默认 `1`，设为 `0` 可关闭。
 - `cloud_max_nodes_per_layer`：兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。
 - `vtk_output_dir`：VTK 输出目录；为 `null` 时使用 `<output_path stem>_vtk/`。
 
@@ -109,14 +112,20 @@ layer_spacing_star = layer_spacing / L0
 多层温度更新为：
 
 ```text
-T_next = T_curr + delta_T_net + delta_T_fdm
+T_src[0] = T_curr[0] + delta_T_source
+T_src[k>0] = T_curr[k]
+T_inplane = T_src + delta_T_inplane
+T_next = T_inplane + delta_T_fdm(T_inplane)
 ```
 
 其中：
 
-- `delta_T_net` 来自训练好的单层 PDGCN；
+- `delta_T_source` 来自显式表面热源模块，只作用于顶层；
+- `delta_T_inplane` 来自训练好的无源单层 PDGCN，并在 FDM 前按层内图拓扑进行可选低通平滑；
 - `delta_T_fdm` 来自厚度方向 1D FDM；
 - 默认 `layer=0` 为顶层，`layer=num_layers-1` 为底层。
+
+增量低通只更新内部节点的网络增量，迎风、侧边界和出流边界节点保持原增量；它不会直接平滑最终温度场，也不会作用于 warmup。
 
 若 `C_n > 0.5` 且 `allow_unstable_fdm=false`，推理会直接报错，避免显式差分不稳定。
 
@@ -126,7 +135,7 @@ HDF5 输出包含：
 
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
-- `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、FDM 系数、合并三维云图输出间隔、尺度参数、总推理/渲染耗时和逐帧推理耗时统计。
+- `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、FDM 系数、增量平滑参数、合并三维云图输出间隔、尺度参数、总推理/渲染耗时和逐帧推理耗时统计。
 
 VTK 输出默认目录为：
 

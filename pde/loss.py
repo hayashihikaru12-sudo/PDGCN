@@ -3,11 +3,9 @@ from typing import Dict, Iterable, Optional
 import torch
 
 from .residual import (
-    _as_base_temperature,
     _as_time_node,
     _broadcast_to_match,
     _restore_layout,
-    _select_residual_temperature,
     compute_pde_residual,
 )
 
@@ -116,7 +114,7 @@ def total_loss(
     T_next,
     T_current,
     v_scan_star,
-    Q_star,
+    Q_star=None,
     dt_star,
     edge_index,
     edge_attr,
@@ -140,20 +138,19 @@ def total_loss(
             ``[K, N]`` 或 ``[K, N, 1]``。
         T_current: 当前无量纲温度，形状同 ``T_next`` 或可广播到 ``T_next``。
         v_scan_star: 无量纲扫描速度，标量或长度为 ``K`` 的张量。
-        Q_star: 无量纲热源张量，形状同温度或可广播。
+        Q_star: 兼容旧调用的保留参数；无源残差中不再使用。
         dt_star: 无量纲时间步长。
         edge_index: 图边索引，形状 ``[2, E]``。
         edge_attr: 原始边特征，形状 ``[E, >=7]``。
         boundary_nodes: 边界节点字典，使用 ``upwind``、``side`` 和 ``downwind``。
         inverse_pe: 佩克莱特数倒数。
-        pi_q: 无量纲热源强度系数。
+        pi_q: 兼容旧调用的保留参数；无源残差中不再使用。
         k_ratio: 横向/纵向导热系数比。
         lambda_outflow: 出流边界损失权重。
         gradient_regularization: 图梯度平滑损失权重，用于抑制预测温度的高频振荡。
         dirichlet_temperature_star: 硬 Dirichlet 边界的无量纲温度值。
-        thermal_loss_beta: 无量纲层间等效热耗散系数 ``beta``。
-        thermal_loss_base_temperature_star: 无量纲基底温度 ``T_base*``，
-            单层训练默认 ``0.0`` 表示冷源。
+        thermal_loss_beta: 兼容旧调用的保留参数；无源残差中不再使用。
+        thermal_loss_base_temperature_star: 兼容旧调用的保留参数；无源残差中不再使用。
         residual_time_scheme: PDE 空间项和热耗散项的时间离散方式；
             ``explicit`` 使用当前温度，``backward`` 使用预测温度。
         return_components: 是否返回损失分量和中间张量。
@@ -174,10 +171,10 @@ def total_loss(
         T_next=T_next_bc,
         T_current=T_current,
         v_scan_star=v_scan_star,
-        Q_star=Q_star,
         dt_star=dt_star,
         edge_index=edge_index,
         edge_attr=edge_attr,
+        Q_star=Q_star,
         inverse_pe=inverse_pe,
         pi_q=pi_q,
         k_ratio=k_ratio,
@@ -189,24 +186,7 @@ def total_loss(
 
     residual_2d, _ = _as_time_node(residual, name="residual")
     T_next_bc_2d, t_next_layout = _as_time_node(T_next_bc, name="T_next_bc")
-    T_current_2d, _ = _as_time_node(T_current, name="T_current")
-    T_current_2d = _broadcast_to_match(
-        T_current_2d.to(device=residual_2d.device, dtype=residual_2d.dtype),
-        T_next_bc_2d.to(device=residual_2d.device, dtype=residual_2d.dtype),
-        name="T_current",
-    )
-    T_eval_2d = _select_residual_temperature(
-        residual_time_scheme,
-        T_current_2d,
-        T_next_bc_2d.to(device=residual_2d.device, dtype=residual_2d.dtype),
-    )
-    base_temperature_2d = _as_base_temperature(
-        thermal_loss_base_temperature_star,
-        T_eval_2d,
-        device=residual_2d.device,
-        dtype=residual_2d.dtype,
-    )
-    thermal_loss_term_2d = float(thermal_loss_beta) * (T_eval_2d - base_temperature_2d)
+    thermal_loss_term_2d = torch.zeros_like(T_next_bc_2d.to(device=residual_2d.device, dtype=residual_2d.dtype))
 
     interior_nodes = _interior_nodes(residual_2d.shape[1], boundary_nodes, device=residual_2d.device)
     if interior_nodes.numel() == 0:
@@ -227,6 +207,7 @@ def total_loss(
     return {
         "loss_total": loss_total,
         "loss_pde": loss_pde,
+        "loss_transport": loss_pde,
         "loss_outflow": loss_outflow,
         "loss_beta": loss_beta,
         "loss_smooth": loss_smooth,

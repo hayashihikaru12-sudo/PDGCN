@@ -9,13 +9,14 @@
     "steps": null,
     "warmup_steps": null,
     "bottom_temperature_star": 0.0,
-    "top_heat_source_only": true,
     "allow_unstable_fdm": false,
     "layer_fiber_angles_deg": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
     "normal_offset_sign": -1,
     "write_vtk": false,
     "cloud_interval": 20,
     "layer_batch_size": null,
+    "delta_smoothing_alpha": 0.2,
+    "delta_smoothing_steps": 1,
     "cloud_max_nodes_per_layer": null,
     "vtk_output_dir": null
   }

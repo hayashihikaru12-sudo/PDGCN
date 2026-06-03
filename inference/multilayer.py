@@ -8,7 +8,7 @@ from torch_geometric.data import Data
 from data import build_edge_features
 from data.dimensionless import temperature_from_dimensionless
 from pde import apply_dirichlet_boundary
-from training.graph_utils import graph_boundary_nodes, graph_to_device
+from training.graph_utils import graph_boundary_nodes, graph_explicit_source_delta, graph_to_device
 from training.warmup import pseudo_time_relax_initial_temperature
 
 from .fdm import compute_layer_fdm_coefficient, compute_layer_fdm_delta
@@ -29,11 +29,12 @@ def rollout_multilayer_fdm(
     warmup_steps: int = 0,
     initial_temperature_star=None,
     bottom_temperature_star: float = 0.0,
-    top_heat_source_only: bool = True,
     allow_unstable_fdm: bool = False,
     layer_fiber_angles_deg=None,
     normal_offset_sign: int = -1,
     layer_batch_size=None,
+    delta_smoothing_alpha: float = 0.2,
+    delta_smoothing_steps: int = 1,
     timing_recorder=None,
 ):
     """Run multilayer PD-GCN inference coupled with explicit 1D FDM in thickness."""
@@ -51,6 +52,12 @@ def rollout_multilayer_fdm(
     layer_fiber_angles_deg = _validate_layer_fiber_angles(layer_fiber_angles_deg, num_layers)
     if int(normal_offset_sign) not in (-1, 1):
         raise ValueError(f"normal_offset_sign must be -1 or 1, got {normal_offset_sign}.")
+    if not 0.0 <= float(delta_smoothing_alpha) <= 1.0:
+        raise ValueError(f"delta_smoothing_alpha must be in [0, 1], got {delta_smoothing_alpha}.")
+    delta_smoothing_steps = _as_non_negative_integer(
+        delta_smoothing_steps,
+        "delta_smoothing_steps",
+    )
 
     initial_setup_start = time.perf_counter()
     model_device = next(model.parameters()).device
@@ -86,25 +93,43 @@ def rollout_multilayer_fdm(
         for step in range(steps):
             step_start = time.perf_counter()
             graph = graph0 if step == 0 else _graph_for_step(graph_init_or_seq, step, steps, model_device)
+            source_delta = torch.zeros_like(current_temperature)
+            source_delta[0] = graph_explicit_source_delta(graph, model.config)
+            source_temperature = apply_dirichlet_boundary(
+                current_temperature + source_delta,
+                graph_boundary_nodes(graph),
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
             delta_net = _forward_model_by_layer_batches(
                 model,
                 graph,
-                current_temperature,
+                source_temperature,
                 effective_layer_batch_size=effective_layer_batch_size,
                 layer_spacing_star=layer_spacing_star,
                 layer_fiber_angles_deg=layer_fiber_angles_deg,
                 normal_offset_sign=int(normal_offset_sign),
-                top_heat_source_only=top_heat_source_only,
+            )
+            delta_net = _smooth_delta_by_graph(
+                delta_net,
+                graph.edge_index,
+                graph_boundary_nodes(graph),
+                alpha=float(delta_smoothing_alpha),
+                steps=delta_smoothing_steps,
+            )
+            inplane_temperature = apply_dirichlet_boundary(
+                source_temperature + delta_net,
+                graph_boundary_nodes(graph),
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
 
             delta_fdm = compute_layer_fdm_delta(
-                current_temperature,
+                inplane_temperature,
                 dt_star=getattr(model.config, "dt_star", 1.0),
                 inverse_pe=getattr(model.config, "inverse_pe", 1.0),
                 k_ratio=getattr(model.config, "k_ratio", 0.0),
                 layer_spacing_star=layer_spacing_star,
             )
-            next_temperature = current_temperature + delta_net + delta_fdm
+            next_temperature = inplane_temperature + delta_fdm
             next_temperature = apply_dirichlet_boundary(
                 next_temperature,
                 graph_boundary_nodes(graph),
@@ -162,7 +187,6 @@ def _forward_model_by_layer_batches(
     layer_spacing_star: float,
     layer_fiber_angles_deg,
     normal_offset_sign: int,
-    top_heat_source_only: bool,
 ):
     num_layers, num_nodes, _ = current_temperature.shape
     delta_net = None
@@ -178,7 +202,6 @@ def _forward_model_by_layer_batches(
                 layer_spacing_star=layer_spacing_star,
                 layer_fiber_angles_deg=layer_fiber_angles_deg,
                 normal_offset_sign=int(normal_offset_sign),
-                top_heat_source_only=top_heat_source_only,
                 layer_indices=layer_indices,
             )
             delta_chunk = model(graph_step).reshape(layer_end - layer_start, num_nodes, -1)
@@ -205,6 +228,76 @@ def _forward_model_by_layer_batches(
             torch.cuda.empty_cache()
             batch_size = max(1, batch_size // 2)
     return delta_net
+
+
+def _smooth_delta_by_graph(delta, edge_index, boundary_nodes, *, alpha: float, steps: int):
+    alpha = float(alpha)
+    steps = _as_non_negative_integer(steps, "steps")
+    if steps <= 0 or alpha <= 0.0:
+        return delta
+
+    if delta.ndim != 3 or delta.shape[2] != 1:
+        raise ValueError(f"delta must have shape [L, N, 1], got {tuple(delta.shape)}.")
+    if edge_index.ndim != 2 or edge_index.shape[0] != 2:
+        raise ValueError(f"edge_index must have shape [2, E], got {tuple(edge_index.shape)}.")
+    if edge_index.numel() == 0:
+        return delta
+
+    num_layers, num_nodes, _ = delta.shape
+    device = delta.device
+    edge_index = edge_index.to(device=device, dtype=torch.long)
+    source = edge_index[0]
+    receiver = edge_index[1]
+    if int(source.min().item()) < 0 or int(receiver.min().item()) < 0:
+        raise ValueError("edge_index must contain non-negative node indices.")
+    if int(source.max().item()) >= num_nodes or int(receiver.max().item()) >= num_nodes:
+        raise ValueError(f"edge_index values must be within [0, {num_nodes - 1}].")
+
+    update_mask = _internal_node_mask(num_nodes, boundary_nodes, device=device)
+    incoming_count = torch.zeros(num_nodes, device=device, dtype=delta.dtype)
+    incoming_count.index_add_(0, receiver, torch.ones_like(receiver, dtype=delta.dtype))
+    update_mask = update_mask & (incoming_count > 0)
+    if not bool(update_mask.any().item()):
+        return delta
+
+    current = delta[:, :, 0]
+    for _ in range(steps):
+        neighbor_sum = torch.zeros((num_layers, num_nodes), device=device, dtype=current.dtype)
+        neighbor_sum.index_add_(1, receiver, current[:, source])
+        neighbor_mean = neighbor_sum / incoming_count.clamp_min(1.0).reshape(1, num_nodes)
+        smoothed = current.clone()
+        smoothed[:, update_mask] = (1.0 - alpha) * current[:, update_mask] + alpha * neighbor_mean[:, update_mask]
+        current = smoothed
+    return current.unsqueeze(-1)
+
+
+def _as_non_negative_integer(value, name: str):
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a non-negative integer, got {value}.")
+    try:
+        int_value = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a non-negative integer, got {value}.") from error
+    if int_value < 0 or int_value != value:
+        raise ValueError(f"{name} must be a non-negative integer, got {value}.")
+    return int_value
+
+
+def _internal_node_mask(num_nodes: int, boundary_nodes, *, device):
+    mask = torch.ones(int(num_nodes), device=device, dtype=torch.bool)
+    if not boundary_nodes:
+        return mask
+    selected = [
+        torch.as_tensor(boundary_nodes[name], device=device, dtype=torch.long).reshape(-1)
+        for name in ("upwind", "side", "downwind")
+        if name in boundary_nodes and boundary_nodes[name] is not None
+    ]
+    if not selected:
+        return mask
+    boundary = torch.unique(torch.cat(selected, dim=0))
+    if boundary.numel() > 0:
+        mask[boundary] = False
+    return mask
 
 
 def _call_writer(writer, step, output, graph_step):
@@ -281,7 +374,6 @@ def _build_multilayer_graph(
     layer_spacing_star: float = 0.0,
     layer_fiber_angles_deg=None,
     normal_offset_sign: int = -1,
-    top_heat_source_only: bool,
     layer_indices=None,
 ):
     return _build_multilayer_graph_impl(
@@ -290,7 +382,6 @@ def _build_multilayer_graph(
         layer_spacing_star=layer_spacing_star,
         layer_fiber_angles_deg=layer_fiber_angles_deg,
         normal_offset_sign=normal_offset_sign,
-        top_heat_source_only=top_heat_source_only,
         layer_indices=layer_indices,
     )
 
@@ -302,7 +393,6 @@ def _build_multilayer_graph_impl(
     layer_spacing_star: float,
     layer_fiber_angles_deg,
     normal_offset_sign: int,
-    top_heat_source_only: bool,
     layer_indices,
 ):
     num_layers, num_nodes, _ = temperature_star.shape
@@ -323,12 +413,6 @@ def _build_multilayer_graph_impl(
     x[:, 0:3] = multilayer_geometry["pos"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype)
     x[:, 3:6] = multilayer_geometry["fiber"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype)
     x[:, 6:7] = temperature_star.reshape(num_layers * num_nodes, 1).to(device=device, dtype=x.dtype)
-    absolute_layer_indices = _as_layer_indices(layer_indices, num_layers, device, dtype=torch.long)
-    if top_heat_source_only:
-        non_top_mask = absolute_layer_indices != 0
-        if torch.any(non_top_mask):
-            x_view = x.reshape(num_layers, num_nodes, -1)
-            x_view[non_top_mask, :, 7:8] = 0.0
 
     offsets = (torch.arange(num_layers, device=device, dtype=edge_index.dtype) * num_nodes).reshape(num_layers, 1, 1)
     edge_index_batched = (edge_index.reshape(1, 2, edge_count) + offsets).permute(1, 0, 2).reshape(

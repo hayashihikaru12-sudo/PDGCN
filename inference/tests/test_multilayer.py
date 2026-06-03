@@ -6,7 +6,7 @@ from torch_geometric.data import Data
 
 from data import ScaleParams
 from inference.io import _should_write_cloud_step
-from inference.multilayer import _build_multilayer_graph, rollout_multilayer_fdm
+from inference.multilayer import _build_multilayer_graph, _smooth_delta_by_graph, rollout_multilayer_fdm
 from models import PDGCNConfig
 
 
@@ -24,7 +24,7 @@ class ConstantDeltaModel(nn.Module):
 
 def make_graph():
     graph = Data(
-        x=torch.zeros(2, 8),
+        x=torch.zeros(2, 7),
         edge_index=torch.tensor([[0], [1]], dtype=torch.long),
         edge_attr=torch.tensor([[0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0]], dtype=torch.float32),
         global_attr=torch.tensor([1.0]),
@@ -39,7 +39,7 @@ def make_graph():
 
 def make_geometric_graph():
     graph = Data(
-        x=torch.zeros(2, 8),
+        x=torch.zeros(2, 7),
         edge_index=torch.tensor([[0], [1]], dtype=torch.long),
         edge_attr=torch.tensor([[1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]], dtype=torch.float32),
         global_attr=torch.tensor([1.0]),
@@ -58,6 +58,69 @@ def make_geometric_graph():
 
 
 class MultilayerRolloutTests(unittest.TestCase):
+    def test_delta_smoothing_updates_only_internal_nodes(self):
+        delta = torch.tensor(
+            [
+                [[0.0], [20.0], [20.0], [5.0]],
+                [[10.0], [30.0], [90.0], [7.0]],
+            ]
+        )
+        edge_index = torch.tensor([[0, 2], [1, 1]], dtype=torch.long)
+        boundary_nodes = {
+            "upwind": torch.tensor([0]),
+            "side": torch.empty(0, dtype=torch.long),
+            "downwind": torch.tensor([2]),
+        }
+
+        smoothed = _smooth_delta_by_graph(delta, edge_index, boundary_nodes, alpha=0.5, steps=1)
+
+        expected = torch.tensor(
+            [
+                [[0.0], [15.0], [20.0], [5.0]],
+                [[10.0], [40.0], [90.0], [7.0]],
+            ]
+        )
+        self.assertTrue(torch.allclose(smoothed, expected, atol=1e-6))
+
+    def test_delta_smoothing_can_be_disabled(self):
+        delta = torch.tensor([[[0.0], [10.0], [20.0]]])
+        edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+        boundary_nodes = {
+            "upwind": torch.empty(0, dtype=torch.long),
+            "side": torch.empty(0, dtype=torch.long),
+            "downwind": torch.empty(0, dtype=torch.long),
+        }
+
+        alpha_disabled = _smooth_delta_by_graph(
+            delta,
+            edge_index,
+            boundary_nodes,
+            alpha=0.0,
+            steps=1,
+        )
+        steps_disabled = _smooth_delta_by_graph(
+            delta,
+            edge_index,
+            boundary_nodes,
+            alpha=0.5,
+            steps=0,
+        )
+        self.assertTrue(torch.allclose(alpha_disabled, delta))
+        self.assertTrue(torch.allclose(steps_disabled, delta))
+
+    def test_delta_smoothing_keeps_constant_fields(self):
+        delta = torch.full((2, 3, 1), 4.0)
+        edge_index = torch.tensor([[0, 1, 2], [1, 2, 0]], dtype=torch.long)
+        boundary_nodes = {
+            "upwind": torch.empty(0, dtype=torch.long),
+            "side": torch.empty(0, dtype=torch.long),
+            "downwind": torch.empty(0, dtype=torch.long),
+        }
+
+        smoothed = _smooth_delta_by_graph(delta, edge_index, boundary_nodes, alpha=0.2, steps=3)
+
+        self.assertTrue(torch.allclose(smoothed, delta, atol=1e-6))
+
     def test_rollout_returns_time_layer_node_temperature(self):
         scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
 
@@ -109,6 +172,33 @@ class MultilayerRolloutTests(unittest.TestCase):
         expected = torch.tensor([[[[2.90], [2.90]], [[1.10], [1.10]], [[0.00], [0.00]]]])
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
+    def test_explicit_source_heats_only_top_layer_when_fdm_is_off(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        graph = make_graph()
+        graph.q_surface_star = torch.tensor([[1.0], [0.0]])
+        model = ConstantDeltaModel()
+        model.delta.data.fill_(0.0)
+        model.config = PDGCNConfig(
+            inverse_pe=0.0,
+            k_ratio=0.0,
+            dt_star=0.5,
+            source_coefficient=2.0,
+            heat_source_absorptivity=1.0,
+        )
+
+        result = rollout_multilayer_fdm(
+            model,
+            graph,
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+        )
+
+        expected = torch.tensor([[[[3.0], [2.0]], [[0.0], [0.0]], [[0.0], [0.0]]]])
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
     def test_cloud_interval_writes_every_nth_step_from_zero(self):
         written = [step for step in range(12) if _should_write_cloud_step(step, 5)]
 
@@ -124,7 +214,6 @@ class MultilayerRolloutTests(unittest.TestCase):
             layer_spacing_star=0.15,
             layer_fiber_angles_deg=[0.0, 45.0, 90.0],
             normal_offset_sign=-1,
-            top_heat_source_only=True,
         )
 
         expected_z = torch.tensor([0.0, 0.0, -0.15, -0.15, -0.30, -0.30])
@@ -140,7 +229,6 @@ class MultilayerRolloutTests(unittest.TestCase):
             layer_spacing_star=0.15,
             layer_fiber_angles_deg=[0.0, 90.0],
             normal_offset_sign=-1,
-            top_heat_source_only=True,
         )
 
         self.assertTrue(torch.allclose(multilayer.x[0:2, 3:6], torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])))
@@ -221,7 +309,6 @@ class MultilayerRolloutTests(unittest.TestCase):
             layer_spacing_star=0.15,
             layer_fiber_angles_deg=[0.0, 45.0, 90.0, 180.0],
             normal_offset_sign=-1,
-            top_heat_source_only=True,
             layer_indices=torch.tensor([2, 3], dtype=torch.long),
         )
 
@@ -234,7 +321,7 @@ class MultilayerRolloutTests(unittest.TestCase):
                 atol=1e-6,
             )
         )
-        self.assertTrue(torch.allclose(multilayer.x[:, 7:8], torch.zeros_like(multilayer.x[:, 7:8])))
+        self.assertEqual(multilayer.x.shape[1], 7)
 
 
 if __name__ == "__main__":

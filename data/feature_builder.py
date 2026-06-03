@@ -35,18 +35,16 @@ def build_node_type(num_nodes: int, boundary_nodes, *, device=None) -> torch.Ten
     return node_type
 
 
-def build_node_features(nodes_star, fibers, temperature_star, q_star) -> torch.Tensor:
+def build_node_features(nodes_star, fibers, temperature_star) -> torch.Tensor:
     """拼接 PD-GCN 节点输入特征。
 
     参数:
         nodes_star: 无量纲节点坐标，形状 ``[N, 3]``。
         fibers: 节点纤维方向，形状 ``[N, 3]``，函数内部会归一化为单位向量。
         temperature_star: 无量纲节点温度，形状 ``[N]`` 或 ``[N, 1]``。
-        q_star: 无量纲节点热源强度，形状 ``[N]`` 或 ``[N, 1]``。
-
     返回:
-        节点特征张量，形状 ``[N, 8]``，列为
-        ``[x*, y*, z*, fx, fy, fz, T*, Q*]``。
+        节点特征张量，形状 ``[N, 7]``，列为
+        ``[x*, y*, z*, fx, fy, fz, T*]``。
     """
 
     fibers_unit = _normalize_vectors(fibers)
@@ -55,7 +53,6 @@ def build_node_features(nodes_star, fibers, temperature_star, q_star) -> torch.T
             nodes_star,
             fibers_unit,
             temperature_star.reshape(nodes_star.shape[0], 1),
-            q_star.reshape(nodes_star.shape[0], 1),
         ],
         dim=-1,
     )
@@ -129,7 +126,7 @@ def build_graph(
 
     返回:
         ``torch_geometric.data.Data`` 图对象，包含：
-        ``x`` 形状 ``[N, 8]``、``edge_index`` 形状 ``[2, E]``、
+        ``x`` 形状 ``[N, 7]``、``edge_index`` 形状 ``[2, E]``、
         ``edge_attr`` 形状 ``[E, 7]``、``global_attr`` 形状 ``[1]``，
         以及边界节点索引属性。
     """
@@ -153,7 +150,7 @@ def build_graph(
         temperature = initial_temperature.to(device=device, dtype=dtype)
         temperature_star = temperature_to_dimensionless(temperature.reshape(raw_data.xyz.shape[0], 1), scale_params)
 
-    node_features = build_node_features(nodes_star, raw_data.fiber, temperature_star, q_star)
+    node_features = build_node_features(nodes_star, raw_data.fiber, temperature_star)
     edge_features = build_edge_features(
         nodes_star,
         raw_data.edge_index,
@@ -172,6 +169,8 @@ def build_graph(
         node_type=node_type,
         global_attr=global_attr,
         pos=nodes_star,
+        q_surface=raw_data.q,
+        q_surface_star=q_star,
     )
     graph.num_nodes = raw_data.xyz.shape[0]
     graph.frame_idx = raw_data.frame_idx

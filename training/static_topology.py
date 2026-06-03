@@ -11,6 +11,7 @@ from data.static_cache import STATIC_FILE, HDF5FrameReader
 from pde import apply_dirichlet_boundary, total_loss
 
 from .config import TrainConfig
+from .graph_utils import clone_graph_with_temperature, graph_explicit_source_delta
 from .warmup import pseudo_time_relax_initial_temperature
 
 
@@ -80,8 +81,9 @@ class GpuFeatureBuilder:
         self.dtype = dtype
         self.node_base = torch.empty(static_state.num_nodes, 13, device=self.device, dtype=dtype)
         self.global_raw = torch.empty(1, device=self.device, dtype=dtype)
-        self.x = torch.empty(static_state.num_nodes, 8, device=self.device, dtype=dtype)
+        self.x = torch.empty(static_state.num_nodes, 7, device=self.device, dtype=dtype)
         self.edge_attr = torch.empty(static_state.num_edges, 7, device=self.device, dtype=dtype)
+        self.q_surface_star = torch.empty(static_state.num_nodes, 1, device=self.device, dtype=dtype)
         self.graph = Data(
             x=self.x,
             edge_index=static_state.edge_index,
@@ -89,6 +91,7 @@ class GpuFeatureBuilder:
             node_type=static_state.node_type,
             global_attr=self.global_raw,
             pos=self.x[:, 0:3],
+            q_surface_star=self.q_surface_star,
         )
         self.graph.num_nodes = static_state.num_nodes
         self.graph.upwind_nodes = static_state.boundary_nodes["upwind"]
@@ -113,6 +116,7 @@ class GpuFeatureBuilder:
         self.global_raw = self.global_raw.detach()
         self.x = self.x.detach()
         self.edge_attr = self.edge_attr.detach()
+        self.q_surface_star = self.q_surface_star.detach()
 
         self.node_base.copy_(node_base_cpu, non_blocking=self.device.type == "cuda")
         self.global_raw.copy_(global_cpu[:1], non_blocking=self.device.type == "cuda")
@@ -121,13 +125,13 @@ class GpuFeatureBuilder:
         fibers_unit = _normalize_vectors(self.node_base[:, 3:6], eps=float(self.scale_params.eps))
         normals_unit = _normalize_vectors(self.node_base[:, 6:9], eps=float(self.scale_params.eps))
         velocity_direction = self.node_base[:, 9:12]
-        q_star = self.node_base[:, 12:13] / float(self.scale_params.Q0)
+        q_surface_star = self.node_base[:, 12:13] / float(self.scale_params.Q0)
         temperature = temperature_star.to(device=self.device, dtype=self.dtype, non_blocking=True).reshape(-1, 1)
 
         self.x[:, 0:3] = coords_star
         self.x[:, 3:6] = fibers_unit
         self.x[:, 6:7] = temperature
-        self.x[:, 7:8] = q_star
+        self.q_surface_star[:, 0:1] = q_surface_star
 
         source = self.static_state.source
         receiver = self.static_state.receiver
@@ -153,6 +157,7 @@ class GpuFeatureBuilder:
         self.graph.edge_attr = self.edge_attr
         self.graph.global_attr = self.global_raw
         self.graph.pos = self.x[:, 0:3]
+        self.graph.q_surface_star = self.q_surface_star
         return self.graph
 
     def initial_temperature(self):
@@ -185,6 +190,10 @@ def _snapshot_graph_for_tbptt(graph):
         global_attr=graph.global_attr.clone(),
         pos=graph.pos.clone(),
     )
+    if hasattr(graph, "q_surface_star"):
+        snapshot.q_surface_star = graph.q_surface_star.clone()
+    if hasattr(graph, "q_surface"):
+        snapshot.q_surface = graph.q_surface.clone()
     snapshot.num_nodes = graph.num_nodes
     snapshot.upwind_nodes = graph.upwind_nodes
     snapshot.downwind_nodes = graph.downwind_nodes
@@ -346,16 +355,22 @@ def _train_one_static_sequence_epoch(
             graph = _snapshot_graph_for_tbptt(
                 feature_builder.build(node_base_cpu, global_cpu, window_temperature)
             )
+            source_temperature = apply_dirichlet_boundary(
+                window_temperature + graph_explicit_source_delta(graph, model.config),
+                static_state.boundary_nodes,
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
+            graph = clone_graph_with_temperature(graph, source_temperature)
             delta_temperature = model(graph)
             next_temperature = apply_dirichlet_boundary(
-                window_temperature + delta_temperature,
+                source_temperature + delta_temperature,
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
             components = _compute_loss_components(
                 model,
                 next_temperature,
-                window_temperature,
+                source_temperature,
                 graph,
                 static_state,
             )
@@ -422,15 +437,21 @@ def evaluate_static_topology_sequence(
         for frame_idx in range(frame_reader.num_frames):
             node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
             graph = feature_builder.build(node_base_cpu, global_cpu, current_temperature)
+            source_temperature = apply_dirichlet_boundary(
+                current_temperature + graph_explicit_source_delta(graph, model.config),
+                static_state.boundary_nodes,
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
+            graph = clone_graph_with_temperature(graph, source_temperature)
             next_temperature = apply_dirichlet_boundary(
-                current_temperature + model(graph),
+                source_temperature + model(graph),
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
             components = _compute_loss_components(
                 model,
                 next_temperature,
-                current_temperature,
+                source_temperature,
                 graph,
                 static_state,
             )
@@ -463,19 +484,15 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
         T_next=next_temperature,
         T_current=current_temperature,
         v_scan_star=graph.global_attr,
-        Q_star=graph.x[:, 7:8],
         dt_star=model.config.dt_star,
         edge_index=static_state.edge_index,
         edge_attr=graph.edge_attr,
         boundary_nodes=static_state.boundary_nodes,
         inverse_pe=model.config.inverse_pe,
-        pi_q=model.config.pi_q,
         k_ratio=model.config.k_ratio,
         lambda_outflow=model.config.lambda_outflow,
         gradient_regularization=model.config.gradient_regularization,
         dirichlet_temperature_star=model.config.dirichlet_temperature_star,
-        thermal_loss_beta=model.config.thermal_loss_beta,
-        thermal_loss_base_temperature_star=model.config.thermal_loss_base_temperature_star,
         residual_time_scheme=model.config.residual_time_scheme,
         return_components=True,
     )
@@ -600,8 +617,14 @@ def rollout_static_topology(
         for frame_idx in range(int(steps)):
             node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
             graph = feature_builder.build(node_base_cpu, global_cpu, current_temperature)
+            source_temperature = apply_dirichlet_boundary(
+                current_temperature + graph_explicit_source_delta(graph, model.config),
+                static_state.boundary_nodes,
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
+            graph = clone_graph_with_temperature(graph, source_temperature)
             next_temperature = apply_dirichlet_boundary(
-                current_temperature + model(graph),
+                source_temperature + model(graph),
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )

@@ -98,7 +98,6 @@ def test_total_loss_returns_scalar_and_components_are_consistent():
     edge_attr = _edge_attr(distance=[1.0, 1.0], cos_theta=[1.0, 1.0])
     T_next = torch.tensor([[9.0], [2.0], [4.0], [8.0]])
     T_current = torch.tensor([[0.0], [1.0], [3.0], [0.0]])
-    Q_star = torch.zeros_like(T_next)
     boundary_nodes = {
         "upwind": torch.tensor([0]),
         "side": torch.tensor([3]),
@@ -109,13 +108,11 @@ def test_total_loss_returns_scalar_and_components_are_consistent():
         T_next=T_next,
         T_current=T_current,
         v_scan_star=1.0,
-        Q_star=Q_star,
         dt_star=1.0,
         edge_index=edge_index,
         edge_attr=edge_attr,
         boundary_nodes=boundary_nodes,
         inverse_pe=0.0,
-        pi_q=1.0,
         k_ratio=0.05,
         lambda_outflow=0.25,
         return_components=True,
@@ -141,12 +138,10 @@ def test_total_loss_adds_weighted_graph_gradient_regularization():
         T_next=T_next,
         T_current=T_next,
         v_scan_star=0.0,
-        Q_star=torch.zeros_like(T_next),
         dt_star=1.0,
         edge_index=edge_index,
         edge_attr=edge_attr,
         inverse_pe=0.0,
-        pi_q=0.0,
         lambda_outflow=0.0,
         gradient_regularization=0.25,
         return_components=True,
@@ -164,12 +159,10 @@ def test_total_loss_smooth_component_is_zero_without_internal_edges():
         T_next=T_next,
         T_current=T_next,
         v_scan_star=0.0,
-        Q_star=torch.zeros_like(T_next),
         dt_star=1.0,
         edge_index=torch.empty((2, 0), dtype=torch.long),
         edge_attr=torch.empty((0, 7), dtype=torch.float32),
         inverse_pe=0.0,
-        pi_q=0.0,
         gradient_regularization=1.0,
         return_components=True,
     )
@@ -179,7 +172,6 @@ def test_total_loss_smooth_component_is_zero_without_internal_edges():
         T_next=T_next,
         T_current=T_next,
         v_scan_star=0.0,
-        Q_star=torch.zeros_like(T_next),
         dt_star=1.0,
         edge_index=torch.tensor([[0], [1]], dtype=torch.long),
         edge_attr=_edge_attr(distance=[1.0], cos_theta=[0.0]),
@@ -189,32 +181,28 @@ def test_total_loss_smooth_component_is_zero_without_internal_edges():
             "downwind": torch.tensor([1]),
         },
         inverse_pe=0.0,
-        pi_q=0.0,
         gradient_regularization=1.0,
         return_components=True,
     )
     assert torch.allclose(boundary_components["loss_smooth"], torch.tensor(0.0))
 
 
-def test_total_loss_pde_component_includes_thermal_loss_term():
-    """验证 PDE 损失分量使用包含热耗散项的残差。"""
+def test_total_loss_pde_component_is_source_free_transport_term():
+    """验证 PDE 损失分量不再包含热源项或热耗散项。"""
 
     edge_index = torch.empty((2, 0), dtype=torch.long)
     edge_attr = torch.empty((0, 7), dtype=torch.float32)
     T_next = torch.tensor([[2.0], [4.0]])
     T_current = torch.tensor([[1.0], [1.0]])
-    Q_star = torch.zeros_like(T_next)
 
     components = total_loss(
         T_next=T_next,
         T_current=T_current,
         v_scan_star=0.0,
-        Q_star=Q_star,
         dt_star=1.0,
         edge_index=edge_index,
         edge_attr=edge_attr,
         inverse_pe=0.0,
-        pi_q=0.0,
         k_ratio=0.05,
         lambda_outflow=0.0,
         thermal_loss_beta=0.5,
@@ -222,7 +210,7 @@ def test_total_loss_pde_component_includes_thermal_loss_term():
         return_components=True,
     )
 
-    expected_residual = torch.tensor([[1.25], [3.25]])
+    expected_residual = torch.tensor([[1.0], [3.0]])
     expected_loss = expected_residual.square().mean()
     assert torch.allclose(components["residual"], expected_residual, atol=1e-6)
     assert torch.allclose(components["loss_pde"], expected_loss, atol=1e-6)
@@ -236,18 +224,15 @@ def test_total_loss_can_use_backward_residual_time_scheme():
     edge_attr = torch.empty((0, 7), dtype=torch.float32)
     T_next = torch.tensor([[2.0], [4.0]])
     T_current = torch.tensor([[1.0], [1.0]])
-    Q_star = torch.zeros_like(T_next)
 
     components = total_loss(
         T_next=T_next,
         T_current=T_current,
         v_scan_star=0.0,
-        Q_star=Q_star,
         dt_star=1.0,
         edge_index=edge_index,
         edge_attr=edge_attr,
         inverse_pe=0.0,
-        pi_q=0.0,
         k_ratio=0.05,
         lambda_outflow=0.0,
         thermal_loss_beta=0.5,
@@ -256,7 +241,7 @@ def test_total_loss_can_use_backward_residual_time_scheme():
         return_components=True,
     )
 
-    expected_residual = torch.tensor([[1.75], [4.75]])
+    expected_residual = torch.tensor([[1.0], [3.0]])
     assert torch.allclose(components["residual"], expected_residual, atol=1e-6)
 
 
@@ -271,7 +256,6 @@ class TotalLossComponentTests(unittest.TestCase):
             T_next=T_next,
             T_current=T_current,
             v_scan_star=0.0,
-            Q_star=torch.zeros_like(T_next),
             dt_star=1.0,
             edge_index=edge_index,
             edge_attr=edge_attr,
@@ -284,7 +268,7 @@ class TotalLossComponentTests(unittest.TestCase):
 
         self.assertIn("loss_beta", components)
         self.assertIn("thermal_loss_term", components)
-        self.assertTrue(torch.allclose(components["loss_beta"], torch.tensor(0.3125)))
+        self.assertTrue(torch.allclose(components["loss_beta"], torch.tensor(0.0)))
         self.assertTrue(
             torch.allclose(
                 components["loss_total"],
@@ -299,7 +283,6 @@ class TotalLossComponentTests(unittest.TestCase):
             T_next=torch.tensor([[2.0], [4.0]]),
             T_current=torch.tensor([[1.0], [1.0]]),
             v_scan_star=0.0,
-            Q_star=torch.zeros(2, 1),
             dt_star=1.0,
             edge_index=edge_index,
             edge_attr=edge_attr,

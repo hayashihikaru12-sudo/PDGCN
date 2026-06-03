@@ -91,6 +91,7 @@ class RunConfigTests(unittest.TestCase):
 
         self.assertEqual(config.hidden_size, 8)
         self.assertAlmostEqual(config.inverse_pe, 0.5)
+        self.assertAlmostEqual(config.source_coefficient, 0.125)
         self.assertAlmostEqual(config.pi_q, 0.125)
         self.assertAlmostEqual(config.dt_star, 1.0)
         self.assertAlmostEqual(config.gradient_regularization, 0.001)
@@ -276,6 +277,7 @@ class RunConfigTests(unittest.TestCase):
             hidden_size=8,
             message_passing_num=1,
             inverse_pe=0.0,
+            source_coefficient=0.0,
             pi_q=0.0,
             k_ratio=0.05,
             dt_star=1.0,
@@ -307,7 +309,7 @@ class RunConfigTests(unittest.TestCase):
                         "v0": 0.002,
                         "T_amb": 300.0,
                         "delta_T0": 10.0,
-                        "Q0": 2.0e9,
+                        "Q0": 2.0e6,
                         "K0": 8.0,
                         "rho": 2.0,
                         "Cp": 1.0,
@@ -330,6 +332,8 @@ class RunConfigTests(unittest.TestCase):
                 "steps": 2,
                 "warmup_steps": 0,
                 "cloud_interval": 1,
+                "delta_smoothing_alpha": 0.3,
+                "delta_smoothing_steps": 2,
             },
         }
         training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
@@ -345,6 +349,8 @@ class RunConfigTests(unittest.TestCase):
             self.assertIn("metadata", h5_file.attrs)
             metadata = json.loads(h5_file.attrs["metadata"])
             self.assertEqual(metadata["cloud_interval"], 1)
+            self.assertAlmostEqual(metadata["delta_smoothing_alpha"], 0.3)
+            self.assertEqual(metadata["delta_smoothing_steps"], 2)
             self.assertEqual(metadata["training_config_path"], str(training_config_path.resolve()))
             self.assertIn("inference_seconds", metadata)
             self.assertIn("average_inference_seconds", metadata)
@@ -609,7 +615,7 @@ class RunConfigTests(unittest.TestCase):
                 "v0": 0.002,
                 "T_amb": 300.0,
                 "delta_T0": 10.0,
-                "Q0": 2.0e9,
+                "Q0": 2.0e6,
                 "K0": 8.0e-6,
                 "rho": 2.0,
                 "Cp": 1.0,
@@ -650,6 +656,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertTrue(result["history"][-1]["stopped_early"])
         metadata = checkpoint["metadata"]
         self.assertAlmostEqual(metadata["model_config"]["inverse_pe"], 1.0)
+        self.assertAlmostEqual(metadata["model_config"]["source_coefficient"], 1.0e8)
         self.assertAlmostEqual(metadata["model_config"]["pi_q"], 1.0e8)
         self.assertAlmostEqual(metadata["model_config"]["dt_star"], 0.25)
         self.assertAlmostEqual(metadata["hdf5_timing"]["dt"], 0.25)
@@ -731,7 +738,7 @@ class RunConfigTests(unittest.TestCase):
                 "v0": 0.002,
                 "T_amb": 300.0,
                 "delta_T0": 10.0,
-                "Q0": 2.0e9,
+                "Q0": 2.0e6,
                 "K0": 8.0e-6,
                 "rho": 2.0,
                 "Cp": 1.0,
