@@ -12,6 +12,9 @@ class TrainConfig:
     grad_clip_norm: Optional[float] = None
     loss_threshold: Optional[float] = None
     device: Optional[str] = None
+    resume_from_checkpoint: bool = False
+    resume_checkpoint_path: Optional[str] = None
+    resume_optimizer_state: bool = True
 
     def __post_init__(self):
         """校验训练超参数。
@@ -39,3 +42,9 @@ class TrainConfig:
             raise ValueError(f"grad_clip_norm must be positive when set, got {self.grad_clip_norm}.")
         if self.loss_threshold is not None and float(self.loss_threshold) <= 0:
             raise ValueError(f"loss_threshold must be positive when set, got {self.loss_threshold}.")
+        if not isinstance(self.resume_from_checkpoint, bool):
+            raise ValueError(f"resume_from_checkpoint must be a boolean, got {self.resume_from_checkpoint!r}.")
+        if self.resume_checkpoint_path is not None and not str(self.resume_checkpoint_path).strip():
+            raise ValueError("resume_checkpoint_path must be non-empty when set.")
+        if not isinstance(self.resume_optimizer_state, bool):
+            raise ValueError(f"resume_optimizer_state must be a boolean, got {self.resume_optimizer_state!r}.")

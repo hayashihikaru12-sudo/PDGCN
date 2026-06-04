@@ -45,7 +45,10 @@
       "warmup_steps": 30,
       "grad_clip_norm": null,
       "loss_threshold": 0.4,
-      "device": null
+      "device": null,
+      "resume_from_checkpoint": false,
+      "resume_checkpoint_path": null,
+      "resume_optimizer_state": true
     }
   }
 }
