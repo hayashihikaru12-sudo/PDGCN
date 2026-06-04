@@ -212,6 +212,7 @@ def train_static_topology(
     monitor_callback: Optional[Callable[[dict, dict], None]] = None,
     slice_callback: Optional[Callable[[dict], None]] = None,
     monitor_frame_index: Optional[int] = None,
+    start_epoch: int = 0,
 ):
     """使用固定拓扑流式数据管线训练 PD-GCN。
 
@@ -239,6 +240,7 @@ def train_static_topology(
         monitor_callback=monitor_callback,
         slice_callback=slice_callback,
         monitor_frame_index=monitor_frame_index,
+        start_epoch=start_epoch,
     )
 
 
@@ -253,6 +255,7 @@ def train_static_topology_sequences(
     monitor_callback: Optional[Callable[[dict, dict], None]] = None,
     slice_callback: Optional[Callable[[dict], None]] = None,
     monitor_frame_index: Optional[int] = None,
+    start_epoch: int = 0,
 ):
     """按独立 HDF5 序列训练固定拓扑 PD-GCN。"""
 
@@ -265,7 +268,8 @@ def train_static_topology_sequences(
         optimizer = torch.optim.Adam(model.parameters(), lr=float(config.lr))
 
     history = []
-    for epoch in range(int(config.epochs)):
+    start_epoch = int(start_epoch)
+    for epoch in range(start_epoch, start_epoch + int(config.epochs)):
         model.train()
         window_records = []
         file_window_counts = []

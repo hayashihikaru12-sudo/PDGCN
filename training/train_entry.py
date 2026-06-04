@@ -18,7 +18,7 @@ from data.hdf5_units import length_mm_to_m, velocity_mm_per_s_to_m_per_s
 from data.static_cache import META_FILE, STATIC_FILE
 from models import PDGCN
 
-from training.checkpoint import save_checkpoint
+from training.checkpoint import load_checkpoint, save_checkpoint
 from training.monitor import LossMonitor, TrainingProcessMonitor
 from training.run_config import (
     load_run_config,
@@ -83,6 +83,15 @@ def run_training_from_config(config_path):
     model = PDGCN(model_config).to(static_state.device)
     feature_builder = GpuFeatureBuilder(static_state, scale_params)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(train_config.lr))
+    resume_info, previous_history = _maybe_resume_training(
+        model,
+        optimizer,
+        checkpoint_path,
+        base_dir=base_dir,
+        train_config=train_config,
+        device=static_state.device,
+    )
+    start_epoch = int(resume_info["next_epoch"])
 
     readers = [
         HDF5FrameReader(
@@ -109,7 +118,7 @@ def run_training_from_config(config_path):
         temperature_frame_index=monitor_frame_index,
     )
 
-    completed_history = []
+    completed_history = [dict(record) for record in previous_history]
 
     def save_latest_epoch_checkpoint(epoch_record=None):
         if epoch_record is not None:
@@ -128,6 +137,7 @@ def run_training_from_config(config_path):
             model_config=model_config,
             train_config=train_config,
             history=completed_history,
+            resume_info=resume_info,
         )
 
     def epoch_callback(epoch_record):
@@ -146,6 +156,7 @@ def run_training_from_config(config_path):
             monitor_callback=monitor if run_config.monitoring.enabled else None,
             epoch_callback=epoch_callback,
             monitor_frame_index=monitor_frame_index,
+            start_epoch=start_epoch,
         )
     except KeyboardInterrupt:
         save_latest_epoch_checkpoint()
@@ -154,7 +165,7 @@ def run_training_from_config(config_path):
         for reader in readers:
             reader.close()
 
-    completed_history = [dict(record) for record in history]
+    completed_history = [dict(record) for record in previous_history] + [dict(record) for record in history]
     _save_training_artifacts(
         model,
         optimizer,
@@ -167,9 +178,10 @@ def run_training_from_config(config_path):
         model_config=model_config,
         train_config=train_config,
         history=completed_history,
+        resume_info=resume_info,
     )
     return {
-        "history": history,
+        "history": completed_history,
         "checkpoint_path": str(checkpoint_path),
         "history_path": str(history_path),
         "monitor_data_path": str(getattr(monitor, "metrics_path", "")),
@@ -177,6 +189,7 @@ def run_training_from_config(config_path):
         "h5_files": [str(path) for path in h5_paths],
         "model_config": model_config,
         "scale_params": scale_params,
+        "resume": resume_info,
     }
 
 
@@ -193,6 +206,7 @@ def _save_training_artifacts(
     model_config,
     train_config,
     history,
+    resume_info=None,
 ):
     metadata = {
         "run_config": run_config_to_dict(run_config),
@@ -202,6 +216,7 @@ def _save_training_artifacts(
         "model_config": asdict(model_config),
         "train_config": asdict(train_config),
         "history": history,
+        "resume": resume_info or {"enabled": False},
     }
     save_checkpoint(
         model,
@@ -219,6 +234,63 @@ def _save_training_artifacts(
         ),
         encoding="utf-8",
     )
+
+
+def _maybe_resume_training(model, optimizer, checkpoint_path, *, base_dir, train_config, device):
+    if not bool(train_config.resume_from_checkpoint):
+        return {
+            "enabled": False,
+            "checkpoint_path": None,
+            "loaded_epoch": None,
+            "next_epoch": 0,
+            "optimizer_state_loaded": False,
+        }, []
+
+    resume_path = (
+        _resolve_path(base_dir, train_config.resume_checkpoint_path)
+        if train_config.resume_checkpoint_path is not None
+        else Path(checkpoint_path)
+    )
+    if not resume_path.exists():
+        raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+
+    optimizer_to_load = optimizer if bool(train_config.resume_optimizer_state) else None
+    checkpoint = load_checkpoint(model, optimizer_to_load, resume_path, map_location=device)
+    for group in optimizer.param_groups:
+        group["lr"] = float(train_config.lr)
+
+    metadata = checkpoint.get("metadata") or {}
+    previous_history = _checkpoint_history(metadata)
+    loaded_epoch = checkpoint.get("epoch")
+    next_epoch = _next_epoch_from_checkpoint(loaded_epoch, previous_history)
+    return {
+        "enabled": True,
+        "checkpoint_path": str(resume_path),
+        "loaded_epoch": int(loaded_epoch) if loaded_epoch is not None else None,
+        "next_epoch": int(next_epoch),
+        "optimizer_state_loaded": optimizer_to_load is not None and checkpoint.get("optimizer") is not None,
+    }, previous_history
+
+
+def _checkpoint_history(metadata):
+    history = metadata.get("history") if isinstance(metadata, dict) else None
+    if not isinstance(history, list):
+        return []
+    return [dict(record) for record in history if isinstance(record, dict)]
+
+
+def _next_epoch_from_checkpoint(loaded_epoch, previous_history):
+    candidates = [0]
+    if loaded_epoch is not None:
+        candidates.append(int(loaded_epoch) + 1)
+    history_epochs = [
+        int(record["epoch"])
+        for record in previous_history
+        if isinstance(record, dict) and "epoch" in record
+    ]
+    if history_epochs:
+        candidates.append(max(history_epochs) + 1)
+    return max(candidates)
 
 
 def _build_monitor(

@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+from dataclasses import asdict
 from unittest import mock
 from pathlib import Path
 
@@ -717,6 +718,117 @@ class RunConfigTests(unittest.TestCase):
         self.assertIn("SCALARS residual float 1", vtk_text)
         self.assertFalse((figures_dir / "loss_curve.png").exists())
         self.assertFalse((figures_dir / "temperature_stats.png").exists())
+
+    def test_run_training_from_config_resumes_from_checkpoint(self):
+        h5_dir = self.root / "h5_resume"
+        h5_dir.mkdir()
+        h5_path = h5_dir / "input.h5"
+        make_h5(h5_path)
+        resume_path = self.root / "resume_checkpoint.pt"
+        output_path = self.root / "resume_output.pt"
+        history_path = self.root / "resume_history.json"
+        scale = ScaleParams(
+            L0=0.002,
+            v0=0.002,
+            T_amb=300.0,
+            delta_T0=10.0,
+            Q0=2.0e6,
+            K0=8.0e-6,
+            rho=2.0,
+            Cp=1.0,
+            heat_source_effective_thickness=0.001,
+        )
+        timing = derive_timing_from_hdf5(h5_path, scale)
+        model_config = pdgcn_config_from_scale(
+            scale,
+            dt=timing["dt"],
+            model_overrides={"hidden_size": 8, "message_passing_num": 1, "lambda_outflow": 0.0},
+        )
+        resume_model = PDGCN(model_config)
+        for parameter in resume_model.parameters():
+            torch.nn.init.constant_(parameter, 0.123)
+        resume_optimizer = torch.optim.Adam(resume_model.parameters(), lr=0.02)
+        torch.save(
+            {
+                "model": resume_model.state_dict(),
+                "optimizer": resume_optimizer.state_dict(),
+                "epoch": 4,
+                "metadata": {
+                    "history": [
+                        {
+                            "epoch": 4,
+                            "loss": 2.0,
+                            "loss_total": 2.0,
+                            "loss_pde": 1.5,
+                            "loss_outflow": 0.5,
+                            "loss_beta": 0.0,
+                            "loss_smooth": 0.0,
+                            "temperature_mean": 300.0,
+                            "temperature_max": 301.0,
+                            "temperature_min": 299.0,
+                            "temperature_var": 1.0,
+                            "window_losses": [2.0],
+                            "file_window_counts": [1],
+                        }
+                    ]
+                },
+            },
+            resume_path,
+        )
+        config_path = self.root / "resume_config.json"
+        payload = {
+            "data": {
+                "h5_dir": str(h5_dir.resolve()),
+                "cache_dir": "cache_resume",
+                "checkpoint_path": str(output_path.resolve()),
+                "history_path": str(history_path.resolve()),
+            },
+            "scale": asdict(scale),
+            "model": {"hidden_size": 8, "message_passing_num": 1, "lambda_outflow": 0.0},
+            "training": {
+                "lr": 0.001,
+                "epochs": 1,
+                "tbptt_window": 1,
+                "warmup_steps": 0,
+                "device": "cpu",
+                "resume_from_checkpoint": True,
+                "resume_checkpoint_path": str(resume_path.resolve()),
+            },
+            "monitoring": {"enabled": False},
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+        expected_state = {name: value.clone() for name, value in resume_model.state_dict().items()}
+
+        def resumed_training(model, *args, **kwargs):
+            self.assertEqual(kwargs["start_epoch"], 5)
+            for name, value in model.state_dict().items():
+                self.assertTrue(torch.allclose(value.cpu(), expected_state[name]))
+            return [
+                {
+                    "epoch": 5,
+                    "loss": 1.0,
+                    "loss_total": 1.0,
+                    "loss_pde": 0.8,
+                    "loss_outflow": 0.2,
+                    "loss_beta": 0.0,
+                    "loss_smooth": 0.0,
+                    "temperature_mean": 300.0,
+                    "temperature_max": 301.0,
+                    "temperature_min": 299.0,
+                    "temperature_var": 1.0,
+                    "window_losses": [1.0],
+                    "file_window_counts": [1],
+                }
+            ]
+
+        with mock.patch("training.train_entry.train_static_topology_sequences", side_effect=resumed_training):
+            result = run_training_from_config(config_path)
+
+        self.assertEqual([record["epoch"] for record in result["history"]], [4, 5])
+        checkpoint = torch.load(output_path, map_location="cpu")
+        self.assertEqual(checkpoint["metadata"]["resume"]["loaded_epoch"], 4)
+        self.assertEqual(checkpoint["metadata"]["resume"]["next_epoch"], 5)
+        self.assertEqual([record["epoch"] for record in checkpoint["metadata"]["history"]], [4, 5])
 
     def test_run_training_from_config_saves_checkpoint_after_completed_epoch_on_interrupt(self):
         h5_dir = self.root / "h5_interrupt"

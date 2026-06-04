@@ -43,6 +43,9 @@
       "tbptt_window": 5,
       "warmup_steps": 0,
       "grad_clip_norm": null,
+      "resume_from_checkpoint": false,
+      "resume_checkpoint_path": null,
+      "resume_optimizer_state": true,
       "loss_threshold": 4.0,
       "device": null
     }

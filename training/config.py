@@ -10,6 +10,9 @@ class TrainConfig:
     tbptt_window: int = 20
     warmup_steps: int = 30
     grad_clip_norm: Optional[float] = None
+    resume_from_checkpoint: bool = False
+    resume_checkpoint_path: Optional[str] = None
+    resume_optimizer_state: bool = True
     loss_threshold: Optional[float] = None
     device: Optional[str] = None
 
@@ -37,5 +40,13 @@ class TrainConfig:
             raise ValueError(f"warmup_steps must be non-negative, got {self.warmup_steps}.")
         if self.grad_clip_norm is not None and float(self.grad_clip_norm) <= 0:
             raise ValueError(f"grad_clip_norm must be positive when set, got {self.grad_clip_norm}.")
+        if not isinstance(self.resume_from_checkpoint, bool):
+            raise ValueError(
+                f"resume_from_checkpoint must be a boolean, got {self.resume_from_checkpoint!r}."
+            )
+        if self.resume_checkpoint_path is not None and not str(self.resume_checkpoint_path).strip():
+            raise ValueError("resume_checkpoint_path must be non-empty when set.")
+        if not isinstance(self.resume_optimizer_state, bool):
+            raise ValueError(f"resume_optimizer_state must be a boolean, got {self.resume_optimizer_state!r}.")
         if self.loss_threshold is not None and float(self.loss_threshold) <= 0:
             raise ValueError(f"loss_threshold must be positive when set, got {self.loss_threshold}.")

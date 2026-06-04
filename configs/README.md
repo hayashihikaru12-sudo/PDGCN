@@ -223,6 +223,9 @@ residual_transport =
   "tbptt_window": 5,
   "warmup_steps": 30,
   "grad_clip_norm": null,
+  "resume_from_checkpoint": false,
+  "resume_checkpoint_path": null,
+  "resume_optimizer_state": true,
   "loss_threshold": 0.02,
   "device": null
 }
@@ -235,6 +238,9 @@ residual_transport =
 | `tbptt_window` | integer | 截断反向传播的时间窗口长度。窗口越大，跨时间步梯度越完整，但显存消耗越高。 |
 | `warmup_steps` | integer | 每个 HDF5 文件开始训练前的伪时间 warmup 步数。`0` 表示直接从冷态初温开始。 |
 | `grad_clip_norm` | number 或 `null` | 梯度裁剪阈值。为 `null` 时不裁剪。 |
+| `resume_from_checkpoint` | boolean | 是否从已有 checkpoint 恢复模型权重并继续训练。默认 `false`，即每次从随机初始化开始。 |
+| `resume_checkpoint_path` | string 或 `null` | 可选恢复来源 checkpoint 路径。为 `null` 且 `resume_from_checkpoint=true` 时，使用 `outputs.checkpoint_path` / legacy `data.checkpoint_path`。相对路径按训练配置文件所在目录解析。 |
+| `resume_optimizer_state` | boolean | 是否同时恢复 Adam 优化器状态。恢复后仍会把优化器学习率重设为当前配置中的 `lr`，便于分阶段调小学习率。 |
 | `loss_threshold` | number 或 `null` | 提前停止阈值。epoch 平均 loss 低于该值时停止训练；为 `null` 时禁用该规则。 |
 | `device` | string 或 `null` | 训练设备。为 `null` 时自动选择 CUDA，若 CUDA 不可用则使用 CPU。也可显式写 `"cpu"` 或 `"cuda"`。 |
 
@@ -244,6 +250,7 @@ residual_transport =
 - 同一 HDF5 文件内，温度状态会随 frame 自回归推进。
 - 每个文件开始时先初始化温度；若 `warmup_steps > 0`，会用当前模型前向传播若干步生成伪初温，不反向传播、不更新参数。
 - epoch loss 是该 epoch 内所有文件、所有 TBPTT 窗口损失的平均值。
+- 分阶段训练时，将 `resume_from_checkpoint` 设为 `true` 即可从上一阶段 checkpoint 继续；新阶段的 epoch 编号会从已加载 checkpoint 的下一轮开始，历史记录也会合并保存。
 
 ## `inference`
 
