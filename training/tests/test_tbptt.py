@@ -9,7 +9,7 @@ from training.tbptt import iter_tbptt_windows, rollout_window
 
 
 class ConstantDeltaModel(nn.Module):
-    def __init__(self, delta=1.0):
+    def __init__(self, delta=1.0, *, non_heating_projection=False):
         """初始化输出常数温度增量的测试模型。
 
         参数:
@@ -21,7 +21,7 @@ class ConstantDeltaModel(nn.Module):
         """
 
         super().__init__()
-        self.config = PDGCNConfig()
+        self.config = PDGCNConfig(non_heating_projection=non_heating_projection)
         self.delta = nn.Parameter(torch.tensor(float(delta)))
 
     def forward(self, graph):
@@ -99,6 +99,14 @@ class TBPTTTests(unittest.TestCase):
         self.assertEqual(tuple(predictions.shape), (2, 3, 1))
         self.assertTrue(torch.allclose(predictions[0], torch.ones(3, 1)))
         self.assertTrue(torch.allclose(final_temperature, torch.full((3, 1), 2.0)))
+
+    def test_rollout_window_projects_positive_mean_delta(self):
+        model = ConstantDeltaModel(delta=1.0, non_heating_projection=True)
+        window = [make_graph(), make_graph()]
+        predictions, final_temperature = rollout_window(model, window, torch.zeros(3, 1))
+
+        self.assertTrue(torch.allclose(predictions, torch.zeros(2, 3, 1), atol=1e-6))
+        self.assertTrue(torch.allclose(final_temperature, torch.zeros(3, 1), atol=1e-6))
 
 
 if __name__ == "__main__":

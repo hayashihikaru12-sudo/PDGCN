@@ -21,6 +21,7 @@ PHYSICS_LOSS_FIELDS = {
     "residual_time_scheme",
     "zero_source_anchor_weight",
     "zero_source_anchor_reference_temperature_star",
+    "non_heating_projection",
 }
 
 

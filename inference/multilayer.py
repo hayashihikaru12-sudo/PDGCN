@@ -7,7 +7,7 @@ from torch_geometric.data import Data
 
 from data import build_edge_features
 from data.dimensionless import temperature_from_dimensionless
-from pde import apply_dirichlet_boundary
+from pde import apply_dirichlet_boundary, project_non_heating_delta
 from training.graph_utils import graph_boundary_nodes, graph_explicit_source_delta, graph_to_device
 from training.warmup import pseudo_time_relax_initial_temperature
 
@@ -125,6 +125,11 @@ def rollout_multilayer_fdm(
                         graph_boundary_nodes(graph),
                         alpha=float(delta_smoothing_alpha),
                         steps=delta_smoothing_steps,
+                    )
+                if getattr(model.config, "non_heating_projection", True):
+                    delta_net = project_non_heating_delta(
+                        delta_net,
+                        graph_boundary_nodes(graph),
                     )
             else:
                 delta_net = torch.zeros_like(source_temperature)

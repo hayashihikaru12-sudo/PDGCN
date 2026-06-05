@@ -8,7 +8,7 @@ from torch_geometric.data import Data
 from data.dimensionless import ScaleParams, temperature_from_dimensionless
 from data.velocity import tangent_velocity_direction
 from data.static_cache import STATIC_FILE, HDF5FrameReader
-from pde import apply_dirichlet_boundary, total_loss
+from pde import apply_dirichlet_boundary, project_non_heating_delta, total_loss
 
 from .config import TrainConfig
 from .graph_utils import clone_graph_with_temperature, graph_explicit_source_delta
@@ -367,6 +367,11 @@ def _train_one_static_sequence_epoch(
             )
             graph = clone_graph_with_temperature(graph, source_temperature)
             delta_temperature = model(graph)
+            if getattr(model.config, "non_heating_projection", True):
+                delta_temperature = project_non_heating_delta(
+                    delta_temperature,
+                    static_state.boundary_nodes,
+                )
             next_temperature = apply_dirichlet_boundary(
                 source_temperature + delta_temperature,
                 static_state.boundary_nodes,
@@ -450,8 +455,14 @@ def evaluate_static_topology_sequence(
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
             graph = clone_graph_with_temperature(graph, source_temperature)
+            delta_temperature = model(graph)
+            if getattr(model.config, "non_heating_projection", True):
+                delta_temperature = project_non_heating_delta(
+                    delta_temperature,
+                    static_state.boundary_nodes,
+                )
             next_temperature = apply_dirichlet_boundary(
-                source_temperature + model(graph),
+                source_temperature + delta_temperature,
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
@@ -672,8 +683,14 @@ def rollout_static_topology(
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
             graph = clone_graph_with_temperature(graph, source_temperature)
+            delta_temperature = model(graph)
+            if getattr(model.config, "non_heating_projection", True):
+                delta_temperature = project_non_heating_delta(
+                    delta_temperature,
+                    static_state.boundary_nodes,
+                )
             next_temperature = apply_dirichlet_boundary(
-                source_temperature + model(graph),
+                source_temperature + delta_temperature,
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )

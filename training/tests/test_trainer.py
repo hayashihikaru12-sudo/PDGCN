@@ -20,7 +20,13 @@ class TrainableDeltaModel(nn.Module):
         """
 
         super().__init__()
-        self.config = PDGCNConfig(lambda_outflow=0.0, inverse_pe=0.0, source_coefficient=0.0, pi_q=0.0)
+        self.config = PDGCNConfig(
+            lambda_outflow=0.0,
+            inverse_pe=0.0,
+            source_coefficient=0.0,
+            pi_q=0.0,
+            non_heating_projection=False,
+        )
         self.delta = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, graph):

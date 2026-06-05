@@ -11,9 +11,9 @@ from models import PDGCNConfig
 
 
 class ConstantDeltaModel(nn.Module):
-    def __init__(self):
+    def __init__(self, *, non_heating_projection=False):
         super().__init__()
-        self.config = PDGCNConfig()
+        self.config = PDGCNConfig(non_heating_projection=non_heating_projection)
         self.delta = nn.Parameter(torch.tensor(1.0))
         self.call_count = 0
 
@@ -140,6 +140,24 @@ class MultilayerRolloutTests(unittest.TestCase):
         self.assertEqual(tuple(result.shape), (1, 3, 2, 1))
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
+    def test_multilayer_rollout_projects_positive_mean_delta(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        result = rollout_multilayer_fdm(
+            ConstantDeltaModel(non_heating_projection=True),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+        )
+
+        expected = torch.tensor(
+            [[[[1.9088937], [1.9088937]], [[0.0867679], [0.0867679]], [[0.00], [0.00]]]]
+        )
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
     def test_bottom_layer_is_constant(self):
         scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
 
@@ -159,7 +177,7 @@ class MultilayerRolloutTests(unittest.TestCase):
     def test_multilayer_rollout_does_not_apply_thermal_loss_compensation(self):
         scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
         model = ConstantDeltaModel()
-        model.config = PDGCNConfig(thermal_loss_beta=10.0)
+        model.config = PDGCNConfig(thermal_loss_beta=10.0, non_heating_projection=False)
 
         result = rollout_multilayer_fdm(
             model,

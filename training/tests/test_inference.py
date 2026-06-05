@@ -11,7 +11,7 @@ from training import rollout
 
 
 class ConstantDeltaModel(nn.Module):
-    def __init__(self):
+    def __init__(self, *, non_heating_projection=False):
         """初始化输出常数温度增量的推理测试模型。
 
         参数:
@@ -22,7 +22,7 @@ class ConstantDeltaModel(nn.Module):
         """
 
         super().__init__()
-        self.config = PDGCNConfig()
+        self.config = PDGCNConfig(non_heating_projection=non_heating_projection)
         self.delta = nn.Parameter(torch.tensor(1.0))
 
     def forward(self, graph):
@@ -95,6 +95,19 @@ class InferenceTests(unittest.TestCase):
 
         self.assertTrue(torch.allclose(result["temperature_star"][0], torch.full((2, 1), 3.0)))
         self.assertTrue(torch.allclose(result["temperature"][0], torch.full((2, 1), 330.0)))
+
+    def test_rollout_projects_positive_mean_delta(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        result = rollout(
+            ConstantDeltaModel(non_heating_projection=True),
+            make_graph(),
+            1,
+            scale_params,
+            return_dimensionless=True,
+        )
+
+        self.assertTrue(torch.allclose(result["temperature_star"][0], torch.full((2, 1), 2.0)))
+        self.assertTrue(torch.allclose(result["temperature"][0], torch.full((2, 1), 320.0)))
 
     def test_rollout_can_start_from_model_pseudo_time_warmup(self):
         """验证显式 warmup 后 rollout 从松弛后的冷态温度继续推理。"""

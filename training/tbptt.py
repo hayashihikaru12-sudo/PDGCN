@@ -2,7 +2,7 @@ from typing import List, Sequence
 
 import torch
 
-from pde import apply_dirichlet_boundary, total_loss
+from pde import apply_dirichlet_boundary, project_non_heating_delta, total_loss
 
 from .graph_utils import clone_graph_with_temperature, graph_boundary_nodes, graph_explicit_source_delta, graph_temperature
 
@@ -75,6 +75,11 @@ def rollout_window(model, window: Sequence, initial_temperature_star, *, return_
         )
         graph_step = clone_graph_with_temperature(graph, source_temperature)
         delta_temperature = model(graph_step)
+        if getattr(model.config, "non_heating_projection", True):
+            delta_temperature = project_non_heating_delta(
+                delta_temperature,
+                graph_boundary_nodes(graph_step),
+            )
         next_temperature = source_temperature + delta_temperature
         next_temperature = apply_dirichlet_boundary(
             next_temperature,
