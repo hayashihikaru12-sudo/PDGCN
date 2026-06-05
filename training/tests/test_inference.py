@@ -129,8 +129,8 @@ class InferenceTests(unittest.TestCase):
         expected = torch.tensor(
             [
                 [
-                    [[2.90], [2.90]],
-                    [[1.10], [1.10]],
+                    [[2.9067245], [2.9067245]],
+                    [[1.0412147], [1.0412147]],
                     [[0.00], [0.00]],
                 ]
             ]
@@ -138,22 +138,25 @@ class InferenceTests(unittest.TestCase):
         self.assertEqual(tuple(result.shape), (1, 3, 2, 1))
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
-    def test_multilayer_rollout_rejects_unstable_fdm_by_default(self):
-        """验证显式 FDM 系数超过稳定阈值时默认报错。"""
+    def test_multilayer_rollout_uses_implicit_fdm_for_large_coefficients(self):
+        """Verify multilayer rollout remains finite with a large implicit FDM coefficient."""
 
         scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
         model = ConstantDeltaModel()
         model.config = PDGCNConfig(inverse_pe=1.0, k_ratio=1.0, dt_star=1.0)
 
-        with self.assertRaisesRegex(ValueError, "FDM coefficient"):
-            rollout_multilayer_fdm(
-                model,
-                make_graph(),
-                1,
-                scale_params,
-                num_layers=2,
-                layer_spacing=1.0,
-            )
+        result = rollout_multilayer_fdm(
+            model,
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=2,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+        )
+
+        self.assertTrue(torch.isfinite(result).all())
+        self.assertTrue(torch.allclose(result[:, -1], torch.zeros_like(result[:, -1])))
 
 
 if __name__ == "__main__":

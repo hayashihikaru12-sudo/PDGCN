@@ -91,7 +91,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `steps`：推理步数；为 `null` 时使用输入 HDF5 的全部帧。
 - `warmup_steps`：推理初温 warmup 步数；为 `null` 时沿用训练配置。
 - `bottom_temperature_star`：底层恒温边界的无量纲温度，默认 `0.0`。
-- `allow_unstable_fdm`：是否允许显式 FDM 系数 `C_n > 0.5`。
+- `allow_unstable_fdm`：兼容旧显式 FDM 配置的保留字段；当前厚度方向使用 Backward Euler 隐式 FDM，不再依赖该字段跳过稳定性检查。
 - `layer_fiber_angles_deg`：每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。
 - `normal_offset_sign`：法向偏移方向，只能为 `-1` 或 `1`；默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。
 - `write_vtk`：兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。
@@ -104,9 +104,9 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `cloud_max_nodes_per_layer`：兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。
 - `vtk_output_dir`：VTK 输出目录；为 `null` 时使用 `<output_path stem>_vtk/`。
 
-## FDM 更新公式
+## 隐式 FDM 更新公式
 
-层间显式 FDM 系数为：
+层间 FDM 系数为：
 
 ```text
 C_n = k_ratio * dt_star * inverse_pe / layer_spacing_star^2
@@ -119,19 +119,25 @@ layer_spacing_star = layer_spacing / L0
 T_src[0] = T_curr[0] + delta_T_source
 T_src[k>0] = T_curr[k]
 T_inplane = T_src + delta_T_inplane
-T_next = T_inplane + delta_T_fdm(T_inplane)
+T_next = implicit_fdm_step(T_inplane)
 ```
 
 其中：
 
 - `delta_T_source` 来自显式表面热源模块，只作用于顶层；
 - `delta_T_inplane` 来自训练好的无源单层 PDGCN，并在 FDM 前按层内图拓扑进行可选低通平滑；
-- `delta_T_fdm` 来自厚度方向 1D FDM；
+- `implicit_fdm_step` 来自厚度方向 Backward Euler 隐式 1D FDM；
 - 默认 `layer=0` 为顶层，`layer=num_layers-1` 为底层。
 
 增量低通只更新内部节点的网络增量，迎风、侧边界和出流边界节点保持原增量；它不会直接平滑最终温度场，也不会作用于 warmup。
 
-若 `C_n > 0.5` 且 `allow_unstable_fdm=false`，推理会直接报错，避免显式差分不稳定。
+隐式厚度步对活动层求解：
+
+```text
+(I - C_n D) u_next = u_current
+```
+
+其中 `u = T - T_bottom`，`D` 为厚度方向二阶差分算子。该格式对厚度方向导热无条件稳定；`C_n` 仍写入 metadata 作为诊断指标。
 
 ## 输出文件
 

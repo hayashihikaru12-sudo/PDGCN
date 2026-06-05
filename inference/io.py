@@ -101,6 +101,7 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         "layer_spacing": float(inference_config.layer_spacing),
         "layer_spacing_star": float(layer_spacing_star),
         "fdm_coefficient": float(fdm_coefficient),
+        "thickness_solver": "implicit_euler",
         "bottom_temperature_star": float(inference_config.bottom_temperature_star),
         "layer_fiber_angles_deg": list(
             inference_config.layer_fiber_angles_deg
@@ -159,6 +160,7 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         "steps": steps,
         "num_layers": int(inference_config.num_layers),
         "fdm_coefficient": float(fdm_coefficient),
+        "thickness_solver": "implicit_euler",
         "vtk_output_dir": str(selected_vtk_dir),
         "cloud_interval": int(cloud_interval),
         **timing_summary,

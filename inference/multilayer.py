@@ -11,7 +11,7 @@ from pde import apply_dirichlet_boundary
 from training.graph_utils import graph_boundary_nodes, graph_explicit_source_delta, graph_to_device
 from training.warmup import pseudo_time_relax_initial_temperature
 
-from .fdm import compute_layer_fdm_coefficient, compute_layer_fdm_delta
+from .fdm import compute_layer_implicit_fdm_step
 
 
 @torch.no_grad()
@@ -39,7 +39,7 @@ def rollout_multilayer_fdm(
     pdgcn_inplane_top_layer_only: bool = False,
     timing_recorder=None,
 ):
-    """Run multilayer PD-GCN inference coupled with explicit 1D FDM in thickness."""
+    """Run multilayer PD-GCN inference coupled with implicit 1D FDM in thickness."""
 
     steps = int(steps)
     num_layers = int(num_layers)
@@ -76,18 +76,6 @@ def rollout_multilayer_fdm(
     effective_layer_batch_size = _resolve_layer_batch_size(layer_batch_size, num_layers, model_device)
 
     layer_spacing_star = float(layer_spacing) / float(scale_params.L0)
-    fdm_coefficient = compute_layer_fdm_coefficient(
-        dt_star=getattr(model.config, "dt_star", 1.0),
-        inverse_pe=getattr(model.config, "inverse_pe", 1.0),
-        k_ratio=getattr(model.config, "k_ratio", 0.0),
-        layer_spacing_star=layer_spacing_star,
-    )
-    if not bool(allow_unstable_fdm) and fdm_coefficient > 0.5:
-        raise ValueError(
-            "Explicit FDM coefficient C_n must be <= 0.5 for stable rollout; "
-            f"got {fdm_coefficient}. Increase layer_spacing, reduce dt_star, or set allow_unstable_fdm=True."
-        )
-
     outputs = []
     was_training = model.training
     model.eval()
@@ -146,14 +134,14 @@ def rollout_multilayer_fdm(
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
 
-            delta_fdm = compute_layer_fdm_delta(
+            next_temperature = compute_layer_implicit_fdm_step(
                 inplane_temperature,
                 dt_star=getattr(model.config, "dt_star", 1.0),
                 inverse_pe=getattr(model.config, "inverse_pe", 1.0),
                 k_ratio=getattr(model.config, "k_ratio", 0.0),
                 layer_spacing_star=layer_spacing_star,
+                bottom_temperature_star=bottom_temperature_star,
             )
-            next_temperature = inplane_temperature + delta_fdm
             next_temperature = apply_dirichlet_boundary(
                 next_temperature,
                 graph_boundary_nodes(graph),

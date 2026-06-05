@@ -1,10 +1,11 @@
 from .config import InferenceRunConfig
-from .fdm import compute_layer_fdm_coefficient, compute_layer_fdm_delta
+from .fdm import compute_layer_fdm_coefficient, compute_layer_fdm_delta, compute_layer_implicit_fdm_step
 
 __all__ = [
     "InferenceRunConfig",
     "compute_layer_fdm_coefficient",
     "compute_layer_fdm_delta",
+    "compute_layer_implicit_fdm_step",
     "render_multilayer_clouds_from_hdf5",
     "rollout_multilayer_fdm",
 ]

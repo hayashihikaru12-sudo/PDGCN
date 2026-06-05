@@ -134,7 +134,9 @@ class MultilayerRolloutTests(unittest.TestCase):
             return_dimensionless=True,
         )
 
-        expected = torch.tensor([[[[2.90], [2.90]], [[1.10], [1.10]], [[0.00], [0.00]]]])
+        expected = torch.tensor(
+            [[[[2.9067245], [2.9067245]], [[1.0412147], [1.0412147]], [[0.00], [0.00]]]]
+        )
         self.assertEqual(tuple(result.shape), (1, 3, 2, 1))
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
@@ -169,7 +171,9 @@ class MultilayerRolloutTests(unittest.TestCase):
             return_dimensionless=True,
         )
 
-        expected = torch.tensor([[[[2.90], [2.90]], [[1.10], [1.10]], [[0.00], [0.00]]]])
+        expected = torch.tensor(
+            [[[[2.9067245], [2.9067245]], [[1.0412147], [1.0412147]], [[0.00], [0.00]]]]
+        )
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
     def test_rollout_can_disable_pdgcn_inplane_update(self):
@@ -187,7 +191,9 @@ class MultilayerRolloutTests(unittest.TestCase):
             use_pdgcn_inplane=False,
         )
 
-        expected = torch.tensor([[[[1.90], [1.90]], [[0.10], [0.10]], [[0.00], [0.00]]]])
+        expected = torch.tensor(
+            [[[[1.9088937], [1.9088937]], [[0.0867679], [0.0867679]], [[0.00], [0.00]]]]
+        )
         self.assertEqual(model.call_count, 0)
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
@@ -206,7 +212,9 @@ class MultilayerRolloutTests(unittest.TestCase):
             pdgcn_inplane_top_layer_only=True,
         )
 
-        expected = torch.tensor([[[[2.85], [2.85]], [[0.15], [0.15]], [[0.00], [0.00]]]])
+        expected = torch.tensor(
+            [[[[2.8633406], [2.8633406]], [[0.1301518], [0.1301518]], [[0.00], [0.00]]]]
+        )
         self.assertEqual(model.call_count, 1)
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 

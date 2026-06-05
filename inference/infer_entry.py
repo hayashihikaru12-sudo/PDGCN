@@ -32,6 +32,7 @@ def main(argv=None):
     print(f"steps: {result['steps']}")
     print(f"num_layers: {result['num_layers']}")
     print(f"fdm_coefficient: {result['fdm_coefficient']}")
+    print(f"thickness_solver: {result['thickness_solver']}")
     print(f"cloud_interval: {result['cloud_interval']}")
     print(f"inference_seconds: {result['inference_seconds']:.6f}")
     print(f"average_inference_seconds: {result['average_inference_seconds']:.6f}")

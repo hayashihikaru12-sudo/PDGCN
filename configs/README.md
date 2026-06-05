@@ -297,7 +297,7 @@ residual_transport =
 | `steps` | integer 或 `null` | 推理步数。为 `null` 时使用输入 HDF5 的全部帧。 |
 | `warmup_steps` | integer 或 `null` | 推理前 warmup 步数。为 `null` 时沿用训练配置中的 `warmup_steps`。 |
 | `bottom_temperature_star` | number | 底层恒温边界的无量纲温度。`0.0` 对应真实温度 `T_amb`。 |
-| `allow_unstable_fdm` | boolean | 是否允许显式 FDM 系数超过稳定性建议范围。通常保持 `false`。 |
+| `allow_unstable_fdm` | boolean | 兼容旧显式 FDM 配置的保留字段。当前厚度方向使用 Backward Euler 隐式 FDM，不再依赖该字段跳过稳定性检查。 |
 | `layer_fiber_angles_deg` | number array 或 `null` | 每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。为 `null` 时所有层使用 `0.0`。 |
 | `normal_offset_sign` | integer | 法向偏移方向，只能为 `-1` 或 `1`。默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。 |
 | `write_vtk` | boolean | 兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。 |
@@ -310,14 +310,14 @@ residual_transport =
 | `cloud_max_nodes_per_layer` | integer 或 `null` | 兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。 |
 | `vtk_output_dir` | string 或 `null` | VTK 输出目录。为 `null` 时使用 `<output_path stem>_vtk/`。 |
 
-多层推理中厚度方向显式 FDM 系数为：
+多层推理中厚度方向 FDM 系数为：
 
 ```text
 C_n = dt_star * inverse_pe * k_ratio / layer_spacing_star^2
 layer_spacing_star = layer_spacing / L0
 ```
 
-当 `allow_unstable_fdm = false` 且 `C_n` 超过稳定性限制时，推理入口会拒绝运行。
+当前厚度方向采用 Backward Euler 隐式 FDM，`C_n` 仍记录到推理 metadata 中作为诊断指标，但不再作为显式格式的稳定性报错阈值。
 
 多层推理的温度更新为：
 
@@ -325,10 +325,10 @@ layer_spacing_star = layer_spacing / L0
 T_src[0] = T_current[0] + delta_T_source
 T_src[k>0] = T_current[k]
 T_inplane = T_src + delta_T_inplane
-T_next = T_inplane + delta_T_fdm(T_inplane)
+T_next = implicit_fdm_step(T_inplane)
 ```
 
-其中 `delta_T_source` 只由显式表面热源模块作用于顶层；`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`delta_T_fdm` 由厚度方向 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
+其中 `delta_T_source` 只由显式表面热源模块作用于顶层；`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
 
 ## 调参注意事项
 
