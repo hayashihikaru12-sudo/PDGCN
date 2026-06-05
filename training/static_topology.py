@@ -300,6 +300,7 @@ def train_static_topology_sequences(
             "loss_outflow": _mean_records(window_records, "loss_outflow"),
             "loss_beta": _mean_records(window_records, "loss_beta"),
             "loss_smooth": _mean_records(window_records, "loss_smooth"),
+            "loss_zero_source_anchor": _mean_records(window_records, "loss_zero_source_anchor"),
             "temperature_mean": _mean_records(window_records, "temperature_mean"),
             "temperature_max": _max_records(window_records, "temperature_max"),
             "temperature_min": _min_records(window_records, "temperature_min"),
@@ -371,12 +372,14 @@ def _train_one_static_sequence_epoch(
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
+            zero_source_anchor_delta = _compute_zero_source_anchor_delta(model, graph)
             components = _compute_loss_components(
                 model,
                 next_temperature,
                 source_temperature,
                 graph,
                 static_state,
+                zero_source_anchor_delta=zero_source_anchor_delta,
             )
             loss_terms.append(components["loss_total"])
             component_records.append(_detach_loss_record(components))
@@ -452,12 +455,14 @@ def evaluate_static_topology_sequence(
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
+            zero_source_anchor_delta = _compute_zero_source_anchor_delta(model, graph)
             components = _compute_loss_components(
                 model,
                 next_temperature,
                 source_temperature,
                 graph,
                 static_state,
+                zero_source_anchor_delta=zero_source_anchor_delta,
             )
             component_records.append(_detach_loss_record(components))
             if _should_capture_frame(frame_idx, monitor_frame_index, frame_reader.num_frames):
@@ -483,7 +488,15 @@ def evaluate_static_topology_sequence(
     return record, {"snapshot": snapshot} if snapshot is not None else {}
 
 
-def _compute_loss_components(model, next_temperature, current_temperature, graph, static_state: StaticGraphState):
+def _compute_loss_components(
+    model,
+    next_temperature,
+    current_temperature,
+    graph,
+    static_state: StaticGraphState,
+    *,
+    zero_source_anchor_delta=None,
+):
     return total_loss(
         T_next=next_temperature,
         T_current=current_temperature,
@@ -498,18 +511,49 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
         gradient_regularization=model.config.gradient_regularization,
         dirichlet_temperature_star=model.config.dirichlet_temperature_star,
         residual_time_scheme=model.config.residual_time_scheme,
+        zero_source_anchor_delta=zero_source_anchor_delta,
+        zero_source_anchor_weight=getattr(model.config, "zero_source_anchor_weight", 0.0),
         return_components=True,
     )
 
 
+def _compute_zero_source_anchor_delta(model, graph):
+    """在冷态零源图上前向 PD-GCN，返回输出温度增量。
+
+    若锚定权重为 ``0`` 则跳过额外前向，返回 ``None``。
+    """
+
+    weight = float(getattr(model.config, "zero_source_anchor_weight", 0.0))
+    if weight <= 0.0:
+        return None
+    reference_temperature = float(
+        getattr(model.config, "zero_source_anchor_reference_temperature_star", 0.0)
+    )
+    anchor_temperature = torch.full_like(graph.x[:, 6:7], reference_temperature)
+    anchor_graph = clone_graph_with_temperature(graph, anchor_temperature)
+    if hasattr(anchor_graph, "q_surface_star"):
+        anchor_graph.q_surface_star = torch.zeros_like(anchor_graph.q_surface_star)
+    if hasattr(anchor_graph, "q_surface"):
+        anchor_graph.q_surface = torch.zeros_like(anchor_graph.q_surface)
+    if hasattr(anchor_graph, "q_star"):
+        anchor_graph.q_star = torch.zeros_like(anchor_graph.q_star)
+    return model(anchor_graph)
+
+
 def _detach_loss_record(components):
-    return {
+    record = {
         "loss_total": float(components["loss_total"].detach().cpu()),
         "loss_pde": float(components["loss_pde"].detach().cpu()),
         "loss_outflow": float(components["loss_outflow"].detach().cpu()),
         "loss_beta": float(components["loss_beta"].detach().cpu()),
         "loss_smooth": float(components["loss_smooth"].detach().cpu()),
     }
+    anchor = components.get("loss_zero_source_anchor")
+    if anchor is not None:
+        record["loss_zero_source_anchor"] = float(anchor.detach().cpu())
+    else:
+        record["loss_zero_source_anchor"] = 0.0
+    return record
 
 
 def _aggregate_component_records(records):
@@ -519,6 +563,7 @@ def _aggregate_component_records(records):
         "loss_outflow": _mean_records(records, "loss_outflow"),
         "loss_beta": _mean_records(records, "loss_beta"),
         "loss_smooth": _mean_records(records, "loss_smooth"),
+        "loss_zero_source_anchor": _mean_records(records, "loss_zero_source_anchor"),
     }
 
 

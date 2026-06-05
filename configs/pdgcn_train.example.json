@@ -35,7 +35,9 @@
       "k_ratio": 0.12,
       "lambda_outflow": 1.0,
       "gradient_regularization": 0.0001,
-      "residual_time_scheme": "backward"
+      "residual_time_scheme": "backward",
+      "zero_source_anchor_weight": 1.0,
+      "zero_source_anchor_reference_temperature_star": 0.0
     },
     "training": {
       "lr": 0.00001,

@@ -81,6 +81,25 @@ def compute_outflow_loss(T, edge_index, edge_attr, outflow_nodes, *, eps: float 
     return normal_gradient.square().mean()
 
 
+def compute_zero_source_anchor_loss(delta_T_star, boundary_nodes=None):
+    """计算冷态零源条件下 PD-GCN 输出增量的内部节点均方误差。
+
+    参数:
+        delta_T_star: PD-GCN 在 ``Q*=0, T*=T_ref*`` 图上的输出张量，
+            形状 ``[N]``、``[N, 1]``、``[K, N]`` 或 ``[K, N, 1]``。
+        boundary_nodes: 边界节点字典；只对内部节点统计锚定损失。
+
+    返回:
+        标量张量，等于 ``mean((delta_T_star)^2)``，仅在内部节点上聚合。
+    """
+
+    delta_2d, _ = _as_time_node(delta_T_star, name="delta_T_star")
+    interior_nodes = _interior_nodes(delta_2d.shape[1], boundary_nodes, device=delta_2d.device)
+    if interior_nodes.numel() == 0:
+        return delta_2d.square().mean()
+    return delta_2d[:, interior_nodes].square().mean()
+
+
 def compute_graph_gradient_loss(T, edge_index, edge_attr, boundary_nodes=None, *, eps: float = 1e-12):
     """计算内部边上的一阶图梯度平滑损失。"""
 
@@ -128,6 +147,8 @@ def total_loss(
     thermal_loss_beta: float = 0.0,
     thermal_loss_base_temperature_star=0.0,
     residual_time_scheme: str = "explicit",
+    zero_source_anchor_delta=None,
+    zero_source_anchor_weight: float = 0.0,
     return_components: bool = False,
     eps: float = 1e-12,
 ):
@@ -153,6 +174,12 @@ def total_loss(
         thermal_loss_base_temperature_star: 兼容旧调用的保留参数；无源残差中不再使用。
         residual_time_scheme: PDE 空间项和热耗散项的时间离散方式；
             ``explicit`` 使用当前温度，``backward`` 使用预测温度。
+        zero_source_anchor_delta: 冷态零源图上 PD-GCN 输出的无量纲温度增量
+            ``delta_T0*``，用于零源锚定损失。形状与 ``T_next`` 兼容；若为 ``None``
+            或权重为 ``0``，则锚定损失为 ``0`` 且不入总损失。
+        zero_source_anchor_weight: 零源锚定损失权重 ``lambda_zero``，默认 ``0``。
+            当大于 ``0`` 且提供 ``zero_source_anchor_delta`` 时，
+            ``lambda_zero * mean((delta_T0*)^2)`` 累加进总损失。
         return_components: 是否返回损失分量和中间张量。
         eps: 数值下界，用于防止除零。
 
@@ -199,7 +226,19 @@ def total_loss(
     outflow_nodes = _concat_boundary_nodes(boundary_nodes, ("downwind",), device=residual_2d.device)
     loss_outflow = compute_outflow_loss(T_next_bc, edge_index, edge_attr, outflow_nodes, eps=eps)
     loss_smooth = compute_graph_gradient_loss(T_next_bc, edge_index, edge_attr, boundary_nodes, eps=eps)
-    loss_total = loss_pde + float(lambda_outflow) * loss_outflow + float(gradient_regularization) * loss_smooth
+    if zero_source_anchor_delta is not None:
+        loss_zero_source_anchor = compute_zero_source_anchor_loss(
+            zero_source_anchor_delta,
+            boundary_nodes=boundary_nodes,
+        ).to(device=residual_2d.device, dtype=residual_2d.dtype)
+    else:
+        loss_zero_source_anchor = residual_2d.new_zeros(())
+    loss_total = (
+        loss_pde
+        + float(lambda_outflow) * loss_outflow
+        + float(gradient_regularization) * loss_smooth
+        + float(zero_source_anchor_weight) * loss_zero_source_anchor
+    )
 
     if not return_components:
         return loss_total
@@ -211,6 +250,7 @@ def total_loss(
         "loss_outflow": loss_outflow,
         "loss_beta": loss_beta,
         "loss_smooth": loss_smooth,
+        "loss_zero_source_anchor": loss_zero_source_anchor,
         "residual": residual,
         "T_next_bc": T_next_bc,
         "thermal_loss_term": _restore_layout(thermal_loss_term_2d, t_next_layout),

@@ -29,6 +29,8 @@ class PDGCNConfig:
     thermal_loss_beta: float = 0.0
     thermal_loss_base_temperature_star: float = 0.0
     residual_time_scheme: str = "explicit"
+    zero_source_anchor_weight: float = 0.0
+    zero_source_anchor_reference_temperature_star: float = 0.0
 
     @property
     def encoder_node_input_size(self) -> int:
@@ -92,6 +94,10 @@ class PDGCNConfig:
             )
         if float(self.thermal_loss_beta) < 0:
             raise ValueError(f"thermal_loss_beta must be non-negative, got {self.thermal_loss_beta}.")
+        if float(self.zero_source_anchor_weight) < 0:
+            raise ValueError(
+                f"zero_source_anchor_weight must be non-negative, got {self.zero_source_anchor_weight}."
+            )
         if str(self.residual_time_scheme).strip().lower().replace("-", "_") not in (
             "explicit",
             "explicit_euler",

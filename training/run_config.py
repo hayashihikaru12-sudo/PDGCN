@@ -19,6 +19,8 @@ PHYSICS_LOSS_FIELDS = {
     "thermal_loss_beta",
     "thermal_loss_base_temperature_star",
     "residual_time_scheme",
+    "zero_source_anchor_weight",
+    "zero_source_anchor_reference_temperature_star",
 }
 
 

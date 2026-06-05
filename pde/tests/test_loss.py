@@ -1,7 +1,13 @@
 import torch
 import unittest
 
-from pde.loss import apply_dirichlet_boundary, compute_graph_gradient_loss, compute_outflow_loss, total_loss
+from pde.loss import (
+    apply_dirichlet_boundary,
+    compute_graph_gradient_loss,
+    compute_outflow_loss,
+    compute_zero_source_anchor_loss,
+    total_loss,
+)
 
 
 def _edge_attr(distance, cos_theta, cos_phi_sq=None):
@@ -243,6 +249,87 @@ def test_total_loss_can_use_backward_residual_time_scheme():
 
     expected_residual = torch.tensor([[1.0], [3.0]])
     assert torch.allclose(components["residual"], expected_residual, atol=1e-6)
+
+
+class ZeroSourceAnchorLossTests(unittest.TestCase):
+    def test_compute_zero_source_anchor_loss_uses_only_internal_nodes(self):
+        """验证锚定损失只在内部节点上聚合。"""
+
+        delta_T = torch.tensor([[10.0], [2.0], [3.0], [10.0]])
+        boundary_nodes = {
+            "upwind": torch.tensor([0]),
+            "side": torch.tensor([3]),
+            "downwind": torch.empty(0, dtype=torch.long),
+        }
+
+        loss = compute_zero_source_anchor_loss(delta_T, boundary_nodes)
+
+        expected = torch.tensor((2.0**2 + 3.0**2) / 2)
+        self.assertTrue(torch.allclose(loss, expected, atol=1e-6))
+
+    def test_total_loss_adds_weighted_zero_source_anchor(self):
+        """验证总损失会按权重加入零源锚定项。"""
+
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, 7), dtype=torch.float32)
+        T_next = torch.tensor([[2.0], [4.0]])
+        T_current = torch.tensor([[1.0], [1.0]])
+        anchor_delta = torch.tensor([[0.5], [1.5]])
+
+        components = total_loss(
+            T_next=T_next,
+            T_current=T_current,
+            v_scan_star=0.0,
+            dt_star=1.0,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            inverse_pe=0.0,
+            lambda_outflow=0.0,
+            zero_source_anchor_delta=anchor_delta,
+            zero_source_anchor_weight=2.0,
+            return_components=True,
+        )
+
+        expected_pde = torch.tensor([[1.0], [3.0]]).square().mean()
+        expected_anchor = anchor_delta.square().mean()
+        self.assertTrue(
+            torch.allclose(components["loss_zero_source_anchor"], expected_anchor, atol=1e-6)
+        )
+        self.assertTrue(
+            torch.allclose(
+                components["loss_total"],
+                expected_pde + 2.0 * expected_anchor,
+                atol=1e-6,
+            )
+        )
+
+    def test_total_loss_zero_anchor_when_delta_missing(self):
+        """验证未提供锚定增量时损失不变。"""
+
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, 7), dtype=torch.float32)
+        T_next = torch.tensor([[2.0], [4.0]])
+        T_current = torch.tensor([[1.0], [1.0]])
+
+        components = total_loss(
+            T_next=T_next,
+            T_current=T_current,
+            v_scan_star=0.0,
+            dt_star=1.0,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            inverse_pe=0.0,
+            lambda_outflow=0.0,
+            zero_source_anchor_delta=None,
+            zero_source_anchor_weight=2.0,
+            return_components=True,
+        )
+        self.assertTrue(
+            torch.allclose(components["loss_zero_source_anchor"], torch.tensor(0.0))
+        )
+        self.assertTrue(
+            torch.allclose(components["loss_total"], components["loss_pde"], atol=1e-6)
+        )
 
 
 class TotalLossComponentTests(unittest.TestCase):

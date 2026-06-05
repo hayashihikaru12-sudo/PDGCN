@@ -7,6 +7,26 @@ from pde import apply_dirichlet_boundary, total_loss
 from .graph_utils import clone_graph_with_temperature, graph_boundary_nodes, graph_explicit_source_delta, graph_temperature
 
 
+def _zero_source_anchor_delta(model, graph):
+    """在冷态零源图上前向 PD-GCN，返回输出温度增量；权重为 0 时跳过。"""
+
+    weight = float(getattr(model.config, "zero_source_anchor_weight", 0.0))
+    if weight <= 0.0:
+        return None
+    reference_temperature = float(
+        getattr(model.config, "zero_source_anchor_reference_temperature_star", 0.0)
+    )
+    anchor_temperature = torch.full_like(graph.x[:, 6:7], reference_temperature)
+    anchor_graph = clone_graph_with_temperature(graph, anchor_temperature)
+    if hasattr(anchor_graph, "q_surface_star"):
+        anchor_graph.q_surface_star = torch.zeros_like(anchor_graph.q_surface_star)
+    if hasattr(anchor_graph, "q_surface"):
+        anchor_graph.q_surface = torch.zeros_like(anchor_graph.q_surface)
+    if hasattr(anchor_graph, "q_star"):
+        anchor_graph.q_star = torch.zeros_like(anchor_graph.q_star)
+    return model(anchor_graph)
+
+
 def iter_tbptt_windows(graph_seq: Sequence, window_size: int):
     """按固定长度切分 TBPTT 时间窗口。
 
@@ -95,6 +115,7 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
     for step, graph in enumerate(window):
         prediction = prediction_seq[step]
         source_temperature = source_temperature_seq[step]
+        zero_source_anchor_delta = _zero_source_anchor_delta(model, graph)
         loss = total_loss(
             T_next=prediction,
             T_current=source_temperature,
@@ -109,6 +130,8 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
             gradient_regularization=model.config.gradient_regularization,
             dirichlet_temperature_star=model.config.dirichlet_temperature_star,
             residual_time_scheme=model.config.residual_time_scheme,
+            zero_source_anchor_delta=zero_source_anchor_delta,
+            zero_source_anchor_weight=getattr(model.config, "zero_source_anchor_weight", 0.0),
         )
         losses.append(loss)
 
