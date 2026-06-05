@@ -5,14 +5,22 @@ import torch
 from .residual import _as_time_node, _restore_layout
 
 
-def project_non_heating_delta(delta_T_star, boundary_nodes: Optional[Dict[str, torch.Tensor]] = None):
-    """Project source-free in-plane increments to remove positive mean drift.
+def project_non_heating_delta(
+    delta_T_star,
+    boundary_nodes: Optional[Dict[str, torch.Tensor]] = None,
+    *,
+    eps: float = 1e-12,
+):
+    """Project source-free in-plane increments without changing their signs.
 
     The projection is applied only on non-boundary internal nodes. For each
-    time/layer slice, a positive internal-node mean is subtracted from all
-    internal increments:
+    time/layer slice, positive increments are scaled down only when their
+    total exceeds the negative-increment magnitude:
 
-    ``delta_proj = delta_raw - relu(mean_internal(delta_raw))``.
+    ``delta_proj = alpha * relu(delta_raw) - relu(-delta_raw)``.
+
+    With uniformly sampled nodes, the unweighted node sum is used. Boundary
+    nodes are left unchanged.
     """
 
     delta_2d, layout = _as_time_node(delta_T_star, name="delta_T_star")
@@ -22,8 +30,16 @@ def project_non_heating_delta(delta_T_star, boundary_nodes: Optional[Dict[str, t
         return _restore_layout(projected, layout)
 
     internal_delta = projected[:, internal_mask]
-    correction = torch.relu(internal_delta.mean(dim=1, keepdim=True))
-    projected[:, internal_mask] = internal_delta - correction
+    positive = torch.relu(internal_delta)
+    negative = torch.relu(-internal_delta)
+    positive_sum = positive.sum(dim=1, keepdim=True)
+    negative_sum = negative.sum(dim=1, keepdim=True)
+    scale = torch.where(
+        positive_sum > negative_sum,
+        negative_sum / positive_sum.clamp_min(float(eps)),
+        torch.ones_like(positive_sum),
+    )
+    projected[:, internal_mask] = scale * positive - negative
     return _restore_layout(projected, layout)
 
 

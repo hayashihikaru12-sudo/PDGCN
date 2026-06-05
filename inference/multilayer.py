@@ -126,7 +126,7 @@ def rollout_multilayer_fdm(
                         alpha=float(delta_smoothing_alpha),
                         steps=delta_smoothing_steps,
                     )
-                if getattr(model.config, "non_heating_projection", True):
+                if getattr(model.config, "non_heating_projection", False):
                     delta_net = project_non_heating_delta(
                         delta_net,
                         graph_boundary_nodes(graph),

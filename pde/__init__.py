@@ -3,6 +3,7 @@ from .loss import (
     apply_dirichlet_boundary,
     compute_graph_gradient_loss,
     compute_outflow_loss,
+    compute_soft_energy_loss,
     compute_zero_source_anchor_loss,
     total_loss,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "compute_graph_gradient_loss",
     "compute_outflow_loss",
     "compute_pde_residual",
+    "compute_soft_energy_loss",
     "compute_surface_source_delta_star",
     "compute_surface_source_delta_star_from_physical",
     "compute_zero_source_anchor_loss",

@@ -31,7 +31,8 @@ class PDGCNConfig:
     residual_time_scheme: str = "explicit"
     zero_source_anchor_weight: float = 0.0
     zero_source_anchor_reference_temperature_star: float = 0.0
-    non_heating_projection: bool = True
+    energy_conservation_weight: float = 1e-4
+    non_heating_projection: bool = False
 
     @property
     def encoder_node_input_size(self) -> int:
@@ -98,6 +99,10 @@ class PDGCNConfig:
         if float(self.zero_source_anchor_weight) < 0:
             raise ValueError(
                 f"zero_source_anchor_weight must be non-negative, got {self.zero_source_anchor_weight}."
+            )
+        if float(self.energy_conservation_weight) < 0:
+            raise ValueError(
+                f"energy_conservation_weight must be non-negative, got {self.energy_conservation_weight}."
             )
         if not isinstance(self.non_heating_projection, bool):
             raise ValueError(

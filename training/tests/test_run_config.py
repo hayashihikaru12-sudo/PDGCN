@@ -674,6 +674,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertNotIn("slice_records", history_payload)
         self.assertIn("loss_beta", history_payload["history"][0])
         self.assertIn("loss_smooth", history_payload["history"][0])
+        self.assertIn("loss_energy", history_payload["history"][0])
         figures_dir = history_path.parent / "figures"
         self.assertFalse((figures_dir / "loss_curve.png").exists())
         monitor_path = history_path.parent / "metrics" / "monitor_data.h5"
@@ -688,6 +689,7 @@ class RunConfigTests(unittest.TestCase):
             self.assertEqual(monitor_h5["epoch_metrics/epoch"].shape, (1,))
             self.assertEqual(monitor_h5["epoch_metrics/loss_beta"].shape, (1,))
             self.assertEqual(monitor_h5["epoch_metrics/loss_smooth"].shape, (1,))
+            self.assertEqual(monitor_h5["epoch_metrics/loss_energy"].shape, (1,))
             self.assertEqual(monitor_h5["slice_metrics/epoch"].shape, (0,))
             self.assertEqual(len(monitor_h5["slice_snapshots"].keys()), 0)
             self.assertEqual(monitor_h5["epoch_snapshots/epoch_0001/coords"].shape, (4, 3))

@@ -100,6 +100,18 @@ def compute_zero_source_anchor_loss(delta_T_star, boundary_nodes=None):
     return delta_2d[:, interior_nodes].square().mean()
 
 
+def compute_soft_energy_loss(delta_T_star, boundary_nodes=None):
+    """Penalize positive source-free mean drift on uniformly sampled nodes."""
+
+    delta_2d, _ = _as_time_node(delta_T_star, name="delta_T_star")
+    interior_nodes = _interior_nodes(delta_2d.shape[1], boundary_nodes, device=delta_2d.device)
+    if interior_nodes.numel() == 0:
+        return delta_2d.new_zeros(())
+    internal_delta = delta_2d[:, interior_nodes]
+    positive_mean = torch.relu(internal_delta.mean(dim=1))
+    return positive_mean.square().mean()
+
+
 def compute_graph_gradient_loss(T, edge_index, edge_attr, boundary_nodes=None, *, eps: float = 1e-12):
     """计算内部边上的一阶图梯度平滑损失。"""
 
@@ -149,6 +161,8 @@ def total_loss(
     residual_time_scheme: str = "explicit",
     zero_source_anchor_delta=None,
     zero_source_anchor_weight: float = 0.0,
+    energy_delta=None,
+    energy_conservation_weight: float = 0.0,
     return_components: bool = False,
     eps: float = 1e-12,
 ):
@@ -233,11 +247,19 @@ def total_loss(
         ).to(device=residual_2d.device, dtype=residual_2d.dtype)
     else:
         loss_zero_source_anchor = residual_2d.new_zeros(())
+    if energy_delta is not None:
+        loss_energy = compute_soft_energy_loss(
+            energy_delta,
+            boundary_nodes=boundary_nodes,
+        ).to(device=residual_2d.device, dtype=residual_2d.dtype)
+    else:
+        loss_energy = residual_2d.new_zeros(())
     loss_total = (
         loss_pde
         + float(lambda_outflow) * loss_outflow
         + float(gradient_regularization) * loss_smooth
         + float(zero_source_anchor_weight) * loss_zero_source_anchor
+        + float(energy_conservation_weight) * loss_energy
     )
 
     if not return_components:
@@ -251,6 +273,7 @@ def total_loss(
         "loss_beta": loss_beta,
         "loss_smooth": loss_smooth,
         "loss_zero_source_anchor": loss_zero_source_anchor,
+        "loss_energy": loss_energy,
         "residual": residual,
         "T_next_bc": T_next_bc,
         "thermal_loss_term": _restore_layout(thermal_loss_term_2d, t_next_layout),

@@ -47,7 +47,14 @@ def iter_tbptt_windows(graph_seq: Sequence, window_size: int):
             yield window
 
 
-def rollout_window(model, window: Sequence, initial_temperature_star, *, return_source_temperatures: bool = False):
+def rollout_window(
+    model,
+    window: Sequence,
+    initial_temperature_star,
+    *,
+    return_source_temperatures: bool = False,
+    return_raw_deltas: bool = False,
+):
     """在一个 TBPTT 窗口内自回归滚动预测温度。
 
     参数:
@@ -66,6 +73,7 @@ def rollout_window(model, window: Sequence, initial_temperature_star, *, return_
 
     predictions = []
     source_temperatures = []
+    raw_deltas = []
     current_temperature = initial_temperature_star
     for graph in window:
         source_temperature = apply_dirichlet_boundary(
@@ -74,8 +82,9 @@ def rollout_window(model, window: Sequence, initial_temperature_star, *, return_
             value=getattr(model.config, "dirichlet_temperature_star", 0.0),
         )
         graph_step = clone_graph_with_temperature(graph, source_temperature)
-        delta_temperature = model(graph_step)
-        if getattr(model.config, "non_heating_projection", True):
+        delta_temperature_raw = model(graph_step)
+        delta_temperature = delta_temperature_raw
+        if getattr(model.config, "non_heating_projection", False):
             delta_temperature = project_non_heating_delta(
                 delta_temperature,
                 graph_boundary_nodes(graph_step),
@@ -88,10 +97,16 @@ def rollout_window(model, window: Sequence, initial_temperature_star, *, return_
         )
         predictions.append(next_temperature)
         source_temperatures.append(source_temperature)
+        raw_deltas.append(delta_temperature_raw)
         current_temperature = next_temperature
 
+    returns = [torch.stack(predictions, dim=0), current_temperature]
     if return_source_temperatures:
-        return torch.stack(predictions, dim=0), current_temperature, torch.stack(source_temperatures, dim=0)
+        returns.append(torch.stack(source_temperatures, dim=0))
+    if return_raw_deltas:
+        returns.append(torch.stack(raw_deltas, dim=0))
+    if len(returns) > 2:
+        return tuple(returns)
     return torch.stack(predictions, dim=0), current_temperature
 
 
@@ -109,11 +124,12 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
         ``final_temperature`` 形状 ``[N, 1]``，用于下一个窗口的初值。
     """
 
-    prediction_seq, final_temperature, source_temperature_seq = rollout_window(
+    prediction_seq, final_temperature, source_temperature_seq, raw_delta_seq = rollout_window(
         model,
         window,
         initial_temperature_star,
         return_source_temperatures=True,
+        return_raw_deltas=True,
     )
     losses = []
 
@@ -137,6 +153,8 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
             residual_time_scheme=model.config.residual_time_scheme,
             zero_source_anchor_delta=zero_source_anchor_delta,
             zero_source_anchor_weight=getattr(model.config, "zero_source_anchor_weight", 0.0),
+            energy_delta=raw_delta_seq[step],
+            energy_conservation_weight=getattr(model.config, "energy_conservation_weight", 0.0),
         )
         losses.append(loss)
 

@@ -5,6 +5,7 @@ from pde.loss import (
     apply_dirichlet_boundary,
     compute_graph_gradient_loss,
     compute_outflow_loss,
+    compute_soft_energy_loss,
     compute_zero_source_anchor_loss,
     total_loss,
 )
@@ -88,6 +89,28 @@ def test_compute_graph_gradient_loss_uses_only_internal_edges():
     loss = compute_graph_gradient_loss(T, edge_index, edge_attr, boundary_nodes)
 
     assert torch.allclose(loss, torch.tensor(9.0), atol=1e-6)
+
+
+def test_compute_soft_energy_loss_uses_unweighted_internal_mean():
+    delta_T = torch.tensor([[10.0], [2.0], [-1.0], [10.0]])
+    boundary_nodes = {
+        "upwind": torch.tensor([0]),
+        "side": torch.tensor([3]),
+        "downwind": torch.empty(0, dtype=torch.long),
+    }
+
+    loss = compute_soft_energy_loss(delta_T, boundary_nodes)
+
+    expected = torch.tensor(0.5**2)
+    assert torch.allclose(loss, expected, atol=1e-6)
+
+
+def test_compute_soft_energy_loss_ignores_non_positive_mean():
+    delta_T = torch.tensor([[2.0], [-1.0], [-3.0]])
+
+    loss = compute_soft_energy_loss(delta_T)
+
+    assert torch.allclose(loss, torch.tensor(0.0))
 
 
 def test_total_loss_returns_scalar_and_components_are_consistent():
@@ -330,6 +353,61 @@ class ZeroSourceAnchorLossTests(unittest.TestCase):
         self.assertTrue(
             torch.allclose(components["loss_total"], components["loss_pde"], atol=1e-6)
         )
+
+
+class SoftEnergyLossTests(unittest.TestCase):
+    def test_total_loss_adds_weighted_soft_energy_loss(self):
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, 7), dtype=torch.float32)
+        T_next = torch.tensor([[2.0], [4.0]])
+        T_current = torch.tensor([[1.0], [1.0]])
+        energy_delta = torch.tensor([[2.0], [-1.0]])
+
+        components = total_loss(
+            T_next=T_next,
+            T_current=T_current,
+            v_scan_star=0.0,
+            dt_star=1.0,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            inverse_pe=0.0,
+            lambda_outflow=0.0,
+            energy_delta=energy_delta,
+            energy_conservation_weight=3.0,
+            return_components=True,
+        )
+
+        expected_pde = torch.tensor([[1.0], [3.0]]).square().mean()
+        expected_energy = torch.tensor(0.5**2)
+        self.assertTrue(torch.allclose(components["loss_energy"], expected_energy, atol=1e-6))
+        self.assertTrue(
+            torch.allclose(
+                components["loss_total"],
+                expected_pde + 3.0 * expected_energy,
+                atol=1e-6,
+            )
+        )
+
+    def test_total_loss_energy_is_zero_when_delta_missing(self):
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, 7), dtype=torch.float32)
+
+        components = total_loss(
+            T_next=torch.tensor([[2.0], [4.0]]),
+            T_current=torch.tensor([[1.0], [1.0]]),
+            v_scan_star=0.0,
+            dt_star=1.0,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            inverse_pe=0.0,
+            lambda_outflow=0.0,
+            energy_delta=None,
+            energy_conservation_weight=3.0,
+            return_components=True,
+        )
+
+        self.assertTrue(torch.allclose(components["loss_energy"], torch.tensor(0.0)))
+        self.assertTrue(torch.allclose(components["loss_total"], components["loss_pde"], atol=1e-6))
 
 
 class TotalLossComponentTests(unittest.TestCase):

@@ -42,7 +42,7 @@ def pseudo_time_relax_initial_temperature(model, graph, warmup_steps: int):
             )
             graph_step = clone_graph_with_temperature(graph, source_temperature)
             delta_temperature = model(graph_step)
-            if getattr(model.config, "non_heating_projection", True):
+            if getattr(model.config, "non_heating_projection", False):
                 delta_temperature = project_non_heating_delta(
                     delta_temperature,
                     graph_boundary_nodes(graph_step),

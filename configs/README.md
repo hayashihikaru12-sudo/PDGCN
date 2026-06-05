@@ -178,7 +178,9 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
   "k_ratio": 0.05,
   "lambda_outflow": 1.0,
   "gradient_regularization": 0.001,
-  "residual_time_scheme": "explicit"
+  "residual_time_scheme": "explicit",
+  "energy_conservation_weight": 0.0001,
+  "non_heating_projection": false
 }
 ```
 
@@ -188,17 +190,29 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 | `lambda_outflow` | number | 出流边界 Neumann 软约束损失权重。越大越强调 downwind 边界法向温度梯度接近零。 |
 | `gradient_regularization` | number | 图梯度平滑损失权重，作用于边界钳制后的预测温度 `T_next_bc*`，抑制相邻内部节点的高频温度振荡。推荐从 `1e-4` 到 `1e-2` 调参；过大可能抹平热峰。 |
 | `residual_time_scheme` | string | PDE 空间项的时间离散方式。可选 `"explicit"` 或 `"backward"`。 |
+| `energy_conservation_weight` | number | 软能量约束权重。采样点均匀时使用内部节点普通平均值，只惩罚 PD-GCN raw 面内增量的正均值，推荐从 `1e-4` 开始。 |
+| `non_heating_projection` | boolean | 是否启用保符号硬投影。训练阶段默认 `false`，推理兜底时可显式设为 `true`。 |
 
 当前总损失为：
 
 ```text
-loss_total = loss_pde + lambda_outflow * loss_outflow + gradient_regularization * loss_smooth
+loss_total = loss_pde
+           + lambda_outflow * loss_outflow
+           + gradient_regularization * loss_smooth
+           + zero_source_anchor_weight * loss_zero_source_anchor
+           + energy_conservation_weight * loss_energy
 ```
 
 `loss_smooth` 为内部边上的一阶图梯度平方均值：
 
 ```text
 loss_smooth = mean_edges(((T_i* - T_j*) / d_ij*)^2)
+```
+
+`loss_energy` 为均匀采样点下的无源非产热软约束：
+
+```text
+loss_energy = relu(mean_internal(delta_T_raw*))^2
 ```
 
 PDE residual 的主要形式为：

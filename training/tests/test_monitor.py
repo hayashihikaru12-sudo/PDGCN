@@ -59,6 +59,8 @@ class MonitorTimingTests(unittest.TestCase):
             with h5py.File(Path(tmpdir) / "monitor_data.h5", "r") as h5_file:
                 self.assertIn("loss_smooth", h5_file["epoch_metrics"])
                 self.assertIn("loss_smooth", h5_file["slice_metrics"])
+                self.assertIn("loss_energy", h5_file["epoch_metrics"])
+                self.assertIn("loss_energy", h5_file["slice_metrics"])
 
 
 if __name__ == "__main__":

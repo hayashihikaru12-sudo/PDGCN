@@ -301,6 +301,7 @@ def train_static_topology_sequences(
             "loss_beta": _mean_records(window_records, "loss_beta"),
             "loss_smooth": _mean_records(window_records, "loss_smooth"),
             "loss_zero_source_anchor": _mean_records(window_records, "loss_zero_source_anchor"),
+            "loss_energy": _mean_records(window_records, "loss_energy"),
             "temperature_mean": _mean_records(window_records, "temperature_mean"),
             "temperature_max": _max_records(window_records, "temperature_max"),
             "temperature_min": _min_records(window_records, "temperature_min"),
@@ -366,8 +367,9 @@ def _train_one_static_sequence_epoch(
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
             graph = clone_graph_with_temperature(graph, source_temperature)
-            delta_temperature = model(graph)
-            if getattr(model.config, "non_heating_projection", True):
+            delta_temperature_raw = model(graph)
+            delta_temperature = delta_temperature_raw
+            if getattr(model.config, "non_heating_projection", False):
                 delta_temperature = project_non_heating_delta(
                     delta_temperature,
                     static_state.boundary_nodes,
@@ -385,6 +387,7 @@ def _train_one_static_sequence_epoch(
                 graph,
                 static_state,
                 zero_source_anchor_delta=zero_source_anchor_delta,
+                energy_delta=delta_temperature_raw,
             )
             loss_terms.append(components["loss_total"])
             component_records.append(_detach_loss_record(components))
@@ -455,8 +458,9 @@ def evaluate_static_topology_sequence(
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
             graph = clone_graph_with_temperature(graph, source_temperature)
-            delta_temperature = model(graph)
-            if getattr(model.config, "non_heating_projection", True):
+            delta_temperature_raw = model(graph)
+            delta_temperature = delta_temperature_raw
+            if getattr(model.config, "non_heating_projection", False):
                 delta_temperature = project_non_heating_delta(
                     delta_temperature,
                     static_state.boundary_nodes,
@@ -474,6 +478,7 @@ def evaluate_static_topology_sequence(
                 graph,
                 static_state,
                 zero_source_anchor_delta=zero_source_anchor_delta,
+                energy_delta=delta_temperature_raw,
             )
             component_records.append(_detach_loss_record(components))
             if _should_capture_frame(frame_idx, monitor_frame_index, frame_reader.num_frames):
@@ -507,6 +512,7 @@ def _compute_loss_components(
     static_state: StaticGraphState,
     *,
     zero_source_anchor_delta=None,
+    energy_delta=None,
 ):
     return total_loss(
         T_next=next_temperature,
@@ -524,6 +530,8 @@ def _compute_loss_components(
         residual_time_scheme=model.config.residual_time_scheme,
         zero_source_anchor_delta=zero_source_anchor_delta,
         zero_source_anchor_weight=getattr(model.config, "zero_source_anchor_weight", 0.0),
+        energy_delta=energy_delta,
+        energy_conservation_weight=getattr(model.config, "energy_conservation_weight", 0.0),
         return_components=True,
     )
 
@@ -558,6 +566,7 @@ def _detach_loss_record(components):
         "loss_outflow": float(components["loss_outflow"].detach().cpu()),
         "loss_beta": float(components["loss_beta"].detach().cpu()),
         "loss_smooth": float(components["loss_smooth"].detach().cpu()),
+        "loss_energy": float(components["loss_energy"].detach().cpu()),
     }
     anchor = components.get("loss_zero_source_anchor")
     if anchor is not None:
@@ -575,6 +584,7 @@ def _aggregate_component_records(records):
         "loss_beta": _mean_records(records, "loss_beta"),
         "loss_smooth": _mean_records(records, "loss_smooth"),
         "loss_zero_source_anchor": _mean_records(records, "loss_zero_source_anchor"),
+        "loss_energy": _mean_records(records, "loss_energy"),
     }
 
 
@@ -684,7 +694,7 @@ def rollout_static_topology(
             )
             graph = clone_graph_with_temperature(graph, source_temperature)
             delta_temperature = model(graph)
-            if getattr(model.config, "non_heating_projection", True):
+            if getattr(model.config, "non_heating_projection", False):
                 delta_temperature = project_non_heating_delta(
                     delta_temperature,
                     static_state.boundary_nodes,
