@@ -13,6 +13,7 @@ from .config import TrainConfig
 DERIVED_PDGCN_FIELDS = {"inverse_pe", "pi_q", "source_coefficient", "dt_star"}
 PHYSICS_LOSS_FIELDS = {
     "k_ratio",
+    "lambda_pde",
     "lambda_outflow",
     "gradient_regularization",
     "dirichlet_temperature_star",

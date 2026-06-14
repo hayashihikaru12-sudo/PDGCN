@@ -610,6 +610,7 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
         edge_index=static_state.edge_index,
         edge_attr=graph.edge_attr,
         boundary_nodes=static_state.boundary_nodes,
+        lambda_pde=model.config.lambda_pde,
         inverse_pe=model.config.inverse_pe,
         k_ratio=model.config.k_ratio,
         lambda_outflow=model.config.lambda_outflow,

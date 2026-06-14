@@ -103,6 +103,7 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
             edge_index=graph.edge_index,
             edge_attr=graph.edge_attr,
             boundary_nodes=graph_boundary_nodes(graph),
+            lambda_pde=model.config.lambda_pde,
             inverse_pe=model.config.inverse_pe,
             k_ratio=model.config.k_ratio,
             lambda_outflow=model.config.lambda_outflow,

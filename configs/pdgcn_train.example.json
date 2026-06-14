@@ -40,7 +40,8 @@
     },
     "physics_loss": {
       "k_ratio": 0.12,
-      "lambda_outflow": 1.0,
+      "lambda_pde": 0.3,
+      "lambda_outflow": 0.3,
       "gradient_regularization": 0.0001,
       "residual_time_scheme": "backward"
     },

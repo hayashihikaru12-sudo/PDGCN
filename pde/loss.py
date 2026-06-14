@@ -119,6 +119,7 @@ def total_loss(
     edge_index,
     edge_attr,
     boundary_nodes: Optional[Dict[str, torch.Tensor]] = None,
+    lambda_pde: float = 1.0,
     inverse_pe: float = 1.0,
     pi_q: float = 1.0,
     k_ratio: float = 0.05,
@@ -146,6 +147,7 @@ def total_loss(
         inverse_pe: 佩克莱特数倒数。
         pi_q: 兼容旧调用的保留参数；无源残差中不再使用。
         k_ratio: 横向/纵向导热系数比。
+        lambda_pde: PDE 残差损失权重。
         lambda_outflow: 出流边界损失权重。
         gradient_regularization: 图梯度平滑损失权重，用于抑制预测温度的高频振荡。
         dirichlet_temperature_star: 硬 Dirichlet 边界的无量纲温度值。
@@ -199,7 +201,7 @@ def total_loss(
     outflow_nodes = _concat_boundary_nodes(boundary_nodes, ("downwind",), device=residual_2d.device)
     loss_outflow = compute_outflow_loss(T_next_bc, edge_index, edge_attr, outflow_nodes, eps=eps)
     loss_smooth = compute_graph_gradient_loss(T_next_bc, edge_index, edge_attr, boundary_nodes, eps=eps)
-    loss_total = loss_pde + float(lambda_outflow) * loss_outflow + float(gradient_regularization) * loss_smooth
+    loss_total = float(lambda_pde) * loss_pde + float(lambda_outflow) * loss_outflow + float(gradient_regularization) * loss_smooth
 
     if not return_components:
         return loss_total

@@ -17,6 +17,7 @@ class PDGCNConfig:
     dropout: float = 0.0
     layer_norm: bool = True
 
+    lambda_pde: float = 1.0
     lambda_outflow: float = 1.0
     inverse_pe: float = 1.0
     source_coefficient: float = 1.0
@@ -70,6 +71,8 @@ class PDGCNConfig:
                 raise ValueError(f"{field_name} must be positive, got {value}.")
         if not 0.0 <= float(self.dropout) < 1.0:
             raise ValueError(f"dropout must be in [0, 1), got {self.dropout}.")
+        if float(self.lambda_pde) < 0:
+            raise ValueError(f"lambda_pde must be non-negative, got {self.lambda_pde}.")
         if float(self.lambda_outflow) < 0:
             raise ValueError(f"lambda_outflow must be non-negative, got {self.lambda_outflow}.")
         if float(self.inverse_pe) < 0:
