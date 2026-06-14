@@ -6,6 +6,7 @@
 
 - 读取预生成 HDF5 数据，提取节点坐标、纤维方向、表面热流、边索引和边界节点。
 - 将真实物理量转换为无量纲量；表面热流不进入 PD-GCN 节点特征，而是保存为图对象字段供显式热源模块使用。
+- 监督训练时读取 `fem/temperature` 和 `fem/valid_mask`；FEM 温度只作为标签，不进入 PD-GCN 节点特征。
 - 构建 PyTorch Geometric `Data` 对象。
 - 为固定拓扑训练生成共享静态缓存，只保存拓扑、边界节点、节点类型和特征维度等静态信息。
 - 训练时由 `HDF5FrameReader` 按切片文件读取动态基础特征。
@@ -16,10 +17,12 @@
 - `dimensionless.py`：定义 `ScaleParams`，实现无量纲化和 PDE 常数派生。
 - `feature_builder.py`：把原始帧数据组装为 PDGCN 图输入。
 - `initial_condition.py`：提供 legacy 图扩散式初温 fallback。
-- `static_cache.py`：生成共享静态缓存，并提供 `HDF5FrameReader` 按帧读取动态基础特征。
+- `static_cache.py`：生成共享静态缓存，并提供 `HDF5FrameReader` 按帧读取动态基础特征、FEM 温度和 FEM mask。
 
 ## 数据约定
 
 用于生成静态缓存的首个 HDF5 文件需要包含 `dynamic/xyz`、`dynamic/fiber`、`dynamic/normal`、`dynamic/Q`、`edge_index` 以及 `boundary_nodes/upwind`、`boundary_nodes/downwind`、`boundary_nodes/side`。其中 `dynamic/Q` 为表面热流，读取后转换为 `W/m^2`。
+
+若启用 FEM 监督训练，HDF5 还必须包含 `fem/temperature`，形状为 `[T, N, 1]`，并与 `dynamic/Q` 对齐；`fem/valid_mask` 可选，缺失时默认为全 1。`fem/temperature_unit` 可为 `degC`、`C` 或 `K`，代码只校验元数据，不做自动温标转换。
 
 后续同目录 HDF5 文件只校验动态数据集、节点数和动态形状，并复用共享静态缓存中的拓扑信息。

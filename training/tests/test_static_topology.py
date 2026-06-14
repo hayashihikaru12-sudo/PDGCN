@@ -17,6 +17,7 @@ from training import (
     train_static_topology_sequences,
 )
 from training.config import TrainConfig
+from training.run_config import SupervisionRunConfig
 
 
 class TrainableDeltaModel(nn.Module):
@@ -96,6 +97,23 @@ def make_h5(path: Path):
         boundary.create_dataset("upwind", data=np.array([0], dtype=np.int64))
         boundary.create_dataset("downwind", data=np.array([3], dtype=np.int64))
         boundary.create_dataset("side", data=np.array([2], dtype=np.int64))
+
+
+def add_fem_temperature(path: Path, *, with_mask: bool = True):
+    fem_temperature = np.array(
+        [
+            [[[300.0], [302.0], [300.0], [304.0]]],
+            [[[300.0], [303.5], [300.0], [305.5]]],
+        ],
+        dtype=np.float32,
+    ).reshape(2, 4, 1)
+    with h5py.File(path, "a") as h5_file:
+        fem = h5_file.require_group("fem")
+        fem.create_dataset("temperature", data=fem_temperature)
+        fem.create_dataset("temperature_unit", data="degC")
+        fem.create_dataset("time", data=np.array([0.0, 0.25], dtype=np.float64))
+        if with_mask:
+            fem.create_dataset("valid_mask", data=np.ones((2, 4, 1), dtype=np.uint8))
 
 
 class StaticTopologyTests(unittest.TestCase):
@@ -195,6 +213,53 @@ class StaticTopologyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "heat_source_effective_thickness"):
             HDF5FrameReader(self.h5_path, expected_num_nodes=4, pin_memory=False)
 
+    def test_hdf5_reader_reads_fem_temperature_and_mask(self):
+        add_fem_temperature(self.h5_path)
+        reader = HDF5FrameReader(
+            self.h5_path,
+            expected_num_nodes=4,
+            scale_params=self.scale,
+            require_fem_temperature=True,
+            pin_memory=False,
+        )
+        try:
+            self.assertTrue(reader.has_fem_temperature)
+            temperature = reader.read_fem_temperature(1)
+            mask = reader.read_fem_valid_mask(1)
+        finally:
+            reader.close()
+
+        self.assertEqual(tuple(temperature.shape), (4, 1))
+        self.assertEqual(tuple(mask.shape), (4, 1))
+        self.assertAlmostEqual(float(temperature[1, 0]), 303.5)
+        self.assertTrue(torch.allclose(mask, torch.ones(4, 1)))
+
+    def test_hdf5_reader_uses_all_one_fem_mask_when_missing(self):
+        add_fem_temperature(self.h5_path, with_mask=False)
+        reader = HDF5FrameReader(
+            self.h5_path,
+            expected_num_nodes=4,
+            scale_params=self.scale,
+            require_fem_temperature=True,
+            pin_memory=False,
+        )
+        try:
+            mask = reader.read_fem_valid_mask(0)
+        finally:
+            reader.close()
+
+        self.assertTrue(torch.allclose(mask, torch.ones(4, 1)))
+
+    def test_hdf5_reader_requires_fem_temperature_when_requested(self):
+        with self.assertRaisesRegex(KeyError, "fem/temperature"):
+            HDF5FrameReader(
+                self.h5_path,
+                expected_num_nodes=4,
+                scale_params=self.scale,
+                require_fem_temperature=True,
+                pin_memory=False,
+            )
+
     def test_static_train_and_rollout_smoke(self):
         """验证固定拓扑训练和流式推理入口可运行。
 
@@ -278,6 +343,45 @@ class StaticTopologyTests(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertEqual(len(history[0]["window_losses"]), 1)
         self.assertTrue(torch.isfinite(torch.tensor(history[0]["window_losses"])).all())
+
+    def test_static_train_supervised_uses_fem_teacher_forcing(self):
+        add_fem_temperature(self.h5_path)
+        build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
+        reader = HDF5FrameReader(
+            self.h5_path,
+            expected_num_nodes=4,
+            scale_params=self.scale,
+            require_fem_temperature=True,
+            pin_memory=False,
+        )
+        model = RecordingDeltaModel()
+        try:
+            static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
+            builder = GpuFeatureBuilder(static_state, self.scale)
+            history = train_static_topology(
+                model,
+                reader,
+                static_state,
+                builder,
+                TrainConfig(lr=0.01, epochs=1, tbptt_window=1, warmup_steps=3, device="cpu"),
+                supervision_config=SupervisionRunConfig(enabled=True, lambda_temperature=1.0),
+            )
+        finally:
+            reader.close()
+
+        self.assertEqual(len(history), 1)
+        self.assertEqual(len(history[0]["window_losses"]), 1)
+        self.assertEqual(model.warmup_deltas, [])
+        self.assertEqual(tuple(model.forward_temperatures[0].shape), (4, 1))
+        expected_input = torch.tensor([[0.0], [0.2], [0.0], [0.4]])
+        self.assertTrue(torch.allclose(model.forward_temperatures[0], expected_input, atol=1e-6))
+        self.assertIn("loss_temperature", history[0])
+        self.assertIn("loss_supervised", history[0])
+        self.assertIn("loss_physics", history[0])
+        self.assertAlmostEqual(history[0]["loss_temperature"], 0.00125, places=6)
+        self.assertAlmostEqual(history[0]["loss_supervised"], 0.00125, places=6)
+        self.assertAlmostEqual(history[0]["fem_temperature_rmse"], float(np.sqrt(0.125)), places=6)
+        self.assertEqual(model.forward_temperatures[0].shape[1], 1)
 
     def test_static_train_calls_epoch_callback(self):
         """验证固定拓扑训练每个 epoch 结束后会触发 loss 回调。"""

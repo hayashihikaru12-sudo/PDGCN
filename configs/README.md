@@ -24,6 +24,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `monitoring` | object | 训练过程监控配置，控制是否记录 loss、温度场快照和 VTK 可视化数据。 |
+| `supervision` | object | 可选 FEM 温度监督配置，默认关闭。 |
 | `outputs` | object | 训练产物输出路径，包括 checkpoint 和 history JSON。 |
 | `datasets` | array | 训练数据集列表。当前训练入口一次只支持使用第一个数据集，但一个数据集目录内可以包含多个 `.h5`/`.hdf5` 切片文件。 |
 | `hyperparameters` | object | 模型结构、物理损失和训练超参数。 |
@@ -43,6 +44,36 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 | `temperature_frame_index` | integer 或 `null` | `null` | 指定用于温度场快照的帧索引；为 `null` 时使用首个 HDF5 文件的中间帧。 |
 | `figures_dir` | string 或 `null` | `null` | 监控图像输出目录；为 `null` 时使用 `history_path` 同级的 `figures/`。 |
 | `metrics_path` | string 或 `null` | `null` | 监控 HDF5 文件路径；为 `null` 时使用 `history_path` 同级的 `metrics/monitor_data.h5`。 |
+
+## `supervision`
+
+示例：
+
+```json
+"supervision": {
+  "enabled": false,
+  "temperature_dataset": "fem/temperature",
+  "valid_mask_dataset": "fem/valid_mask",
+  "lambda_temperature": 1.0,
+  "mode": "teacher_forcing"
+}
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `false` | 是否启用 FEM 温度监督。关闭时保持原无监督物理残差训练行为。 |
+| `temperature_dataset` | string | `fem/temperature` | FEM 监督温度字段路径，形状必须为 `[T, N, 1]`，并与 `dynamic/Q` 对齐。 |
+| `valid_mask_dataset` | string 或 `null` | `fem/valid_mask` | 可选有效节点 mask 字段。缺失或设为 `null` 时使用全 1 mask。 |
+| `lambda_temperature` | number | `1.0` | 温度监督损失权重，必须非负。 |
+| `mode` | string | `teacher_forcing` | v1 仅支持 `teacher_forcing`：训练输入温度取 FEM 当前帧。 |
+
+监督温度按真实温度读取，并在训练中转为无量纲温度：
+
+```text
+T_fem* = (T_fem - T_amb) / delta_T0
+```
+
+FEM 温度不会进入额外节点特征通道；PDGCN 节点输入仍为 `[x*, y*, z*, fx, fy, fz, T*]`。
 
 ## `outputs`
 
@@ -193,6 +224,14 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 
 ```text
 loss_total = loss_pde + lambda_outflow * loss_outflow + gradient_regularization * loss_smooth
+```
+
+若启用 FEM 监督，则总损失变为：
+
+```text
+loss_physics = loss_pde + lambda_outflow * loss_outflow + gradient_regularization * loss_smooth
+loss_temperature = mean_masked((T_pred_next* - T_fem_next*)^2)
+loss_total = loss_physics + lambda_temperature * loss_temperature
 ```
 
 `loss_smooth` 为内部边上的一阶图梯度平方均值：

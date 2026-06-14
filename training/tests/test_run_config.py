@@ -52,6 +52,22 @@ def make_h5(path: Path):
         path_group.create_dataset("slice_path_length", data=np.float64(0.5))
 
 
+def add_fem_temperature(path: Path):
+    fem_temperature = np.array(
+        [
+            [[[300.0], [302.0], [300.0], [304.0]]],
+            [[[300.0], [303.5], [300.0], [305.5]]],
+        ],
+        dtype=np.float32,
+    ).reshape(2, 4, 1)
+    with h5py.File(path, "a") as h5_file:
+        fem = h5_file.require_group("fem")
+        fem.create_dataset("temperature", data=fem_temperature)
+        fem.create_dataset("temperature_unit", data="degC")
+        fem.create_dataset("time", data=np.array([0.0, 0.25], dtype=np.float64))
+        fem.create_dataset("valid_mask", data=np.ones((2, 4, 1), dtype=np.uint8))
+
+
 class RunConfigTests(unittest.TestCase):
     def setUp(self):
         self.root = Path("training/tests/_tmp_run_config")
@@ -175,6 +191,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.model["lambda_outflow"], 0.0)
         self.assertEqual(config.model["residual_time_scheme"], "backward")
         self.assertEqual(config.training.device, "cpu")
+        self.assertFalse(config.supervision.enabled)
         self.assertEqual(config.inference.num_layers, 4)
         self.assertAlmostEqual(config.inference.layer_spacing, 0.00015)
         self.assertEqual(config.inference.steps, 2)
@@ -208,6 +225,119 @@ class RunConfigTests(unittest.TestCase):
         self.assertTrue(config.monitoring.enabled)
         self.assertEqual(config.monitoring.interval_epochs, 10)
         self.assertIsNone(config.monitoring.temperature_frame_index)
+        self.assertFalse(config.supervision.enabled)
+
+    def test_load_config_accepts_legacy_supervision(self):
+        config_path = self.root / "supervision_legacy.json"
+        payload = {
+            "data": {
+                "h5_dir": "h5",
+                "cache_dir": "cache",
+                "checkpoint_path": "checkpoint.pt",
+            },
+            "scale": {
+                "L0": 2.0,
+                "v0": 2.0,
+                "T_amb": 300.0,
+                "delta_T0": 10.0,
+                "Q0": 2.0,
+                "K0": 8.0,
+                "rho": 2.0,
+                "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
+            },
+            "model": {},
+            "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
+            "supervision": {
+                "enabled": True,
+                "temperature_dataset": "fem/temperature",
+                "valid_mask_dataset": "fem/valid_mask",
+                "lambda_temperature": 0.5,
+                "mode": "teacher_forcing",
+            },
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        config = load_run_config(config_path)
+
+        self.assertTrue(config.supervision.enabled)
+        self.assertEqual(config.supervision.temperature_dataset, "fem/temperature")
+        self.assertEqual(config.supervision.valid_mask_dataset, "fem/valid_mask")
+        self.assertAlmostEqual(config.supervision.lambda_temperature, 0.5)
+        self.assertEqual(config.supervision.mode, "teacher_forcing")
+
+    def test_load_config_accepts_classified_supervision(self):
+        config_path = self.root / "supervision_classified.json"
+        payload = {
+            "outputs": {
+                "checkpoint_path": "checkpoint.pt",
+                "history_path": "history.json",
+            },
+            "datasets": [
+                {
+                    "h5_dir": "h5",
+                    "cache_dir": "cache",
+                    "scale": {
+                        "L0": 2.0,
+                        "v0": 2.0,
+                        "T_amb": 300.0,
+                        "delta_T0": 10.0,
+                        "Q0": 2.0,
+                        "K0": 8.0,
+                        "rho": 2.0,
+                        "Cp": 1.0,
+                        "heat_source_effective_thickness": 0.001,
+                    },
+                }
+            ],
+            "hyperparameters": {
+                "model": {},
+                "physics_loss": {},
+                "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
+            },
+            "supervision": {"enabled": True, "lambda_temperature": 0.25},
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        config = load_run_config(config_path)
+
+        self.assertTrue(config.supervision.enabled)
+        self.assertAlmostEqual(config.supervision.lambda_temperature, 0.25)
+
+    def test_load_config_rejects_invalid_supervision(self):
+        base_payload = {
+            "data": {
+                "h5_dir": "h5",
+                "cache_dir": "cache",
+                "checkpoint_path": "checkpoint.pt",
+            },
+            "scale": {
+                "L0": 2.0,
+                "v0": 2.0,
+                "T_amb": 300.0,
+                "delta_T0": 10.0,
+                "Q0": 2.0,
+                "K0": 8.0,
+                "rho": 2.0,
+                "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
+            },
+            "model": {},
+            "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
+        }
+        bad_mode = dict(base_payload)
+        bad_mode["supervision"] = {"enabled": True, "mode": "rollout"}
+        bad_mode_path = self.root / "supervision_bad_mode.json"
+        bad_mode_path.write_text(json.dumps(bad_mode), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "teacher_forcing"):
+            load_run_config(bad_mode_path)
+
+        bad_lambda = dict(base_payload)
+        bad_lambda["supervision"] = {"lambda_temperature": -1.0}
+        bad_lambda_path = self.root / "supervision_bad_lambda.json"
+        bad_lambda_path.write_text(json.dumps(bad_lambda), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "lambda_temperature"):
+            load_run_config(bad_lambda_path)
 
     def test_load_config_accepts_monitoring_interval(self):
         config_path = self.root / "monitoring_interval.json"
@@ -718,6 +848,60 @@ class RunConfigTests(unittest.TestCase):
         self.assertIn("SCALARS residual float 1", vtk_text)
         self.assertFalse((figures_dir / "loss_curve.png").exists())
         self.assertFalse((figures_dir / "temperature_stats.png").exists())
+
+    def test_run_training_from_config_with_supervision(self):
+        h5_dir = self.root / "h5_supervised"
+        h5_dir.mkdir()
+        h5_path = h5_dir / "input.h5"
+        make_h5(h5_path)
+        add_fem_temperature(h5_path)
+        config_path = self.root / "supervised_config.json"
+        payload = {
+            "data": {
+                "h5_dir": str(h5_dir.resolve()),
+                "cache_dir": "cache_supervised",
+                "checkpoint_path": "supervised_checkpoint.pt",
+                "history_path": "supervised_history.json",
+            },
+            "scale": {
+                "L0": 0.002,
+                "v0": 0.002,
+                "T_amb": 300.0,
+                "delta_T0": 10.0,
+                "Q0": 2.0e6,
+                "K0": 8.0e-6,
+                "rho": 2.0,
+                "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
+            },
+            "model": {
+                "hidden_size": 8,
+                "message_passing_num": 1,
+                "lambda_outflow": 0.0,
+                "gradient_regularization": 0.0,
+            },
+            "training": {
+                "lr": 0.001,
+                "epochs": 1,
+                "tbptt_window": 1,
+                "warmup_steps": 3,
+                "device": "cpu",
+            },
+            "supervision": {"enabled": True, "lambda_temperature": 1.0},
+            "monitoring": {"enabled": False},
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = run_training_from_config(config_path)
+
+        self.assertEqual(len(result["history"]), 1)
+        record = result["history"][0]
+        self.assertEqual(len(record["window_losses"]), 1)
+        self.assertIn("loss_temperature", record)
+        self.assertIn("loss_supervised", record)
+        self.assertTrue(np.isfinite(record["loss_temperature"]))
+        checkpoint = torch.load(result["checkpoint_path"], map_location="cpu")
+        self.assertTrue(checkpoint["metadata"]["run_config"]["supervision"]["enabled"])
 
     def test_run_training_from_config_resumes_from_checkpoint(self):
         h5_dir = self.root / "h5_resume"

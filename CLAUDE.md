@@ -2,26 +2,90 @@
 
 本代码库用于构建曲面内 PDGCN 神经网络训练架构和曲面差分技术，实现多层堆叠铺放曲面温度场预测。PDGCN 架构改造自 PIGNN，面向曲面铺放热场预测应用场景。
 
-## 当前架构
+## 当前物理职责划分
 
-当前代码采用显式算子分裂：
+总体更新式为：
 
 ```text
 T_next = T_current + delta_T_source + delta_T_inplane + delta_T_thickness
 ```
 
-- 显式表面热源模块读取 HDF5 `dynamic/Q`，将表面热流 `q''` 转为顶层温升。
-- PD-GCN 是无源曲面内输运算子，节点输入为 `[x*, y*, z*, fx, fy, fz, T*]`。
-- PDE residual 是无源输运 residual，不再包含热源项或单层等效热汇项。
-- 厚度方向 1D FDM 只负责层间导热；底层在单步更新后钳制为指定底部温度。
+- `delta_T_source`：由显式表面热源模块计算，读取 HDF5 `dynamic/Q`，只默认作用于顶层。
+- `delta_T_inplane`：由无源 PD-GCN 计算，只负责曲面内对流、曲面扩散和纤维各向异性扩散。
+- `delta_T_thickness`：由厚度方向 Backward Euler 隐式 1D FDM 计算，负责层间导热和底层恒温边界。
+
+PD-GCN 节点输入固定为：
+
+```text
+[x*, y*, z*, fx, fy, fz, T*]
+```
+
+热源 `dynamic/Q` 不进入节点特征；它按表面热流 `q''` 读取，转换为 `W/m^2` 后由显式表面热源模块处理。
+
+## FEM 温度监督
+
+当前代码已支持单层 FEM 温度监督训练，配置位于顶层 `supervision`，默认关闭。v1 只支持：
+
+```json
+{
+  "enabled": true,
+  "temperature_dataset": "fem/temperature",
+  "valid_mask_dataset": "fem/valid_mask",
+  "lambda_temperature": 1.0,
+  "mode": "teacher_forcing"
+}
+```
+
+实现约定：
+
+- `fem/temperature` 形状必须为 `[T, N, 1]`，与 `dynamic/Q` 对齐。
+- `fem/valid_mask` 可缺失；缺失时使用全 1 mask。
+- FEM 温度读取为真实温度，训练时按
+
+  $$
+  T_{\mathrm{FEM}}^*
+  =
+  \frac{T_{\mathrm{FEM}}-T_{\mathrm{amb}}}{\Delta T_0}
+  $$
+
+  转为无量纲温度。
+- `fem/temperature_unit` 可为 `degC`、`C` 或 `K`；代码只校验元数据，不自动转换温标。
+- FEM 温度只作为监督标签，不作为 PD-GCN 节点特征。
+- 监督启用时训练 transition 为 `n = 0 ... T-2`，输入温度取 `T_FEM,n*`，不使用 `warmup_steps` 生成训练输入。
+
+监督损失为：
+
+$$
+\mathcal L_T
+=
+\frac{
+\sum_i m_i
+\left(
+T_{\mathrm{pred},i}^*
+-
+T_{\mathrm{FEM},i}^*
+\right)^2
+}{
+\sum_i m_i+\varepsilon
+},
+\qquad
+\mathcal L_{\mathrm{total}}
+=
+\mathcal L_{\mathrm{physics}}
++
+\lambda_T\mathcal L_T.
+$$
+
+history 和 monitor 会记录 `loss_physics`、`loss_supervised`、`loss_temperature`、`fem_temperature_rmse`、`fem_temperature_mae` 和 `fem_temperature_max_error`。
 
 ## 参考资料
 
-1. `DesignPlan/` 中说明研究背景、PDGCN+FDM 温度场预测方案、初温处理、无量纲化和损失函数策略。
+1. `DesignPlan/` 中说明研究背景、PDGCN+FDM 温度场预测方案、FEM 监督训练、无量纲化和损失函数策略。
 2. `DesignPlan/局部窗口定拓扑采样器.md` 说明单层定拓扑计算域构建过程。
-3. `PIGNN/` 为 PIGNN 参考仓库源码。
+3. `configs/README.md` 说明训练、监督和推理配置。
+4. `PIGNN/` 为 PIGNN 参考仓库源码。
 
-除非 prompt 显式要求，`DesignPlan/` 和 `PIGNN/` 均作为参考资料目录处理。本次改造已显式要求同步更新 `DesignPlan/`。
+除非 prompt 显式要求，`DesignPlan/` 和 `PIGNN/` 均作为参考资料目录处理。本次用户已显式要求同步更新 `DesignPlan/`。
 
 ## Python 环境
 

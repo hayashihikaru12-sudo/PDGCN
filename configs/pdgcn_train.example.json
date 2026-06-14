@@ -1,5 +1,12 @@
 {
   "monitoring": { "enabled": true },
+  "supervision": {
+    "enabled": false,
+    "temperature_dataset": "fem/temperature",
+    "valid_mask_dataset": "fem/valid_mask",
+    "lambda_temperature": 1.0,
+    "mode": "teacher_forcing"
+  },
   "outputs": {
     "checkpoint_path": "../runs/pdgcn/checkpoint.pt",
     "history_path": "../runs/pdgcn/history.json"

@@ -13,7 +13,7 @@
 ## 主要文件
 
 - `config.py`：定义 `InferenceRunConfig`，校验层数、层间距、步数、warmup、VTK 输出等配置。
-- `fdm.py`：实现厚度方向显式 FDM 系数和层间温度增量，系数为 `k_ratio * dt_star * inverse_pe / layer_spacing_star^2`。
+- `fdm.py`：导出厚度方向 FDM 系数、显式层间温度增量诊断函数和 Backward Euler 隐式 FDM 步进函数，系数为 `k_ratio * dt_star * inverse_pe / layer_spacing_star^2`。
 - `multilayer.py`：实现 `rollout_multilayer_fdm(...)`，输入单层图或图工厂，输出形状为 `[time, layer, node, 1]` 的温度序列。
 - `io.py`：负责从配置运行推理、加载 checkpoint、构造图、写 HDF5、离线写 VTK 和 metadata。
 - `infer_entry.py`：推理命令行入口，只输出 HDF5，默认读取 `configs/pdgcn_infer.example.json`。

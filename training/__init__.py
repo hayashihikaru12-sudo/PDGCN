@@ -1,7 +1,7 @@
 from .checkpoint import load_checkpoint, save_checkpoint
 from .config import TrainConfig
 from .inference import rollout
-from .run_config import derive_dt_star, load_run_config, pdgcn_config_from_scale
+from .run_config import derive_dt_star, load_run_config, pdgcn_config_from_scale, SupervisionRunConfig
 from .static_topology import (
     evaluate_static_topology_sequence,
     GpuFeatureBuilder,
@@ -16,6 +16,7 @@ from .trainer import train
 __all__ = [
     "GpuFeatureBuilder",
     "StaticGraphState",
+    "SupervisionRunConfig",
     "TrainConfig",
     "derive_dt_star",
     "evaluate_static_topology_sequence",

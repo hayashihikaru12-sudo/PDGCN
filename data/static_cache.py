@@ -129,6 +129,9 @@ class HDF5FrameReader:
         scale_params: Optional[ScaleParams] = None,
         heat_source_effective_thickness: Optional[float] = None,
         scan_velocity: Optional[float] = None,
+        require_fem_temperature: bool = False,
+        fem_temperature_dataset: str = "fem/temperature",
+        fem_valid_mask_dataset: Optional[str] = "fem/valid_mask",
         pin_memory: bool = True,
     ):
         self.h5_path = Path(h5_path)
@@ -169,6 +172,12 @@ class HDF5FrameReader:
             )
             self.velocity = _resolve_scan_velocity(self.h5_file, scan_velocity)
             self.velocity_direction = resolve_velocity_direction_local(self.h5_file)
+            self.fem_temperature_dataset = str(fem_temperature_dataset)
+            self.fem_valid_mask_dataset = None if fem_valid_mask_dataset is None else str(fem_valid_mask_dataset)
+            self.fem_temperature = self._resolve_fem_temperature_dataset(
+                require_fem_temperature=bool(require_fem_temperature),
+            )
+            self.fem_valid_mask = self._resolve_fem_valid_mask_dataset()
         except Exception:
             self.h5_file.close()
             raise
@@ -196,11 +205,76 @@ class HDF5FrameReader:
         self._global_array[0] = np.float32(self.velocity)
         return self._node_buffer, self._global_buffer
 
+    @property
+    def has_fem_temperature(self) -> bool:
+        return self.fem_temperature is not None
+
+    def read_fem_temperature(self, frame_idx: int):
+        if self.fem_temperature is None:
+            raise KeyError(
+                f"HDF5 file {self.h5_path} is missing FEM temperature dataset "
+                f"'{self.fem_temperature_dataset}'."
+            )
+        if not 0 <= int(frame_idx) < self.num_frames:
+            raise IndexError(f"frame_idx must be in [0, {self.num_frames - 1}], got {frame_idx}.")
+        return torch.as_tensor(self.fem_temperature[int(frame_idx), :, :], dtype=torch.float32)
+
+    def read_fem_valid_mask(self, frame_idx: int):
+        if not 0 <= int(frame_idx) < self.num_frames:
+            raise IndexError(f"frame_idx must be in [0, {self.num_frames - 1}], got {frame_idx}.")
+        if self.fem_valid_mask is None:
+            return torch.ones((self.num_nodes, 1), dtype=torch.float32)
+        return torch.as_tensor(self.fem_valid_mask[int(frame_idx), :, :], dtype=torch.float32)
+
+    def _resolve_fem_temperature_dataset(self, *, require_fem_temperature: bool):
+        dataset_path = self.fem_temperature_dataset
+        if not dataset_path:
+            raise ValueError("fem_temperature_dataset must be non-empty.")
+        if dataset_path not in self.h5_file:
+            if require_fem_temperature:
+                raise KeyError(
+                    f"HDF5 file {self.h5_path} is missing required FEM temperature dataset: "
+                    f"{dataset_path}"
+                )
+            return None
+        dataset = self.h5_file[dataset_path]
+        _validate_fem_shape(self.h5_path, dataset_path, dataset.shape, self.q.shape)
+        self._validate_fem_temperature_unit()
+        return dataset
+
+    def _resolve_fem_valid_mask_dataset(self):
+        dataset_path = self.fem_valid_mask_dataset
+        if self.fem_temperature is None or dataset_path is None:
+            return None
+        if not dataset_path:
+            raise ValueError("fem_valid_mask_dataset must be non-empty when set.")
+        if dataset_path not in self.h5_file:
+            return None
+        dataset = self.h5_file[dataset_path]
+        _validate_fem_shape(self.h5_path, dataset_path, dataset.shape, self.q.shape)
+        return dataset
+
+    def _validate_fem_temperature_unit(self):
+        if "fem/temperature_unit" not in self.h5_file:
+            return
+        raw_unit = self.h5_file["fem/temperature_unit"][()]
+        if isinstance(raw_unit, bytes):
+            unit = raw_unit.decode("utf-8")
+        else:
+            unit = str(raw_unit)
+        if unit not in {"degC", "C", "K"}:
+            raise ValueError(
+                "fem/temperature_unit must be one of 'degC', 'C', or 'K' when present, "
+                f"got {unit!r}."
+            )
+
     def close(self):
         self.xyz = None
         self.fiber = None
         self.normal = None
         self.q = None
+        self.fem_temperature = None
+        self.fem_valid_mask = None
         self._node_array = None
         self._global_array = None
         if getattr(self, "h5_file", None) is not None:
@@ -261,6 +335,14 @@ def _validate_dynamic_shapes(h5_path, xyz_shape, fiber_shape, normal_shape, q_sh
     if int(xyz_shape[0]) <= 0:
         raise ValueError(f"HDF5 file {h5_path} must contain at least one frame.")
     return int(xyz_shape[0]), int(xyz_shape[1])
+
+
+def _validate_fem_shape(h5_path, dataset_path, fem_shape, q_shape):
+    if tuple(fem_shape) != tuple(q_shape):
+        raise ValueError(
+            f"HDF5 file {h5_path} {dataset_path} shape {fem_shape} must match "
+            f"dynamic/Q shape {q_shape}."
+        )
 
 
 def _resolve_scan_velocity(h5_file, scan_velocity):

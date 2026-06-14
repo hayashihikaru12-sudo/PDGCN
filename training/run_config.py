@@ -56,6 +56,36 @@ class MonitoringRunConfig:
 
 
 @dataclass(frozen=True)
+class SupervisionRunConfig:
+    enabled: bool = False
+    temperature_dataset: str = "fem/temperature"
+    valid_mask_dataset: Optional[str] = "fem/valid_mask"
+    lambda_temperature: float = 1.0
+    mode: str = "teacher_forcing"
+
+    def __post_init__(self):
+        if not isinstance(self.enabled, bool):
+            raise ValueError(f"supervision.enabled must be a boolean, got {self.enabled!r}.")
+        if not isinstance(self.temperature_dataset, str) or not self.temperature_dataset.strip():
+            raise ValueError("supervision.temperature_dataset must be a non-empty string.")
+        if self.valid_mask_dataset is not None and (
+            not isinstance(self.valid_mask_dataset, str) or not self.valid_mask_dataset.strip()
+        ):
+            raise ValueError("supervision.valid_mask_dataset must be null or a non-empty string.")
+        if float(self.lambda_temperature) < 0:
+            raise ValueError(
+                "supervision.lambda_temperature must be non-negative, "
+                f"got {self.lambda_temperature}."
+            )
+        mode = str(self.mode).strip().lower()
+        if mode != "teacher_forcing":
+            raise ValueError(
+                "supervision.mode currently only supports 'teacher_forcing', "
+                f"got {self.mode!r}."
+            )
+
+
+@dataclass(frozen=True)
 class ScaleRunConfig:
     L0: float
     v0: float
@@ -115,6 +145,7 @@ class RunConfig:
     model: Dict[str, Any]
     training: TrainConfig
     monitoring: MonitoringRunConfig = field(default_factory=MonitoringRunConfig)
+    supervision: SupervisionRunConfig = field(default_factory=SupervisionRunConfig)
     inference: Optional[InferenceRunConfig] = None
     outputs: Optional[OutputRunConfig] = None
     datasets: Tuple[DatasetRunConfig, ...] = ()
@@ -172,6 +203,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
     scale = _build_dataclass(ScaleRunConfig, payload.get("scale"), context="scale")
     model = _require_mapping(payload.get("model", {}), context="model")
     monitoring = _build_monitoring_run_config(payload.get("monitoring"))
+    supervision = _build_supervision_run_config(payload.get("supervision"))
     inference = _build_inference_run_config(payload.get("inference"))
     training_kwargs = _filter_dataclass_kwargs(
         TrainConfig,
@@ -184,6 +216,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
         model=dict(model),
         training=TrainConfig(**training_kwargs),
         monitoring=monitoring,
+        supervision=supervision,
         inference=inference,
         datasets=(
             DatasetRunConfig(
@@ -204,6 +237,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
 def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
     outputs = _build_dataclass(OutputRunConfig, payload.get("outputs"), context="outputs")
     monitoring = _build_monitoring_run_config(payload.get("monitoring"))
+    supervision = _build_supervision_run_config(payload.get("supervision"))
     inference = _build_inference_run_config(payload.get("inference"))
     dataset_payloads = payload.get("datasets")
     if not isinstance(dataset_payloads, list) or not dataset_payloads:
@@ -235,6 +269,7 @@ def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
         model=model,
         training=TrainConfig(**training_kwargs),
         monitoring=monitoring,
+        supervision=supervision,
         inference=inference,
         outputs=outputs,
         datasets=datasets,
@@ -257,6 +292,7 @@ def run_config_to_dict(config: RunConfig) -> Dict[str, Any]:
                 "training": asdict(config.training),
             },
             "monitoring": asdict(config.monitoring),
+            "supervision": asdict(config.supervision),
             "inference": asdict(config.inference) if config.inference is not None else None,
         }
     return {
@@ -265,6 +301,7 @@ def run_config_to_dict(config: RunConfig) -> Dict[str, Any]:
         "model": dict(config.model),
         "training": asdict(config.training),
         "monitoring": asdict(config.monitoring),
+        "supervision": asdict(config.supervision),
         "inference": asdict(config.inference) if config.inference is not None else None,
     }
 
@@ -328,6 +365,14 @@ def _build_monitoring_run_config(value) -> MonitoringRunConfig:
     mapping = _require_mapping(value, context="monitoring")
     kwargs = _filter_dataclass_kwargs(MonitoringRunConfig, mapping, context="monitoring")
     return MonitoringRunConfig(**kwargs)
+
+
+def _build_supervision_run_config(value) -> SupervisionRunConfig:
+    if value is None:
+        return SupervisionRunConfig()
+    mapping = _require_mapping(value, context="supervision")
+    kwargs = _filter_dataclass_kwargs(SupervisionRunConfig, mapping, context="supervision")
+    return SupervisionRunConfig(**kwargs)
 
 
 def _build_inference_run_config(value) -> Optional[InferenceRunConfig]:

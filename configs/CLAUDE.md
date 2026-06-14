@@ -4,12 +4,13 @@
 
 ## 主要文件
 
-- `pdgcn_train.example.json`：示例训练配置，包含 `outputs`、`datasets` 和 `hyperparameters`。
+- `pdgcn_train.example.json`：示例训练配置，包含 `monitoring`、`supervision`、`outputs`、`datasets` 和 `hyperparameters`。
 - `pdgcn_infer.example.json`：示例推理配置，包含 `training_config` 和 `inference`。
 
 ## 配置内容
 
 - `outputs` 指定 checkpoint 与训练历史文件输出位置。
+- `supervision` 控制 FEM 温度监督训练，默认关闭；启用时读取 `fem/temperature` 和可选 `fem/valid_mask`。
 - `datasets` 指定训练数据 HDF5 目录、共享静态缓存目录，以及无量纲化尺度参数。
 - `hyperparameters.model` 控制 PDGCN 网络结构。
 - `hyperparameters.physics_loss` 控制无源输运残差、出流边界和平滑正则等物理损失项。

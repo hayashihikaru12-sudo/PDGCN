@@ -99,6 +99,9 @@ def run_training_from_config(config_path):
             expected_num_nodes=static_state.num_nodes,
             scale_params=scale_params,
             scan_velocity=run_config.data.scan_velocity,
+            require_fem_temperature=run_config.supervision.enabled,
+            fem_temperature_dataset=run_config.supervision.temperature_dataset,
+            fem_valid_mask_dataset=run_config.supervision.valid_mask_dataset,
         )
         for h5_path in h5_paths
     ]
@@ -157,6 +160,7 @@ def run_training_from_config(config_path):
             epoch_callback=epoch_callback,
             monitor_frame_index=monitor_frame_index,
             start_epoch=start_epoch,
+            supervision_config=run_config.supervision,
         )
     except KeyboardInterrupt:
         save_latest_epoch_checkpoint()

@@ -12,10 +12,16 @@ import numpy as np
 EPOCH_METRIC_FIELDS = (
     "epoch",
     "loss_total",
+    "loss_physics",
+    "loss_supervised",
+    "loss_temperature",
     "loss_pde",
     "loss_outflow",
     "loss_beta",
     "loss_smooth",
+    "fem_temperature_rmse",
+    "fem_temperature_mae",
+    "fem_temperature_max_error",
     "temperature_mean",
     "temperature_max",
     "temperature_min",
@@ -25,10 +31,16 @@ SLICE_METRIC_FIELDS = (
     "epoch",
     "slice_index",
     "loss_total",
+    "loss_physics",
+    "loss_supervised",
+    "loss_temperature",
     "loss_pde",
     "loss_outflow",
     "loss_beta",
     "loss_smooth",
+    "fem_temperature_rmse",
+    "fem_temperature_mae",
+    "fem_temperature_max_error",
     "temperature_mean",
     "temperature_max",
     "temperature_min",
@@ -323,6 +335,12 @@ def _write_snapshot(parent_group, group_name: str, snapshot, *, epoch: int, slic
     _create_array_dataset(group, "coords", coords)
     _create_array_dataset(group, "residual", residual)
     _create_array_dataset(group, "temperature", temperature)
+    for optional_name in ("fem_temperature", "pred_temperature", "temperature_error"):
+        if optional_name in snapshot:
+            values = np.asarray(snapshot[optional_name], dtype=np.float32).reshape(-1)
+            if values.shape[0] != coords.shape[0]:
+                raise ValueError(f"snapshot {optional_name} length must match coords.")
+            _create_array_dataset(group, optional_name, values)
     if edge_index is not None:
         edge_index = np.asarray(edge_index, dtype=np.int64)
         if edge_index.ndim != 2 or 2 not in edge_index.shape:

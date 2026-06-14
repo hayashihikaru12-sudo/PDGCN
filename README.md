@@ -9,6 +9,7 @@ PDGCN 是面向曲面铺放热场预测的图神经网络训练框架。项目�
 - 显式表面热源模块将 HDF5 中的表面热流 `q''` 转换为顶层温升。
 - 边特征编码局部几何、扫描方向和纤维各向异性关系。
 - 使用无源曲面内输运 residual、出流边界约束和图梯度平滑正则训练 PD-GCN。
+- 支持 FEM 温度监督训练：`fem/temperature` 只作为标签读取，训练时无量纲化后计算监督损失，不进入节点特征。
 - 支持目录级 HDF5 切片训练：同一目录内多个 `.h5` 文件按自然升序训练，每个文件是独立序列。
 - 支持共享静态缓存：一个训练集目录复用同一份拓扑缓存，动态帧数据从各 HDF5 文件读取。
 
@@ -38,6 +39,24 @@ boundary_nodes/side
 path/heat_center_step_distance
 ```
 
+若启用 FEM 监督训练，HDF5 还需要包含监督温度字段：
+
+```text
+fem/temperature          [T, N, 1]
+fem/valid_mask           [T, N, 1]  可选
+fem/temperature_unit     scalar string，可选，支持 degC、C、K
+```
+
+`fem/temperature` 必须与 `dynamic/Q` 在帧数、节点数和节点顺序上对齐。若 `fem/valid_mask` 缺失或配置为 `null`，训练时默认所有节点有效。监督温度按真实物理温度保存，进入训练循环后转换为无量纲温度：
+
+$$
+T_{\mathrm{FEM}}^*
+=
+\frac{T_{\mathrm{FEM}}-T_{\mathrm{amb}}}{\Delta T_0}.
+$$
+
+代码只校验 `fem/temperature_unit` 是否为 `degC`、`C` 或 `K`，不会自动做摄氏/开尔文转换；配置中的 `T_amb` 必须与 FEM 温度使用同一温标。
+
 HDF5 原始切片采用生成程序的原生单位：几何为 `mm`，速度为 `mm/s`，`dynamic/Q` 为面热流 `W/mm^2`。PDGCN 预处理阶段会强制转换为 SI 后再无量纲化：
 
 - `dynamic/xyz`: `mm -> m`
@@ -66,6 +85,7 @@ configs/pdgcn_train.example.json
 - `datasets[0].h5_dir`：训练输入 HDF5 目录。
 - `datasets[0].cache_dir`：该训练集共享的静态缓存目录。
 - `datasets[0].scale`：SI 无量纲化标尺与 PDE 系数派生参数。
+- `supervision`：FEM 温度监督配置，默认关闭；启用后 v1 使用 `teacher_forcing`。
 - `hyperparameters.training.resume_from_checkpoint`：分阶段训练时设为 `true`，可从已有 checkpoint 继续训练。
 
 静态缓存默认启用。缓存缺失时，训练入口会使用目录内排序后的第一个 HDF5 文件生成；缓存存在时直接复用。
@@ -80,10 +100,10 @@ configs/pdgcn_infer.example.json
 
 ## 快速开始
 
-运行测试：
+运行核心测试：
 
 ```powershell
-D:\ProgramData\CondaEnv\PIGNN\python.exe -m pytest
+D:\ProgramData\CondaEnv\PIGNN\python.exe -m unittest training.tests.test_static_topology training.tests.test_run_config training.tests.test_monitor
 ```
 
 使用示例配置训练：
@@ -137,6 +157,36 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\visualize_monitor.py --monitor
 6. 同一 run 内模型参数和优化器状态持续更新。
 7. 若启用 `resume_from_checkpoint`，训练入口会先加载已有模型权重；默认也恢复 Adam 状态，并把学习率重设为当前配置中的 `lr`。
 8. epoch loss 统计为该 epoch 内所有文件所有 TBPTT 窗口损失的平均值；恢复训练时 epoch 编号从 checkpoint 的下一轮继续。
+9. 若启用 `supervision.enabled=true`，训练改为逐 transition 使用 FEM teacher forcing：输入温度取 $T_{\mathrm{FEM},n}^*$，经过显式热源和边界钳制后送入 PD-GCN，预测 $T_{\mathrm{pred},n+1}^*$，再与 $T_{\mathrm{FEM},n+1}^*$ 计算监督损失。该模式忽略 `warmup_steps` 对训练输入温度的影响。
+
+FEM 监督损失为：
+
+$$
+\mathcal L_T
+=
+\frac{
+\sum_i m_i
+\left(
+T_{\mathrm{pred},i}^*
+-
+T_{\mathrm{FEM},i}^*
+\right)^2
+}{
+\sum_i m_i+\varepsilon
+}.
+$$
+
+总损失为：
+
+$$
+\mathcal L_{\mathrm{total}}
+=
+\mathcal L_{\mathrm{physics}}
++
+\lambda_T\mathcal L_T.
+$$
+
+history 和 monitor 中会额外记录 `loss_physics`、`loss_supervised`、`loss_temperature`、`fem_temperature_rmse`、`fem_temperature_mae` 和 `fem_temperature_max_error`。监控快照在监督启用时可包含 `fem_temperature`、`pred_temperature` 和 `temperature_error`。
 
 ## 目录说明
 
@@ -148,7 +198,7 @@ pde/          无源输运 residual、显式表面热源、边界条件、FDM �
 training/     训练入口、TBPTT、单层 rollout、checkpoint、监控和 VTK 快照导出
 inference/    独立多层 PD-GCN + 1D FDM 推理入口、HDF5/VTK 输出和单元测试
 visualization/ 通用 VTK 导出工具
-DesignPlan/   参考资料，只读
+DesignPlan/   研究设计、技术方案和实验方案文档
 PIGNN/        PIGNN 参考仓库，只读
 runs/         训练输出，不进入 Git
 ```

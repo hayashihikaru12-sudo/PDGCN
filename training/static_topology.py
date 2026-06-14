@@ -5,7 +5,7 @@ from typing import Callable, Optional, Sequence
 import torch
 from torch_geometric.data import Data
 
-from data.dimensionless import ScaleParams, temperature_from_dimensionless
+from data.dimensionless import ScaleParams, temperature_from_dimensionless, temperature_to_dimensionless
 from data.velocity import tangent_velocity_direction
 from data.static_cache import STATIC_FILE, HDF5FrameReader
 from pde import apply_dirichlet_boundary, total_loss
@@ -213,6 +213,7 @@ def train_static_topology(
     slice_callback: Optional[Callable[[dict], None]] = None,
     monitor_frame_index: Optional[int] = None,
     start_epoch: int = 0,
+    supervision_config=None,
 ):
     """使用固定拓扑流式数据管线训练 PD-GCN。
 
@@ -241,6 +242,7 @@ def train_static_topology(
         slice_callback=slice_callback,
         monitor_frame_index=monitor_frame_index,
         start_epoch=start_epoch,
+        supervision_config=supervision_config,
     )
 
 
@@ -256,6 +258,7 @@ def train_static_topology_sequences(
     slice_callback: Optional[Callable[[dict], None]] = None,
     monitor_frame_index: Optional[int] = None,
     start_epoch: int = 0,
+    supervision_config=None,
 ):
     """按独立 HDF5 序列训练固定拓扑 PD-GCN。"""
 
@@ -266,6 +269,9 @@ def train_static_topology_sequences(
     model.to(device)
     if optimizer is None:
         optimizer = torch.optim.Adam(model.parameters(), lr=float(config.lr))
+    supervision_enabled = _supervision_enabled(supervision_config)
+    if supervision_enabled:
+        _validate_supervised_readers(frame_readers)
 
     history = []
     start_epoch = int(start_epoch)
@@ -283,6 +289,7 @@ def train_static_topology_sequences(
                 config,
                 optimizer,
                 monitor_frame_index=monitor_frame_index,
+                supervision_config=supervision_config,
             )
             window_records.extend(sequence_records)
             file_window_counts.append(len(sequence_records))
@@ -296,10 +303,16 @@ def train_static_topology_sequences(
             "epoch": epoch,
             "loss": sum(window_losses) / max(len(window_losses), 1),
             "loss_total": _mean_records(window_records, "loss_total"),
+            "loss_physics": _mean_records(window_records, "loss_physics"),
+            "loss_supervised": _mean_records(window_records, "loss_supervised"),
+            "loss_temperature": _mean_records(window_records, "loss_temperature"),
             "loss_pde": _mean_records(window_records, "loss_pde"),
             "loss_outflow": _mean_records(window_records, "loss_outflow"),
             "loss_beta": _mean_records(window_records, "loss_beta"),
             "loss_smooth": _mean_records(window_records, "loss_smooth"),
+            "fem_temperature_rmse": _mean_records(window_records, "fem_temperature_rmse"),
+            "fem_temperature_mae": _mean_records(window_records, "fem_temperature_mae"),
+            "fem_temperature_max_error": _max_records(window_records, "fem_temperature_max_error"),
             "temperature_mean": _mean_records(window_records, "temperature_mean"),
             "temperature_max": _max_records(window_records, "temperature_max"),
             "temperature_min": _min_records(window_records, "temperature_min"),
@@ -330,7 +343,20 @@ def _train_one_static_sequence_epoch(
     optimizer: torch.optim.Optimizer,
     *,
     monitor_frame_index: Optional[int] = None,
+    supervision_config=None,
 ):
+    if _supervision_enabled(supervision_config):
+        return _train_one_static_sequence_epoch_supervised(
+            model,
+            frame_reader,
+            static_state,
+            feature_builder,
+            config,
+            optimizer,
+            supervision_config,
+            monitor_frame_index=monitor_frame_index,
+        )
+
     if int(config.warmup_steps) > 0:
         node_base_cpu, global_cpu = frame_reader.read_frame(0)
         warmup_graph = _snapshot_graph_for_tbptt(
@@ -403,6 +429,98 @@ def _train_one_static_sequence_epoch(
         if window_snapshot is not None:
             selected_snapshot = window_snapshot
         current_temperature = window_temperature.detach()
+    return window_records, selected_snapshot
+
+
+def _train_one_static_sequence_epoch_supervised(
+    model,
+    frame_reader: HDF5FrameReader,
+    static_state: StaticGraphState,
+    feature_builder: GpuFeatureBuilder,
+    config: TrainConfig,
+    optimizer: torch.optim.Optimizer,
+    supervision_config,
+    *,
+    monitor_frame_index: Optional[int] = None,
+):
+    if frame_reader.num_frames < 2:
+        raise ValueError("Supervised training requires at least two FEM temperature frames.")
+
+    window_records = []
+    selected_snapshot = None
+    num_transitions = frame_reader.num_frames - 1
+    for start in range(0, num_transitions, int(config.tbptt_window)):
+        end = min(start + int(config.tbptt_window), num_transitions)
+        optimizer.zero_grad()
+        loss_terms = []
+        component_records = []
+        window_temperature = None
+        window_snapshot = None
+
+        for frame_idx in range(start, end):
+            fem_current = _read_fem_temperature_star(frame_reader, frame_idx, feature_builder)
+            fem_next = _read_fem_temperature_star(frame_reader, frame_idx + 1, feature_builder)
+            fem_mask_next = _read_fem_valid_mask(frame_reader, frame_idx + 1, feature_builder)
+
+            node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
+            graph = _snapshot_graph_for_tbptt(
+                feature_builder.build(node_base_cpu, global_cpu, fem_current)
+            )
+            source_temperature = apply_dirichlet_boundary(
+                fem_current + graph_explicit_source_delta(graph, model.config),
+                static_state.boundary_nodes,
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
+            graph = clone_graph_with_temperature(graph, source_temperature)
+            delta_temperature = model(graph)
+            next_temperature = apply_dirichlet_boundary(
+                source_temperature + delta_temperature,
+                static_state.boundary_nodes,
+                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
+            components = _compute_loss_components(
+                model,
+                next_temperature,
+                source_temperature,
+                graph,
+                static_state,
+            )
+            supervision_components = _compute_supervision_components(
+                next_temperature,
+                fem_next,
+                fem_mask_next,
+                feature_builder.scale_params,
+                lambda_temperature=float(supervision_config.lambda_temperature),
+            )
+            components.update(supervision_components)
+            components["loss_total"] = components["loss_physics"] + components["loss_supervised"]
+            loss_terms.append(components["loss_total"])
+            component_records.append(_detach_loss_record(components))
+            if _should_capture_frame(frame_idx + 1, monitor_frame_index, frame_reader.num_frames):
+                window_snapshot = _build_monitor_snapshot(
+                    graph,
+                    components["residual"],
+                    next_temperature,
+                    feature_builder.scale_params,
+                    frame_idx=frame_idx + 1,
+                    fem_temperature_star=fem_next,
+                    pred_temperature_star=next_temperature,
+                )
+            window_temperature = next_temperature
+
+        loss = torch.stack(loss_terms).mean()
+        loss.backward()
+        if config.grad_clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
+        optimizer.step()
+
+        window_record = _aggregate_component_records(component_records)
+        if window_temperature is not None:
+            window_record.update(_temperature_stats(window_temperature, feature_builder.scale_params))
+        window_record["loss_total"] = float(loss.detach().cpu())
+        window_records.append(window_record)
+        if window_snapshot is not None:
+            selected_snapshot = window_snapshot
     return window_records, selected_snapshot
 
 
@@ -484,7 +602,7 @@ def evaluate_static_topology_sequence(
 
 
 def _compute_loss_components(model, next_temperature, current_temperature, graph, static_state: StaticGraphState):
-    return total_loss(
+    components = total_loss(
         T_next=next_temperature,
         T_current=current_temperature,
         v_scan_star=graph.global_attr,
@@ -500,25 +618,79 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
         residual_time_scheme=model.config.residual_time_scheme,
         return_components=True,
     )
+    components["loss_physics"] = components["loss_total"]
+    components["loss_supervised"] = components["loss_total"].new_zeros(())
+    components["loss_temperature"] = components["loss_total"].new_zeros(())
+    components["fem_temperature_rmse"] = components["loss_total"].new_zeros(())
+    components["fem_temperature_mae"] = components["loss_total"].new_zeros(())
+    components["fem_temperature_max_error"] = components["loss_total"].new_zeros(())
+    return components
+
+
+def _compute_supervision_components(
+    predicted_temperature_star,
+    fem_temperature_star,
+    valid_mask,
+    scale_params: ScaleParams,
+    *,
+    lambda_temperature: float,
+):
+    mask = valid_mask.to(device=predicted_temperature_star.device, dtype=predicted_temperature_star.dtype).reshape_as(
+        predicted_temperature_star
+    )
+    target = fem_temperature_star.to(
+        device=predicted_temperature_star.device,
+        dtype=predicted_temperature_star.dtype,
+    ).reshape_as(predicted_temperature_star)
+    error_star = predicted_temperature_star - target
+    denominator = mask.sum().clamp_min(float(scale_params.eps))
+    loss_temperature = (mask * error_star.square()).sum() / denominator
+
+    error_temperature = temperature_from_dimensionless(error_star, scale_params) - float(scale_params.T_amb)
+    abs_error_temperature = error_temperature.abs() * mask
+    mse_temperature = (mask * error_temperature.square()).sum() / denominator
+    mae_temperature = abs_error_temperature.sum() / denominator
+    max_error_temperature = abs_error_temperature.max() if mask.sum() > 0 else loss_temperature.new_zeros(())
+    loss_supervised = float(lambda_temperature) * loss_temperature
+    return {
+        "loss_total": loss_supervised,
+        "loss_supervised": loss_supervised,
+        "loss_temperature": loss_temperature,
+        "fem_temperature_rmse": torch.sqrt(mse_temperature),
+        "fem_temperature_mae": mae_temperature,
+        "fem_temperature_max_error": max_error_temperature,
+    }
 
 
 def _detach_loss_record(components):
     return {
         "loss_total": float(components["loss_total"].detach().cpu()),
+        "loss_physics": float(components["loss_physics"].detach().cpu()),
+        "loss_supervised": float(components["loss_supervised"].detach().cpu()),
+        "loss_temperature": float(components["loss_temperature"].detach().cpu()),
         "loss_pde": float(components["loss_pde"].detach().cpu()),
         "loss_outflow": float(components["loss_outflow"].detach().cpu()),
         "loss_beta": float(components["loss_beta"].detach().cpu()),
         "loss_smooth": float(components["loss_smooth"].detach().cpu()),
+        "fem_temperature_rmse": float(components["fem_temperature_rmse"].detach().cpu()),
+        "fem_temperature_mae": float(components["fem_temperature_mae"].detach().cpu()),
+        "fem_temperature_max_error": float(components["fem_temperature_max_error"].detach().cpu()),
     }
 
 
 def _aggregate_component_records(records):
     return {
         "loss_total": _mean_records(records, "loss_total"),
+        "loss_physics": _mean_records(records, "loss_physics"),
+        "loss_supervised": _mean_records(records, "loss_supervised"),
+        "loss_temperature": _mean_records(records, "loss_temperature"),
         "loss_pde": _mean_records(records, "loss_pde"),
         "loss_outflow": _mean_records(records, "loss_outflow"),
         "loss_beta": _mean_records(records, "loss_beta"),
         "loss_smooth": _mean_records(records, "loss_smooth"),
+        "fem_temperature_rmse": _mean_records(records, "fem_temperature_rmse"),
+        "fem_temperature_mae": _mean_records(records, "fem_temperature_mae"),
+        "fem_temperature_max_error": _max_records(records, "fem_temperature_max_error"),
     }
 
 
@@ -532,14 +704,63 @@ def _temperature_stats(temperature_star, scale_params: ScaleParams):
     }
 
 
-def _build_monitor_snapshot(graph, residual, temperature_star, scale_params: ScaleParams, *, frame_idx: int):
-    return {
+def _build_monitor_snapshot(
+    graph,
+    residual,
+    temperature_star,
+    scale_params: ScaleParams,
+    *,
+    frame_idx: int,
+    fem_temperature_star=None,
+    pred_temperature_star=None,
+):
+    snapshot = {
         "frame_index": int(frame_idx),
         "coords": graph.pos.detach().cpu().numpy(),
         "edge_index": graph.edge_index.detach().cpu().numpy(),
         "residual": residual.detach().reshape(-1).cpu().numpy(),
         "temperature": temperature_from_dimensionless(temperature_star.detach(), scale_params).reshape(-1).cpu().numpy(),
     }
+    if fem_temperature_star is not None:
+        fem_temperature = temperature_from_dimensionless(fem_temperature_star.detach(), scale_params)
+        snapshot["fem_temperature"] = fem_temperature.reshape(-1).cpu().numpy()
+    if pred_temperature_star is not None:
+        pred_temperature = temperature_from_dimensionless(pred_temperature_star.detach(), scale_params)
+        snapshot["pred_temperature"] = pred_temperature.reshape(-1).cpu().numpy()
+    if fem_temperature_star is not None and pred_temperature_star is not None:
+        fem_temperature = temperature_from_dimensionless(fem_temperature_star.detach(), scale_params)
+        pred_temperature = temperature_from_dimensionless(pred_temperature_star.detach(), scale_params)
+        snapshot["temperature_error"] = (pred_temperature - fem_temperature).reshape(-1).cpu().numpy()
+    return snapshot
+
+
+def _read_fem_temperature_star(frame_reader: HDF5FrameReader, frame_idx: int, feature_builder: GpuFeatureBuilder):
+    temperature = frame_reader.read_fem_temperature(frame_idx)
+    return temperature_to_dimensionless(temperature, feature_builder.scale_params).to(
+        device=feature_builder.device,
+        dtype=feature_builder.dtype,
+        non_blocking=feature_builder.device.type == "cuda",
+    )
+
+
+def _read_fem_valid_mask(frame_reader: HDF5FrameReader, frame_idx: int, feature_builder: GpuFeatureBuilder):
+    return frame_reader.read_fem_valid_mask(frame_idx).to(
+        device=feature_builder.device,
+        dtype=feature_builder.dtype,
+        non_blocking=feature_builder.device.type == "cuda",
+    )
+
+
+def _supervision_enabled(supervision_config) -> bool:
+    return bool(supervision_config is not None and getattr(supervision_config, "enabled", False))
+
+
+def _validate_supervised_readers(frame_readers):
+    for frame_reader in frame_readers:
+        if not frame_reader.has_fem_temperature:
+            raise KeyError(
+                f"HDF5 file {frame_reader.h5_path} is missing required FEM temperature dataset."
+            )
 
 
 def _should_capture_frame(frame_idx: int, monitor_frame_index: Optional[int], num_frames: int) -> bool:
