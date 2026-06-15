@@ -1,0 +1,173 @@
+import json
+import shutil
+import unittest
+from pathlib import Path
+
+import h5py
+import numpy as np
+import torch
+
+from inference.single_layer import run_single_layer_inference_from_config
+from models import PDGCN, PDGCNConfig
+
+
+class SingleLayerInferenceTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path("inference/tests/_tmp_single_layer")
+        if self.root.exists():
+            shutil.rmtree(self.root)
+        self.root.mkdir(parents=True)
+
+    def tearDown(self):
+        if self.root.exists():
+            shutil.rmtree(self.root)
+
+    def test_single_layer_entry_writes_hdf5_and_vtu(self):
+        h5_dir = self.root / "h5"
+        h5_dir.mkdir()
+        h5_path = h5_dir / "input.h5"
+        checkpoint_path = self.root / "checkpoint.pt"
+        output_path = self.root / "single_prediction.h5"
+        self._write_source_h5(h5_path)
+        self._write_checkpoint(checkpoint_path)
+        train_config_path = self.root / "train.json"
+        infer_config_path = self.root / "single_infer.json"
+        train_config_path.write_text(
+            json.dumps(
+                {
+                    "outputs": {
+                        "checkpoint_path": str(checkpoint_path.resolve()),
+                        "history_path": "history.json",
+                    },
+                    "datasets": [
+                        {
+                            "name": "case_a",
+                            "h5_dir": str(h5_dir.resolve()),
+                            "cache_dir": str((self.root / "cache").resolve()),
+                            "scale": {
+                                "L0": 0.002,
+                                "v0": 0.002,
+                                "T_amb": 300.0,
+                                "delta_T0": 10.0,
+                                "Q0": 2.0e6,
+                                "K0": 8.0,
+                                "rho": 2.0,
+                                "Cp": 1.0,
+                                "heat_source_effective_thickness": 0.001,
+                            },
+                        }
+                    ],
+                    "hyperparameters": {
+                        "model": {"hidden_size": 8, "message_passing_num": 1},
+                        "physics_loss": {"lambda_outflow": 0.0},
+                        "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        infer_config_path.write_text(
+            json.dumps(
+                {
+                    "training_config": "train.json",
+                    "single_layer_inference": {
+                        "output_path": str(output_path.resolve()),
+                        "steps": 2,
+                        "warmup_steps": 0,
+                        "mode": "both",
+                        "write_vtu": True,
+                        "vtu_interval": 1,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_single_layer_inference_from_config(infer_config_path)
+
+        self.assertEqual(result["output_path"], str(output_path.resolve()))
+        with h5py.File(output_path, "r") as h5_file:
+            self.assertEqual(tuple(h5_file["temperature"].shape), (2, 4, 1))
+            self.assertEqual(tuple(h5_file["temperature_star"].shape), (2, 4, 1))
+            self.assertEqual(tuple(h5_file["teacher_forcing/temperature"].shape), (1, 4, 1))
+            self.assertEqual(tuple(h5_file["teacher_forcing/frame_index"].shape), (1,))
+            self.assertIn("fem_temperature", h5_file)
+            self.assertIn("temperature_error", h5_file)
+            metadata = json.loads(h5_file.attrs["metadata"])
+            self.assertTrue(metadata["has_fem_temperature"])
+            self.assertTrue(metadata["teacher_forcing_enabled"])
+        vtu_dir = output_path.with_name(f"{output_path.stem}_vtu")
+        first_vtu = vtu_dir / "temperature_step_000000.vtu"
+        second_vtu = vtu_dir / "temperature_step_000001.vtu"
+        self.assertTrue(first_vtu.exists())
+        self.assertTrue(second_vtu.exists())
+        text = second_vtu.read_text(encoding="utf-8")
+        self.assertIn('Name="temperature"', text)
+        self.assertIn('Name="fem_temperature"', text)
+        self.assertIn('Name="teacher_temperature_error"', text)
+
+    def _write_checkpoint(self, path):
+        model_config = PDGCNConfig(
+            hidden_size=8,
+            message_passing_num=1,
+            inverse_pe=0.0,
+            source_coefficient=0.0,
+            pi_q=0.0,
+            k_ratio=0.0,
+            dt_star=1.0,
+        )
+        model = PDGCN(model_config)
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": None,
+                "epoch": 0,
+                "metadata": {"model_config": model_config.__dict__},
+            },
+            path,
+        )
+
+    def _write_source_h5(self, path):
+        xyz = np.array(
+            [
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
+                [[0.1, 0.0, 0.0], [1.1, 0.0, 0.0], [0.1, 1.0, 0.0], [1.1, 1.0, 0.0]],
+            ],
+            dtype=np.float32,
+        )
+        fiber = np.tile(np.array([[[1.0, 0.0, 0.0]]], dtype=np.float32), (2, 4, 1))
+        normal = np.tile(np.array([[[0.0, 0.0, 1.0]]], dtype=np.float32), (2, 4, 1))
+        q = np.zeros((2, 4, 1), dtype=np.float32)
+        fem_temperature = np.array(
+            [
+                [[300.0], [301.0], [302.0], [303.0]],
+                [[300.5], [301.5], [302.5], [303.5]],
+            ],
+            dtype=np.float32,
+        )
+        edge_index = np.array([[0, 1, 3, 0, 2, 3], [1, 3, 0, 2, 3, 0]], dtype=np.int64)
+
+        with h5py.File(path, "w") as h5_file:
+            h5_file.attrs["velocity_speed"] = 2.0
+            h5_file.attrs["velocity_direction_local"] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+            dynamic = h5_file.create_group("dynamic")
+            dynamic.create_dataset("xyz", data=xyz)
+            dynamic.create_dataset("fiber", data=fiber)
+            dynamic.create_dataset("normal", data=normal)
+            dynamic.create_dataset("Q", data=q)
+            h5_file.create_dataset("edge_index", data=edge_index)
+            boundary = h5_file.create_group("boundary_nodes")
+            boundary.create_dataset("upwind", data=np.array([0], dtype=np.int64))
+            boundary.create_dataset("downwind", data=np.array([3], dtype=np.int64))
+            boundary.create_dataset("side", data=np.array([2], dtype=np.int64))
+            path_group = h5_file.create_group("path")
+            path_group.create_dataset("heat_center_step_distance", data=np.float64(0.5))
+            path_group.create_dataset("slice_path_length", data=np.float64(0.5))
+            fem = h5_file.create_group("fem")
+            fem.create_dataset("temperature", data=fem_temperature)
+            fem.create_dataset("temperature_unit", data="degC")
+            fem.create_dataset("valid_mask", data=np.ones((2, 4, 1), dtype=np.uint8))
+
+
+if __name__ == "__main__":
+    unittest.main()

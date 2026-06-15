@@ -190,3 +190,49 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe -m unittest discover training\tests
 D:\ProgramData\CondaEnv\PIGNN\python.exe -m unittest discover pde\tests
 D:\ProgramData\CondaEnv\PIGNN\python.exe -m unittest discover visualization\tests
 ```
+
+## 单层推理诊断
+
+当需要排查单层 PD-GCN 本身的训练效果、暂时不考虑多层厚度方向 FDM 时，可使用单层推理入口：
+
+```powershell
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\single_layer_infer_entry.py --config configs\pdgcn_single_layer_infer.example.json
+```
+
+单层入口读取 `training_config` 中的 checkpoint、数据集、尺度参数和 warmup 默认值，只推进一层曲面温度：
+
+```text
+T_next = T_current + delta_T_source + delta_T_inplane
+```
+
+输出 HDF5 默认写到：
+
+```text
+runs/pdgcn/single_layer_prediction.h5
+```
+
+其中 `temperature` 和 `temperature_star` 为自回归单层预测，形状为 `[time, node, 1]`。若输入 HDF5 包含 `fem/temperature`，且 `mode` 为 `both` 或 `teacher_forcing`，还会写出 `teacher_forcing/temperature`、`teacher_forcing/temperature_star`、`teacher_forcing/temperature_error` 和 `teacher_forcing/frame_index`，用于检查训练语义下的一步预测误差。
+
+若 `write_vtu=true`，入口会按 `vtu_interval` 直接输出 ParaView 可读取的单层 `.vtu` 曲面文件，默认目录为：
+
+```text
+<output_path stem>_vtu/
+```
+
+文件名形如：
+
+```text
+temperature_step_000000.vtu
+```
+
+可选覆盖参数：
+
+```powershell
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\single_layer_infer_entry.py `
+  --config configs\pdgcn_single_layer_infer.example.json `
+  --checkpoint ..\runs\pdgcn\checkpoint.pt `
+  --h5 ..\case_3_HDF\xxx.h5 `
+  --output ..\runs\pdgcn\single_layer_prediction.h5 `
+  --vtu-interval 5 `
+  --mode both
+```

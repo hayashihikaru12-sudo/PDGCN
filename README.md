@@ -157,7 +157,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\visualize_monitor.py --monitor
 6. 同一 run 内模型参数和优化器状态持续更新。
 7. 若启用 `resume_from_checkpoint`，训练入口会先加载已有模型权重；默认也恢复 Adam 状态，并把学习率重设为当前配置中的 `lr`。
 8. epoch loss 统计为该 epoch 内所有文件所有 TBPTT 窗口损失的平均值；恢复训练时 epoch 编号从 checkpoint 的下一轮继续。
-9. 若启用 `supervision.enabled=true`，训练改为逐 transition 使用 FEM teacher forcing：输入温度取 $T_{\mathrm{FEM},n}^*$，经过显式热源和边界钳制后送入 PD-GCN，预测 $T_{\mathrm{pred},n+1}^*$，再与 $T_{\mathrm{FEM},n+1}^*$ 计算监督损失。该模式忽略 `warmup_steps` 对训练输入温度的影响。
+9. 若启用 `supervision.enabled=true`，训练按 `supervision.mode` 选择 FEM 监督语义：`teacher_forcing` 使用 FEM 当前帧做单步监督，`rollout` 从窗口起点 FEM 温度初始化后自回归推进并逐帧对齐 FEM，`mixed` 同时计算两类监督。监督模式忽略 `warmup_steps` 对训练输入温度的影响。
 
 FEM 监督损失为：
 
@@ -186,7 +186,7 @@ $$
 \lambda_T\mathcal L_T.
 $$
 
-history 和 monitor 中会额外记录 `loss_physics`、`loss_supervised`、`loss_temperature`、`fem_temperature_rmse`、`fem_temperature_mae` 和 `fem_temperature_max_error`。监控快照在监督启用时可包含 `fem_temperature`、`pred_temperature` 和 `temperature_error`。
+history 和 monitor 中会额外记录 `loss_physics`、`loss_supervised`、`loss_temperature`、`loss_teacher_forcing_temperature`、`loss_rollout_temperature`、`fem_temperature_rmse`、`fem_temperature_mae`、`fem_temperature_max_error` 和 rollout FEM 指标。监控快照在监督启用时可包含 `fem_temperature`、`pred_temperature` 和 `temperature_error`。
 
 ## 目录说明
 
@@ -202,3 +202,13 @@ DesignPlan/   研究设计、技术方案和实验方案文档
 PIGNN/        PIGNN 参考仓库，只读
 runs/         训练输出，不进入 Git
 ```
+
+### 单层推理诊断
+
+若只想检查单层 PD-GCN 训练效果、不启用多层 FDM，可运行：
+
+```powershell
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\single_layer_infer_entry.py --config configs\pdgcn_single_layer_infer.example.json
+```
+
+单层入口默认输出 `runs/pdgcn/single_layer_prediction.h5`，并按 `single_layer_inference.vtu_interval` 写出 ParaView 可读取的 `.vtu` 曲面文件。默认 `mode="both"`：自回归预测始终输出；若 HDF5 存在 `fem/temperature`，还会输出 teacher-forcing 一步预测和温度误差场。

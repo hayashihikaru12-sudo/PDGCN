@@ -253,7 +253,9 @@ class RunConfigTests(unittest.TestCase):
                 "temperature_dataset": "fem/temperature",
                 "valid_mask_dataset": "fem/valid_mask",
                 "lambda_temperature": 0.5,
-                "mode": "teacher_forcing",
+                "lambda_rollout_temperature": 0.75,
+                "rollout_window": 3,
+                "mode": "mixed",
             },
         }
         config_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -264,7 +266,40 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.supervision.temperature_dataset, "fem/temperature")
         self.assertEqual(config.supervision.valid_mask_dataset, "fem/valid_mask")
         self.assertAlmostEqual(config.supervision.lambda_temperature, 0.5)
-        self.assertEqual(config.supervision.mode, "teacher_forcing")
+        self.assertAlmostEqual(config.supervision.lambda_rollout_temperature, 0.75)
+        self.assertEqual(config.supervision.rollout_window, 3)
+        self.assertEqual(config.supervision.mode, "mixed")
+
+    def test_load_config_accepts_supervision_modes(self):
+        config_path = self.root / "supervision_modes.json"
+        base_payload = {
+            "data": {
+                "h5_dir": "h5",
+                "cache_dir": "cache",
+                "checkpoint_path": "checkpoint.pt",
+            },
+            "scale": {
+                "L0": 2.0,
+                "v0": 2.0,
+                "T_amb": 300.0,
+                "delta_T0": 10.0,
+                "Q0": 2.0,
+                "K0": 8.0,
+                "rho": 2.0,
+                "Cp": 1.0,
+                "heat_source_effective_thickness": 0.001,
+            },
+            "model": {},
+            "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
+        }
+        for mode in ("teacher_forcing", "rollout", "mixed"):
+            payload = dict(base_payload)
+            payload["supervision"] = {"enabled": True, "mode": mode}
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            config = load_run_config(config_path)
+
+            self.assertEqual(config.supervision.mode, mode)
 
     def test_load_config_accepts_classified_supervision(self):
         config_path = self.root / "supervision_classified.json"
@@ -326,10 +361,10 @@ class RunConfigTests(unittest.TestCase):
             "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1},
         }
         bad_mode = dict(base_payload)
-        bad_mode["supervision"] = {"enabled": True, "mode": "rollout"}
+        bad_mode["supervision"] = {"enabled": True, "mode": "bad_mode"}
         bad_mode_path = self.root / "supervision_bad_mode.json"
         bad_mode_path.write_text(json.dumps(bad_mode), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "teacher_forcing"):
+        with self.assertRaisesRegex(ValueError, "teacher_forcing.*rollout.*mixed"):
             load_run_config(bad_mode_path)
 
         bad_lambda = dict(base_payload)
@@ -338,6 +373,20 @@ class RunConfigTests(unittest.TestCase):
         bad_lambda_path.write_text(json.dumps(bad_lambda), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "lambda_temperature"):
             load_run_config(bad_lambda_path)
+
+        bad_rollout_lambda = dict(base_payload)
+        bad_rollout_lambda["supervision"] = {"lambda_rollout_temperature": -1.0}
+        bad_rollout_lambda_path = self.root / "supervision_bad_rollout_lambda.json"
+        bad_rollout_lambda_path.write_text(json.dumps(bad_rollout_lambda), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "lambda_rollout_temperature"):
+            load_run_config(bad_rollout_lambda_path)
+
+        bad_rollout_window = dict(base_payload)
+        bad_rollout_window["supervision"] = {"rollout_window": 0}
+        bad_rollout_window_path = self.root / "supervision_bad_rollout_window.json"
+        bad_rollout_window_path.write_text(json.dumps(bad_rollout_window), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "rollout_window"):
+            load_run_config(bad_rollout_window_path)
 
     def test_load_config_accepts_monitoring_interval(self):
         config_path = self.root / "monitoring_interval.json"

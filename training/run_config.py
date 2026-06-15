@@ -62,6 +62,8 @@ class SupervisionRunConfig:
     temperature_dataset: str = "fem/temperature"
     valid_mask_dataset: Optional[str] = "fem/valid_mask"
     lambda_temperature: float = 1.0
+    lambda_rollout_temperature: float = 1.0
+    rollout_window: Optional[int] = None
     mode: str = "teacher_forcing"
 
     def __post_init__(self):
@@ -78,12 +80,23 @@ class SupervisionRunConfig:
                 "supervision.lambda_temperature must be non-negative, "
                 f"got {self.lambda_temperature}."
             )
-        mode = str(self.mode).strip().lower()
-        if mode != "teacher_forcing":
+        if float(self.lambda_rollout_temperature) < 0:
             raise ValueError(
-                "supervision.mode currently only supports 'teacher_forcing', "
+                "supervision.lambda_rollout_temperature must be non-negative, "
+                f"got {self.lambda_rollout_temperature}."
+            )
+        if self.rollout_window is not None and int(self.rollout_window) <= 0:
+            raise ValueError(
+                "supervision.rollout_window must be null or a positive integer, "
+                f"got {self.rollout_window}."
+            )
+        mode = str(self.mode).strip().lower()
+        if mode not in {"teacher_forcing", "rollout", "mixed"}:
+            raise ValueError(
+                "supervision.mode must be one of 'teacher_forcing', 'rollout', or 'mixed', "
                 f"got {self.mode!r}."
             )
+        object.__setattr__(self, "mode", mode)
 
 
 @dataclass(frozen=True)

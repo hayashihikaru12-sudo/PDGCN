@@ -1,4 +1,5 @@
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 
@@ -215,6 +216,66 @@ def write_topology_wedge_vtk(
     return path
 
 
+def write_surface_vtu(
+    path,
+    coords,
+    *,
+    point_data,
+    edge_index=None,
+    title: str = "PDGCN surface VTU export",
+):
+    """Write a single surface as XML VTU triangles, falling back to vertex cells."""
+
+    path = Path(path)
+    coords = np.asarray(coords, dtype=np.float64)
+    if coords.ndim != 2 or coords.shape[1] != 3:
+        raise ValueError(f"coords must have shape [N, 3], got {coords.shape}.")
+    num_points = int(coords.shape[0])
+    if num_points <= 0:
+        raise ValueError("coords must contain at least one point.")
+
+    clean_data = _clean_point_data(point_data, num_points)
+    cells, cell_types = _surface_cells(coords, edge_index)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write('<?xml version="1.0"?>\n')
+        handle.write(
+            '<VTKFile type="UnstructuredGrid" version="0.1" byte_order="LittleEndian">\n'
+        )
+        handle.write(f"  <!-- {_xml_comment(title)} -->\n")
+        handle.write("  <UnstructuredGrid>\n")
+        handle.write(f'    <Piece NumberOfPoints="{num_points}" NumberOfCells="{len(cells)}">\n')
+        handle.write("      <Points>\n")
+        handle.write('        <DataArray type="Float32" NumberOfComponents="3" format="ascii">\n')
+        handle.write(_format_float_data(coords.reshape(-1), indent="          "))
+        handle.write("        </DataArray>\n")
+        handle.write("      </Points>\n")
+        handle.write("      <Cells>\n")
+        handle.write('        <DataArray type="Int32" Name="connectivity" format="ascii">\n')
+        handle.write(_format_int_data(cells.reshape(-1), indent="          "))
+        handle.write("        </DataArray>\n")
+        handle.write('        <DataArray type="Int32" Name="offsets" format="ascii">\n')
+        handle.write(_format_int_data(np.cumsum([len(cell) for cell in cells]), indent="          "))
+        handle.write("        </DataArray>\n")
+        handle.write('        <DataArray type="UInt8" Name="types" format="ascii">\n')
+        handle.write(_format_int_data(cell_types, indent="          "))
+        handle.write("        </DataArray>\n")
+        handle.write("      </Cells>\n")
+        active_scalar = next(iter(clean_data))
+        handle.write(f'      <PointData Scalars="{escape(active_scalar)}">\n')
+        for name, values in clean_data.items():
+            handle.write(f'        <DataArray type="Float32" Name="{escape(name)}" format="ascii">\n')
+            handle.write(_format_float_data(values, indent="          "))
+            handle.write("        </DataArray>\n")
+        handle.write("      </PointData>\n")
+        handle.write("    </Piece>\n")
+        handle.write("  </UnstructuredGrid>\n")
+        handle.write("</VTKFile>\n")
+
+    return path
+
+
 def triangles_from_edge_index(edge_index, num_points: int, *, coords=None, eps: float = 1e-14):
     """Recover triangular cells from an undirected edge graph."""
 
@@ -249,6 +310,17 @@ def triangles_from_edge_index(edge_index, num_points: int, *, coords=None, eps: 
             raise ValueError(f"coords must have shape [N, 3], got {coords.shape}.")
         triangles = triangles[_triangle_area3d(coords, triangles) > float(eps)]
     return triangles
+
+
+def _surface_cells(coords, edge_index):
+    num_points = int(np.asarray(coords).shape[0])
+    triangles = triangles_from_edge_index(edge_index, num_points, coords=coords)
+    if len(triangles) == 0:
+        triangles = triangulate_base_layer(coords, edge_index=edge_index, nodes_per_layer=num_points)
+    if len(triangles) > 0:
+        return np.asarray(triangles, dtype=np.int32), np.full((len(triangles),), 5, dtype=np.uint8)
+    vertices = np.arange(num_points, dtype=np.int32).reshape(num_points, 1)
+    return vertices, np.full((num_points,), 1, dtype=np.uint8)
 
 
 def triangulate_base_layer(coords, *, edge_index=None, nodes_per_layer=None, triangle_edge_factor: float = 2.0):
@@ -405,3 +477,29 @@ def _clean_field_name(name):
 
 def _ascii_title(title):
     return str(title).encode("ascii", errors="ignore").decode("ascii")[:255] or "VTK export"
+
+
+def _xml_comment(title):
+    return str(title).replace("--", "-").replace("<", "").replace(">", "")[:255] or "VTU export"
+
+
+def _format_float_data(values, *, indent: str):
+    array = np.asarray(values, dtype=np.float64).reshape(-1)
+    if array.size == 0:
+        return ""
+    lines = []
+    for start in range(0, array.size, 9):
+        chunk = array[start : start + 9]
+        lines.append(indent + " ".join(f"{float(value):.9g}" for value in chunk) + "\n")
+    return "".join(lines)
+
+
+def _format_int_data(values, *, indent: str):
+    array = np.asarray(values).reshape(-1)
+    if array.size == 0:
+        return ""
+    lines = []
+    for start in range(0, array.size, 18):
+        chunk = array[start : start + 18]
+        lines.append(indent + " ".join(str(int(value)) for value in chunk) + "\n")
+    return "".join(lines)

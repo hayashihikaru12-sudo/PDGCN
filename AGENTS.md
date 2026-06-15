@@ -26,7 +26,7 @@ PD-GCN 节点输入固定为：
 
 ## FEM 温度监督
 
-当前代码已支持单层 FEM 温度监督训练，配置位于顶层 `supervision`，默认关闭。v1 只支持 `teacher_forcing`。
+当前代码已支持单层 FEM 温度监督训练，配置位于顶层 `supervision`，默认关闭。监督模式由 `supervision.mode` 显式控制，支持 `teacher_forcing`、`rollout` 和 `mixed`。
 
 监督数据约定：
 
@@ -48,8 +48,9 @@ $$
 
 - `HDF5FrameReader` 要求 `fem/temperature` 存在，并提供 `has_fem_temperature`、`read_fem_temperature(frame_idx)` 和 `read_fem_valid_mask(frame_idx)`。
 - 训练 transition 为 `n = 0 ... T-2`。
-- 输入温度取 $T_{\mathrm{FEM},n}^*$，经过显式热源和边界钳制后送入 PD-GCN。
-- 预测 $T_{\mathrm{pred},n+1}^*$ 与 $T_{\mathrm{FEM},n+1}^*$ 计算 masked MSE。
+- `teacher_forcing`：输入温度取 $T_{\mathrm{FEM},n}^*$，预测 $T_{\mathrm{pred},n+1}^*$ 与 $T_{\mathrm{FEM},n+1}^*$ 计算 masked MSE。
+- `rollout`：每个监督窗口从 FEM 起点帧初始化，窗口内使用模型预测自回归推进，并逐步对齐 FEM 温度场。
+- `mixed`：同时计算 teacher-forcing 单步监督和 rollout 路径监督。
 - FEM 温度不进入 PD-GCN 额外节点特征，节点输入维度仍为 7。
 
 监督损失为：
@@ -62,7 +63,7 @@ $$
 \lambda_T\mathcal L_T.
 $$
 
-history 和 monitor 会记录 `loss_physics`、`loss_supervised`、`loss_temperature`、`fem_temperature_rmse`、`fem_temperature_mae` 和 `fem_temperature_max_error`。
+history 和 monitor 会记录 `loss_physics`、`loss_supervised`、`loss_temperature`、`loss_teacher_forcing_temperature`、`loss_rollout_temperature`、`fem_temperature_rmse`、`fem_temperature_mae`、`fem_temperature_max_error` 和 rollout FEM 指标。
 
 ## 参考资料
 

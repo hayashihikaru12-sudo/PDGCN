@@ -9,6 +9,7 @@ from visualization import (
     triangulate_base_layer,
     triangles_from_edge_index,
     write_polydata_vtk,
+    write_surface_vtu,
     write_topology_wedge_vtk,
     write_unstructured_cloud_vtk,
 )
@@ -116,6 +117,39 @@ class VTKExportTests(unittest.TestCase):
         self.assertIn("POINTS 8 float", text)
         self.assertIn("CELLS 2 14", text)
         self.assertIn("\n13\n", text)
+
+    def test_write_surface_vtu_uses_triangle_cells(self):
+        path = self.root / "surface.vtu"
+        coords = np.array(
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+            dtype=np.float32,
+        )
+        edge_index = np.array([[0, 1, 3, 0, 2, 3], [1, 3, 0, 2, 3, 0]], dtype=np.int64)
+
+        write_surface_vtu(
+            path,
+            coords,
+            edge_index=edge_index,
+            point_data={"temperature": np.arange(4, dtype=np.float32)},
+        )
+
+        text = path.read_text(encoding="utf-8")
+        self.assertIn('VTKFile type="UnstructuredGrid"', text)
+        self.assertIn('NumberOfPoints="4"', text)
+        self.assertIn('NumberOfCells="2"', text)
+        self.assertIn('<PointData Scalars="temperature">', text)
+        self.assertIn('Name="temperature"', text)
+        self.assertIn("          5 5\n", text)
+
+    def test_write_surface_vtu_falls_back_to_vertices(self):
+        path = self.root / "vertices.vtu"
+        coords = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
+
+        write_surface_vtu(path, coords, edge_index=None, point_data={"temperature": [300.0, 301.0]})
+
+        text = path.read_text(encoding="utf-8")
+        self.assertIn('NumberOfCells="2"', text)
+        self.assertIn("          1 1\n", text)
 
     def test_projected_rank_handles_large_point_sets_without_pairwise_matrix(self):
         x = np.linspace(0.0, 1.0, 50000, dtype=np.float64)

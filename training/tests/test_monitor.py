@@ -60,7 +60,10 @@ class MonitorTimingTests(unittest.TestCase):
                 self.assertIn("loss_smooth", h5_file["epoch_metrics"])
                 self.assertIn("loss_smooth", h5_file["slice_metrics"])
                 self.assertIn("loss_temperature", h5_file["epoch_metrics"])
+                self.assertIn("loss_rollout_temperature", h5_file["epoch_metrics"])
+                self.assertIn("loss_teacher_forcing_temperature", h5_file["slice_metrics"])
                 self.assertIn("fem_temperature_rmse", h5_file["slice_metrics"])
+                self.assertIn("rollout_fem_temperature_rmse", h5_file["slice_metrics"])
 
 
 if __name__ == "__main__":

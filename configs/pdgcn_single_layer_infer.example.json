@@ -1,0 +1,16 @@
+{
+  "training_config": "pdgcn_train.example.json",
+  "single_layer_inference": {
+    "output_path": "../runs/pdgcn/single_layer_prediction.h5",
+    "dataset_index": 0,
+    "h5_path": "../case1_validTheta_50X50/case2_Q2_V10_dt0p05_F93_fem.h5",
+    "steps": null,
+    "warmup_steps": 0,
+    "mode": "both",
+    "write_vtu": true,
+    "vtu_interval": 20,
+    "vtu_output_dir": null,
+    "fem_temperature_dataset": "fem/temperature",
+    "fem_valid_mask_dataset": "fem/valid_mask"
+  }
+}

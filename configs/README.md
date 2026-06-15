@@ -55,6 +55,8 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
   "temperature_dataset": "fem/temperature",
   "valid_mask_dataset": "fem/valid_mask",
   "lambda_temperature": 1.0,
+  "lambda_rollout_temperature": 1.0,
+  "rollout_window": null,
   "mode": "teacher_forcing"
 }
 ```
@@ -65,7 +67,9 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 | `temperature_dataset` | string | `fem/temperature` | FEM 监督温度字段路径，形状必须为 `[T, N, 1]`，并与 `dynamic/Q` 对齐。 |
 | `valid_mask_dataset` | string 或 `null` | `fem/valid_mask` | 可选有效节点 mask 字段。缺失或设为 `null` 时使用全 1 mask。 |
 | `lambda_temperature` | number | `1.0` | 温度监督损失权重，必须非负。 |
-| `mode` | string | `teacher_forcing` | v1 仅支持 `teacher_forcing`：训练输入温度取 FEM 当前帧。 |
+| `lambda_rollout_temperature` | number | `1.0` | `rollout` / `mixed` 模式下自回归路径温度监督损失权重，必须非负。 |
+| `rollout_window` | integer 或 `null` | `null` | `rollout` / `mixed` 模式下的路径监督窗口长度；为 `null` 时使用 `training.tbptt_window`。 |
+| `mode` | string | `teacher_forcing` | 显式选择监督模式，可为 `teacher_forcing`、`rollout` 或 `mixed`。 |
 
 监督温度按真实温度读取，并在训练中转为无量纲温度：
 
@@ -376,3 +380,24 @@ T_next = implicit_fdm_step(T_inplane)
 - `warmup_steps` 会在每个 HDF5 文件开始时先显式加热、再用当前无源 PD-GCN 生成伪初温。较大的 warmup 可能显著抬高初始温度。
 - `residual_time_scheme = "backward"` 通常比 `"explicit"` 更稳定，但训练代价和收敛行为可能不同，需要结合监控结果判断。
 - `delta_smoothing_alpha` 和 `delta_smoothing_steps` 用于抑制推理端自回归高频误差。若云图锯齿明显，可在 `0.1~0.3` 和 `1~2` 次迭代内消融；若热峰被抹平，应降低强度或关闭。
+
+## `single_layer_inference`
+
+单层推理配置位于 `configs/pdgcn_single_layer_infer.example.json`。该入口用于检查单层 PD-GCN 自身推理效果，不启用多层 FDM。
+
+运行命令：
+
+```powershell
+D:\ProgramData\CondaEnv\PIGNN\python.exe inference\single_layer_infer_entry.py --config configs\pdgcn_single_layer_infer.example.json
+```
+
+关键字段：
+
+| 参数 | 说明 |
+| --- | --- |
+| `mode` | `"autoregressive"`、`"teacher_forcing"` 或 `"both"`；默认 `"both"`。 |
+| `write_vtu` | 是否在推理后写出单层 `.vtu` 曲面文件。 |
+| `vtu_interval` | VTU 输出帧间隔，从第 0 帧开始采样。 |
+| `vtu_output_dir` | VTU 输出目录；为 `null` 时使用 `<output_path stem>_vtu/`。 |
+| `fem_temperature_dataset` | FEM 温度数据集路径，默认 `fem/temperature`。 |
+| `fem_valid_mask_dataset` | FEM mask 数据集路径，默认 `fem/valid_mask`。 |

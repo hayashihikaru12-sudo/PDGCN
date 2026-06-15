@@ -62,7 +62,7 @@ class RecordingDeltaModel(TrainableDeltaModel):
         return super().forward(graph)
 
 
-def make_h5(path: Path):
+def make_h5(path: Path, *, num_frames: int = 2):
     """创建固定拓扑测试 HDF5 文件。
 
     参数:
@@ -72,16 +72,18 @@ def make_h5(path: Path):
         None。函数会写入两帧四节点的小图数据。
     """
 
-    xyz = np.array(
-        [
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
-            [[0.1, 0.0, 0.0], [1.1, 0.0, 0.0], [0.1, 1.0, 0.0], [1.1, 1.0, 0.0]],
-        ],
+    base_xyz = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
         dtype=np.float32,
     )
-    fiber = np.tile(np.array([[[1.0, 0.0, 0.0]]], dtype=np.float32), (2, 4, 1))
-    normal = np.tile(np.array([[[0.0, 0.0, 1.0]]], dtype=np.float32), (2, 4, 1))
-    q = np.array([[[0.0], [1.0], [0.5], [0.0]], [[0.0], [0.8], [0.4], [0.0]]], dtype=np.float32)
+    xyz = np.stack(
+        [base_xyz + np.array([0.1 * frame_idx, 0.0, 0.0], dtype=np.float32) for frame_idx in range(num_frames)],
+        axis=0,
+    )
+    fiber = np.tile(np.array([[[1.0, 0.0, 0.0]]], dtype=np.float32), (num_frames, 4, 1))
+    normal = np.tile(np.array([[[0.0, 0.0, 1.0]]], dtype=np.float32), (num_frames, 4, 1))
+    base_q = np.array([[0.0], [1.0], [0.5], [0.0]], dtype=np.float32)
+    q = np.stack([base_q * max(0.0, 1.0 - 0.2 * frame_idx) for frame_idx in range(num_frames)], axis=0)
     edge_index = np.array([[0, 1, 2, 0], [1, 3, 3, 2]], dtype=np.int64)
 
     with h5py.File(path, "w") as h5_file:
@@ -99,21 +101,20 @@ def make_h5(path: Path):
         boundary.create_dataset("side", data=np.array([2], dtype=np.int64))
 
 
-def add_fem_temperature(path: Path, *, with_mask: bool = True):
-    fem_temperature = np.array(
-        [
-            [[[300.0], [302.0], [300.0], [304.0]]],
-            [[[300.0], [303.5], [300.0], [305.5]]],
-        ],
-        dtype=np.float32,
-    ).reshape(2, 4, 1)
+def add_fem_temperature(path: Path, *, with_mask: bool = True, num_frames: int = 2):
+    base_temperature = np.array([[300.0], [302.0], [300.0], [304.0]], dtype=np.float32)
+    delta_temperature = np.array([[0.0], [1.5], [0.0], [1.5]], dtype=np.float32)
+    fem_temperature = np.stack(
+        [base_temperature + frame_idx * delta_temperature for frame_idx in range(num_frames)],
+        axis=0,
+    )
     with h5py.File(path, "a") as h5_file:
         fem = h5_file.require_group("fem")
         fem.create_dataset("temperature", data=fem_temperature)
         fem.create_dataset("temperature_unit", data="degC")
-        fem.create_dataset("time", data=np.array([0.0, 0.25], dtype=np.float64))
+        fem.create_dataset("time", data=np.arange(num_frames, dtype=np.float64) * 0.25)
         if with_mask:
-            fem.create_dataset("valid_mask", data=np.ones((2, 4, 1), dtype=np.uint8))
+            fem.create_dataset("valid_mask", data=np.ones((num_frames, 4, 1), dtype=np.uint8))
 
 
 class StaticTopologyTests(unittest.TestCase):
@@ -382,6 +383,86 @@ class StaticTopologyTests(unittest.TestCase):
         self.assertAlmostEqual(history[0]["loss_supervised"], 0.00125, places=6)
         self.assertAlmostEqual(history[0]["fem_temperature_rmse"], float(np.sqrt(0.125)), places=6)
         self.assertEqual(model.forward_temperatures[0].shape[1], 1)
+
+    def test_static_train_supervised_rollout_uses_prediction_as_next_input(self):
+        h5_path = self.root / "input_three_frames.h5"
+        cache_dir = self.root / "cache_three_frames"
+        make_h5(h5_path, num_frames=3)
+        add_fem_temperature(h5_path, num_frames=3)
+        build_static_cache(h5_path, cache_dir, self.scale, overwrite=True)
+        reader = HDF5FrameReader(
+            h5_path,
+            expected_num_nodes=4,
+            scale_params=self.scale,
+            require_fem_temperature=True,
+            pin_memory=False,
+        )
+        model = RecordingDeltaModel()
+        try:
+            static_state = StaticGraphState.from_cache(cache_dir, device="cpu")
+            builder = GpuFeatureBuilder(static_state, self.scale)
+            history = train_static_topology(
+                model,
+                reader,
+                static_state,
+                builder,
+                TrainConfig(lr=0.01, epochs=1, tbptt_window=2, warmup_steps=3, device="cpu"),
+                supervision_config=SupervisionRunConfig(
+                    enabled=True,
+                    mode="rollout",
+                    lambda_rollout_temperature=1.0,
+                    rollout_window=2,
+                ),
+            )
+        finally:
+            reader.close()
+
+        self.assertEqual(len(model.forward_temperatures), 2)
+        expected_first_input = torch.tensor([[0.0], [0.2], [0.0], [0.4]])
+        expected_second_rollout_input = torch.tensor([[0.0], [0.3], [0.0], [0.5]])
+        fem_second_input = torch.tensor([[0.0], [0.35], [0.0], [0.55]])
+        self.assertTrue(torch.allclose(model.forward_temperatures[0], expected_first_input, atol=1e-6))
+        self.assertTrue(torch.allclose(model.forward_temperatures[1], expected_second_rollout_input, atol=1e-6))
+        self.assertFalse(torch.allclose(model.forward_temperatures[1], fem_second_input, atol=1e-6))
+        self.assertGreater(history[0]["loss_rollout_temperature"], 0.0)
+        self.assertAlmostEqual(history[0]["loss_teacher_forcing_temperature"], 0.0, places=6)
+        self.assertIn("rollout_fem_temperature_rmse", history[0])
+
+    def test_static_train_supervised_mixed_records_teacher_and_rollout_metrics(self):
+        add_fem_temperature(self.h5_path)
+        build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
+        reader = HDF5FrameReader(
+            self.h5_path,
+            expected_num_nodes=4,
+            scale_params=self.scale,
+            require_fem_temperature=True,
+            pin_memory=False,
+        )
+        model = RecordingDeltaModel()
+        try:
+            static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
+            builder = GpuFeatureBuilder(static_state, self.scale)
+            history = train_static_topology(
+                model,
+                reader,
+                static_state,
+                builder,
+                TrainConfig(lr=0.01, epochs=1, tbptt_window=1, warmup_steps=3, device="cpu"),
+                supervision_config=SupervisionRunConfig(
+                    enabled=True,
+                    mode="mixed",
+                    lambda_temperature=0.5,
+                    lambda_rollout_temperature=1.0,
+                ),
+            )
+        finally:
+            reader.close()
+
+        self.assertEqual(len(model.forward_temperatures), 2)
+        self.assertGreater(history[0]["loss_teacher_forcing_temperature"], 0.0)
+        self.assertGreater(history[0]["loss_rollout_temperature"], 0.0)
+        self.assertGreater(history[0]["loss_supervised"], history[0]["loss_rollout_temperature"])
+        self.assertIn("rollout_fem_temperature_rmse", history[0])
 
     def test_static_train_calls_epoch_callback(self):
         """验证固定拓扑训练每个 epoch 结束后会触发 loss 回调。"""

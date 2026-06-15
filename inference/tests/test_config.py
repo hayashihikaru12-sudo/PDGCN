@@ -1,6 +1,6 @@
 import unittest
 
-from inference.config import InferenceRunConfig
+from inference.config import InferenceRunConfig, SingleLayerInferenceRunConfig
 
 
 class InferenceConfigTests(unittest.TestCase):
@@ -72,6 +72,20 @@ class InferenceConfigTests(unittest.TestCase):
     def test_rejects_invalid_normal_offset_sign(self):
         with self.assertRaisesRegex(ValueError, "normal_offset_sign"):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, normal_offset_sign=0)
+
+    def test_single_layer_config_accepts_modes(self):
+        config = SingleLayerInferenceRunConfig(mode="both", vtu_interval=2)
+
+        self.assertEqual(config.mode, "both")
+        self.assertEqual(config.vtu_interval, 2)
+
+    def test_single_layer_config_rejects_bad_mode(self):
+        with self.assertRaisesRegex(ValueError, "mode"):
+            SingleLayerInferenceRunConfig(mode="rollout")
+
+    def test_single_layer_config_rejects_bad_vtu_interval(self):
+        with self.assertRaisesRegex(ValueError, "vtu_interval"):
+            SingleLayerInferenceRunConfig(vtu_interval=0)
 
 
 if __name__ == "__main__":

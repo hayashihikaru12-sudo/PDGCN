@@ -5,6 +5,8 @@
     "temperature_dataset": "fem/temperature",
     "valid_mask_dataset": "fem/valid_mask",
     "lambda_temperature": 1.0,
+    "lambda_rollout_temperature": 1.0,
+    "rollout_window": null,
     "mode": "teacher_forcing"
   },
   "outputs": {

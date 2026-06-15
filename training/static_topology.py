@@ -306,6 +306,10 @@ def train_static_topology_sequences(
             "loss_physics": _mean_records(window_records, "loss_physics"),
             "loss_supervised": _mean_records(window_records, "loss_supervised"),
             "loss_temperature": _mean_records(window_records, "loss_temperature"),
+            "loss_teacher_forcing_temperature": _mean_records(
+                window_records, "loss_teacher_forcing_temperature"
+            ),
+            "loss_rollout_temperature": _mean_records(window_records, "loss_rollout_temperature"),
             "loss_pde": _mean_records(window_records, "loss_pde"),
             "loss_outflow": _mean_records(window_records, "loss_outflow"),
             "loss_beta": _mean_records(window_records, "loss_beta"),
@@ -313,6 +317,13 @@ def train_static_topology_sequences(
             "fem_temperature_rmse": _mean_records(window_records, "fem_temperature_rmse"),
             "fem_temperature_mae": _mean_records(window_records, "fem_temperature_mae"),
             "fem_temperature_max_error": _max_records(window_records, "fem_temperature_max_error"),
+            "rollout_fem_temperature_rmse": _mean_records(
+                window_records, "rollout_fem_temperature_rmse"
+            ),
+            "rollout_fem_temperature_mae": _mean_records(window_records, "rollout_fem_temperature_mae"),
+            "rollout_fem_temperature_max_error": _max_records(
+                window_records, "rollout_fem_temperature_max_error"
+            ),
             "temperature_mean": _mean_records(window_records, "temperature_mean"),
             "temperature_max": _max_records(window_records, "temperature_max"),
             "temperature_min": _min_records(window_records, "temperature_min"),
@@ -446,53 +457,87 @@ def _train_one_static_sequence_epoch_supervised(
     if frame_reader.num_frames < 2:
         raise ValueError("Supervised training requires at least two FEM temperature frames.")
 
+    mode = _supervision_mode(supervision_config)
+    window_size = _supervision_window_size(config, supervision_config, mode)
     window_records = []
     selected_snapshot = None
     num_transitions = frame_reader.num_frames - 1
-    for start in range(0, num_transitions, int(config.tbptt_window)):
-        end = min(start + int(config.tbptt_window), num_transitions)
+    for start in range(0, num_transitions, window_size):
+        end = min(start + window_size, num_transitions)
         optimizer.zero_grad()
         loss_terms = []
         component_records = []
         window_temperature = None
         window_snapshot = None
+        rollout_temperature = (
+            _read_fem_temperature_star(frame_reader, start, feature_builder)
+            if mode in {"rollout", "mixed"}
+            else None
+        )
 
         for frame_idx in range(start, end):
-            fem_current = _read_fem_temperature_star(frame_reader, frame_idx, feature_builder)
             fem_next = _read_fem_temperature_star(frame_reader, frame_idx + 1, feature_builder)
             fem_mask_next = _read_fem_valid_mask(frame_reader, frame_idx + 1, feature_builder)
 
-            node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
-            graph = _snapshot_graph_for_tbptt(
-                feature_builder.build(node_base_cpu, global_cpu, fem_current)
-            )
-            source_temperature = apply_dirichlet_boundary(
-                fem_current + graph_explicit_source_delta(graph, model.config),
-                static_state.boundary_nodes,
-                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
-            )
-            graph = clone_graph_with_temperature(graph, source_temperature)
-            delta_temperature = model(graph)
-            next_temperature = apply_dirichlet_boundary(
-                source_temperature + delta_temperature,
-                static_state.boundary_nodes,
-                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
-            )
-            components = _compute_loss_components(
-                model,
-                next_temperature,
-                source_temperature,
-                graph,
-                static_state,
-            )
-            supervision_components = _compute_supervision_components(
-                next_temperature,
-                fem_next,
-                fem_mask_next,
-                feature_builder.scale_params,
-                lambda_temperature=float(supervision_config.lambda_temperature),
-            )
-            components.update(supervision_components)
+            if mode == "teacher_forcing":
+                fem_current = _read_fem_temperature_star(frame_reader, frame_idx, feature_builder)
+                graph, _, next_temperature, components = _run_static_training_step(
+                    model,
+                    frame_reader,
+                    static_state,
+                    feature_builder,
+                    frame_idx,
+                    fem_current,
+                )
+                supervision_components = _compute_supervision_components(
+                    next_temperature,
+                    fem_next,
+                    fem_mask_next,
+                    feature_builder.scale_params,
+                    lambda_temperature=float(supervision_config.lambda_temperature),
+                )
+                _apply_teacher_forcing_supervision(components, supervision_components)
+            else:
+                graph, _, next_temperature, components = _run_static_training_step(
+                    model,
+                    frame_reader,
+                    static_state,
+                    feature_builder,
+                    frame_idx,
+                    rollout_temperature,
+                )
+                rollout_components = _compute_supervision_components(
+                    next_temperature,
+                    fem_next,
+                    fem_mask_next,
+                    feature_builder.scale_params,
+                    lambda_temperature=float(supervision_config.lambda_rollout_temperature),
+                )
+                _apply_rollout_supervision(components, rollout_components)
+                if mode == "mixed":
+                    fem_current = _read_fem_temperature_star(frame_reader, frame_idx, feature_builder)
+                    _, _, teacher_temperature, _ = _run_static_training_step(
+                        model,
+                        frame_reader,
+                        static_state,
+                        feature_builder,
+                        frame_idx,
+                        fem_current,
+                        compute_components=False,
+                    )
+                    teacher_components = _compute_supervision_components(
+                        teacher_temperature,
+                        fem_next,
+                        fem_mask_next,
+                        feature_builder.scale_params,
+                        lambda_temperature=float(supervision_config.lambda_temperature),
+                    )
+                    _apply_teacher_forcing_supervision(
+                        components,
+                        teacher_components,
+                        include_general_metrics=False,
+                    )
+                rollout_temperature = next_temperature
             components["loss_total"] = components["loss_physics"] + components["loss_supervised"]
             loss_terms.append(components["loss_total"])
             component_records.append(_detach_loss_record(components))
@@ -522,6 +567,78 @@ def _train_one_static_sequence_epoch_supervised(
         if window_snapshot is not None:
             selected_snapshot = window_snapshot
     return window_records, selected_snapshot
+
+
+def _run_static_training_step(
+    model,
+    frame_reader: HDF5FrameReader,
+    static_state: StaticGraphState,
+    feature_builder: GpuFeatureBuilder,
+    frame_idx: int,
+    current_temperature,
+    *,
+    compute_components: bool = True,
+):
+    node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
+    graph = _snapshot_graph_for_tbptt(
+        feature_builder.build(node_base_cpu, global_cpu, current_temperature)
+    )
+    source_temperature = apply_dirichlet_boundary(
+        current_temperature + graph_explicit_source_delta(graph, model.config),
+        static_state.boundary_nodes,
+        value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+    )
+    graph = clone_graph_with_temperature(graph, source_temperature)
+    delta_temperature = model(graph)
+    next_temperature = apply_dirichlet_boundary(
+        source_temperature + delta_temperature,
+        static_state.boundary_nodes,
+        value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+    )
+    components = None
+    if compute_components:
+        components = _compute_loss_components(
+            model,
+            next_temperature,
+            source_temperature,
+            graph,
+            static_state,
+        )
+    return graph, source_temperature, next_temperature, components
+
+
+def _apply_teacher_forcing_supervision(components, supervision_components, *, include_general_metrics=True):
+    components["loss_supervised"] = components["loss_supervised"] + supervision_components["loss_supervised"]
+    components["loss_teacher_forcing_temperature"] = supervision_components["loss_temperature"]
+    if include_general_metrics:
+        components["loss_temperature"] = supervision_components["loss_temperature"]
+        components["fem_temperature_rmse"] = supervision_components["fem_temperature_rmse"]
+        components["fem_temperature_mae"] = supervision_components["fem_temperature_mae"]
+        components["fem_temperature_max_error"] = supervision_components["fem_temperature_max_error"]
+    else:
+        components["loss_temperature"] = components["loss_temperature"] + supervision_components["loss_temperature"]
+
+
+def _apply_rollout_supervision(components, supervision_components):
+    components["loss_supervised"] = components["loss_supervised"] + supervision_components["loss_supervised"]
+    components["loss_temperature"] = supervision_components["loss_temperature"]
+    components["loss_rollout_temperature"] = supervision_components["loss_temperature"]
+    components["fem_temperature_rmse"] = supervision_components["fem_temperature_rmse"]
+    components["fem_temperature_mae"] = supervision_components["fem_temperature_mae"]
+    components["fem_temperature_max_error"] = supervision_components["fem_temperature_max_error"]
+    components["rollout_fem_temperature_rmse"] = supervision_components["fem_temperature_rmse"]
+    components["rollout_fem_temperature_mae"] = supervision_components["fem_temperature_mae"]
+    components["rollout_fem_temperature_max_error"] = supervision_components["fem_temperature_max_error"]
+
+
+def _supervision_mode(supervision_config) -> str:
+    return str(getattr(supervision_config, "mode", "teacher_forcing")).strip().lower()
+
+
+def _supervision_window_size(config: TrainConfig, supervision_config, mode: str) -> int:
+    if mode in {"rollout", "mixed"} and getattr(supervision_config, "rollout_window", None) is not None:
+        return int(supervision_config.rollout_window)
+    return int(config.tbptt_window)
 
 
 @torch.no_grad()
@@ -622,9 +739,14 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
     components["loss_physics"] = components["loss_total"]
     components["loss_supervised"] = components["loss_total"].new_zeros(())
     components["loss_temperature"] = components["loss_total"].new_zeros(())
+    components["loss_teacher_forcing_temperature"] = components["loss_total"].new_zeros(())
+    components["loss_rollout_temperature"] = components["loss_total"].new_zeros(())
     components["fem_temperature_rmse"] = components["loss_total"].new_zeros(())
     components["fem_temperature_mae"] = components["loss_total"].new_zeros(())
     components["fem_temperature_max_error"] = components["loss_total"].new_zeros(())
+    components["rollout_fem_temperature_rmse"] = components["loss_total"].new_zeros(())
+    components["rollout_fem_temperature_mae"] = components["loss_total"].new_zeros(())
+    components["rollout_fem_temperature_max_error"] = components["loss_total"].new_zeros(())
     return components
 
 
@@ -669,6 +791,10 @@ def _detach_loss_record(components):
         "loss_physics": float(components["loss_physics"].detach().cpu()),
         "loss_supervised": float(components["loss_supervised"].detach().cpu()),
         "loss_temperature": float(components["loss_temperature"].detach().cpu()),
+        "loss_teacher_forcing_temperature": float(
+            components["loss_teacher_forcing_temperature"].detach().cpu()
+        ),
+        "loss_rollout_temperature": float(components["loss_rollout_temperature"].detach().cpu()),
         "loss_pde": float(components["loss_pde"].detach().cpu()),
         "loss_outflow": float(components["loss_outflow"].detach().cpu()),
         "loss_beta": float(components["loss_beta"].detach().cpu()),
@@ -676,6 +802,11 @@ def _detach_loss_record(components):
         "fem_temperature_rmse": float(components["fem_temperature_rmse"].detach().cpu()),
         "fem_temperature_mae": float(components["fem_temperature_mae"].detach().cpu()),
         "fem_temperature_max_error": float(components["fem_temperature_max_error"].detach().cpu()),
+        "rollout_fem_temperature_rmse": float(components["rollout_fem_temperature_rmse"].detach().cpu()),
+        "rollout_fem_temperature_mae": float(components["rollout_fem_temperature_mae"].detach().cpu()),
+        "rollout_fem_temperature_max_error": float(
+            components["rollout_fem_temperature_max_error"].detach().cpu()
+        ),
     }
 
 
@@ -685,6 +816,8 @@ def _aggregate_component_records(records):
         "loss_physics": _mean_records(records, "loss_physics"),
         "loss_supervised": _mean_records(records, "loss_supervised"),
         "loss_temperature": _mean_records(records, "loss_temperature"),
+        "loss_teacher_forcing_temperature": _mean_records(records, "loss_teacher_forcing_temperature"),
+        "loss_rollout_temperature": _mean_records(records, "loss_rollout_temperature"),
         "loss_pde": _mean_records(records, "loss_pde"),
         "loss_outflow": _mean_records(records, "loss_outflow"),
         "loss_beta": _mean_records(records, "loss_beta"),
@@ -692,6 +825,9 @@ def _aggregate_component_records(records):
         "fem_temperature_rmse": _mean_records(records, "fem_temperature_rmse"),
         "fem_temperature_mae": _mean_records(records, "fem_temperature_mae"),
         "fem_temperature_max_error": _max_records(records, "fem_temperature_max_error"),
+        "rollout_fem_temperature_rmse": _mean_records(records, "rollout_fem_temperature_rmse"),
+        "rollout_fem_temperature_mae": _mean_records(records, "rollout_fem_temperature_mae"),
+        "rollout_fem_temperature_max_error": _max_records(records, "rollout_fem_temperature_max_error"),
     }
 
 

@@ -5,7 +5,7 @@
     "layer_spacing": 0.00015,
     "output_path": "../runs/pdgcn/multilayer_prediction.h5",
     "dataset_index": 0,
-    "h5_path": "../case1_validTheta_50X50/case1_Q0p666667_V25_dt0p05_F91_fem.h5",
+    "h5_path": "../case1_validTheta_50X50/case2_Q2_V10_dt0p05_F93_fem.h5",
     "steps": null,
     "warmup_steps": 0,
     "bottom_temperature_star": 0.0,

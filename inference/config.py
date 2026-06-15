@@ -78,3 +78,49 @@ class InferenceRunConfig:
                 "inference.cloud_max_nodes_per_layer must be at least 3 when set, "
                 f"got {self.cloud_max_nodes_per_layer}."
             )
+
+
+@dataclass(frozen=True)
+class SingleLayerInferenceRunConfig:
+    output_path: str = "../runs/pdgcn/single_layer_prediction.h5"
+    dataset_index: int = 0
+    h5_path: Optional[str] = None
+    steps: Optional[int] = None
+    warmup_steps: Optional[int] = None
+    mode: str = "both"
+    write_vtu: bool = True
+    vtu_interval: int = 20
+    vtu_output_dir: Optional[str] = None
+    fem_temperature_dataset: str = "fem/temperature"
+    fem_valid_mask_dataset: Optional[str] = "fem/valid_mask"
+
+    def __post_init__(self):
+        if int(self.dataset_index) < 0:
+            raise ValueError(
+                f"single_layer_inference.dataset_index must be non-negative, got {self.dataset_index}."
+            )
+        if self.steps is not None and int(self.steps) <= 0:
+            raise ValueError(f"single_layer_inference.steps must be positive when set, got {self.steps}.")
+        if self.warmup_steps is not None and int(self.warmup_steps) < 0:
+            raise ValueError(
+                f"single_layer_inference.warmup_steps must be non-negative when set, got {self.warmup_steps}."
+            )
+        mode = str(self.mode).strip().lower()
+        if mode not in {"autoregressive", "teacher_forcing", "both"}:
+            raise ValueError(
+                "single_layer_inference.mode must be one of "
+                "'autoregressive', 'teacher_forcing', or 'both', "
+                f"got {self.mode!r}."
+            )
+        if int(self.vtu_interval) <= 0:
+            raise ValueError(
+                f"single_layer_inference.vtu_interval must be positive, got {self.vtu_interval}."
+            )
+        if not isinstance(self.fem_temperature_dataset, str) or not self.fem_temperature_dataset.strip():
+            raise ValueError("single_layer_inference.fem_temperature_dataset must be a non-empty string.")
+        if self.fem_valid_mask_dataset is not None and (
+            not isinstance(self.fem_valid_mask_dataset, str) or not self.fem_valid_mask_dataset.strip()
+        ):
+            raise ValueError(
+                "single_layer_inference.fem_valid_mask_dataset must be null or a non-empty string."
+            )
