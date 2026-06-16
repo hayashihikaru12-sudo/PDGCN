@@ -11,6 +11,7 @@ import numpy as np
 
 EPOCH_METRIC_FIELDS = (
     "epoch",
+    "lr",
     "loss_total",
     "loss_physics",
     "loss_supervised",

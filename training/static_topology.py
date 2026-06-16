@@ -12,6 +12,7 @@ from pde import apply_dirichlet_boundary, total_loss
 
 from .config import TrainConfig
 from .graph_utils import clone_graph_with_temperature, graph_explicit_source_delta
+from .lr_scheduler import build_lr_scheduler, optimizer_lr
 from .warmup import pseudo_time_relax_initial_temperature
 
 
@@ -275,7 +276,10 @@ def train_static_topology_sequences(
 
     history = []
     start_epoch = int(start_epoch)
+    lr_scheduler = build_lr_scheduler(optimizer, config)
     for epoch in range(start_epoch, start_epoch + int(config.epochs)):
+        lr_scheduler.begin_epoch(epoch - start_epoch)
+        epoch_lr = optimizer_lr(optimizer)
         model.train()
         window_records = []
         file_window_counts = []
@@ -302,6 +306,7 @@ def train_static_topology_sequences(
         epoch_record = {
             "epoch": epoch,
             "loss": sum(window_losses) / max(len(window_losses), 1),
+            "lr": epoch_lr,
             "loss_total": _mean_records(window_records, "loss_total"),
             "loss_physics": _mean_records(window_records, "loss_physics"),
             "loss_supervised": _mean_records(window_records, "loss_supervised"),
@@ -331,6 +336,7 @@ def train_static_topology_sequences(
             "window_losses": window_losses,
             "file_window_counts": file_window_counts,
         }
+        lr_scheduler.end_epoch(epoch_record["loss"])
         should_stop = config.loss_threshold is not None and epoch_record["loss"] < float(config.loss_threshold)
         if should_stop:
             epoch_record["stopped_early"] = True

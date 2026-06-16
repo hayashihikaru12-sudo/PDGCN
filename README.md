@@ -86,6 +86,7 @@ configs/pdgcn_train.example.json
 - `datasets[0].cache_dir`：该训练集共享的静态缓存目录。
 - `datasets[0].scale`：SI 无量纲化标尺与 PDE 系数派生参数。
 - `supervision`：FEM 温度监督配置，默认关闭；启用后 v1 使用 `teacher_forcing`。
+- `hyperparameters.training.lr_scheduler`：可选学习率调度，支持固定学习率、warmup+cosine 衰减和 plateau 自动降学习率。
 - `hyperparameters.training.resume_from_checkpoint`：分阶段训练时设为 `true`，可从已有 checkpoint 继续训练。
 
 静态缓存默认启用。缓存缺失时，训练入口会使用目录内排序后的第一个 HDF5 文件生成；缓存存在时直接复用。
@@ -155,7 +156,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\visualize_monitor.py --monitor
 4. 每个 HDF5 文件作为独立样本序列训练，不与前一个文件共享温度状态。
 5. 每个文件开始时重新初始化温度；若 `warmup_steps > 0`，先显式施加当前帧热源再使用无源 PD-GCN 做连续前向 warmup，不反向传播、不更新参数。
 6. 同一 run 内模型参数和优化器状态持续更新。
-7. 若启用 `resume_from_checkpoint`，训练入口会先加载已有模型权重；默认也恢复 Adam 状态，并把学习率重设为当前配置中的 `lr`。
+7. 若启用 `resume_from_checkpoint`，训练入口会先加载已有模型权重；默认也恢复 Adam 状态，并把学习率重设为当前配置中的 `lr`，再按当前阶段的 `lr_scheduler` 调度。
 8. epoch loss 统计为该 epoch 内所有文件所有 TBPTT 窗口损失的平均值；恢复训练时 epoch 编号从 checkpoint 的下一轮继续。
 9. 若启用 `supervision.enabled=true`，训练按 `supervision.mode` 选择 FEM 监督语义：`teacher_forcing` 使用 FEM 当前帧做单步监督，`rollout` 从窗口起点 FEM 温度初始化后自回归推进并逐帧对齐 FEM，`mixed` 同时计算两类监督。监督模式忽略 `warmup_steps` 对训练输入温度的影响。
 

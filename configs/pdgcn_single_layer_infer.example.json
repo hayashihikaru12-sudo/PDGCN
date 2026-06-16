@@ -3,7 +3,7 @@
   "single_layer_inference": {
     "output_path": "../runs/pdgcn/single_layer_prediction.h5",
     "dataset_index": 0,
-    "h5_path": "../case1_validTheta_50X50/case2_Q2_V10_dt0p05_F93_fem.h5",
+    "h5_path": "../case1_validTheta_50X50/case1_Q1p33333_V25_dt0p05_F84_fem.h5",
     "steps": null,
     "warmup_steps": 0,
     "mode": "both",

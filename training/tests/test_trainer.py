@@ -97,7 +97,30 @@ class TrainerTests(unittest.TestCase):
 
         self.assertEqual(len(history), 1)
         self.assertIn("loss", history[0])
+        self.assertIn("lr", history[0])
         self.assertNotEqual(float(before), float(model.delta.detach()))
+
+    def test_train_records_scheduled_learning_rate(self):
+        model = TrainableDeltaModel()
+        history = train(
+            model,
+            [make_graph()],
+            TrainConfig(
+                lr=0.1,
+                epochs=4,
+                tbptt_window=1,
+                warmup_steps=0,
+                lr_scheduler="warmup_cosine",
+                lr_warmup_epochs=2,
+                min_lr=0.01,
+            ),
+        )
+
+        lrs = [record["lr"] for record in history]
+        self.assertAlmostEqual(lrs[0], 0.055)
+        self.assertAlmostEqual(lrs[1], 0.1)
+        self.assertAlmostEqual(lrs[2], 0.055)
+        self.assertAlmostEqual(lrs[3], 0.01)
 
     def test_train_uses_model_pseudo_time_warmup_for_initial_temperature(self):
         """验证训练初温来自当前模型的伪时间自回归 warmup。"""

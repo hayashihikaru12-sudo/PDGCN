@@ -162,6 +162,9 @@ class RunConfigTests(unittest.TestCase):
                 },
                 "training": {
                     "lr": 0.001,
+                    "lr_scheduler": "warmup_cosine",
+                    "min_lr": 1e-5,
+                    "lr_warmup_epochs": 2,
                     "epochs": 3,
                     "tbptt_window": 2,
                     "warmup_steps": 1,
@@ -191,6 +194,9 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.model["lambda_outflow"], 0.0)
         self.assertEqual(config.model["residual_time_scheme"], "backward")
         self.assertEqual(config.training.device, "cpu")
+        self.assertEqual(config.training.lr_scheduler, "warmup_cosine")
+        self.assertAlmostEqual(config.training.min_lr, 1e-5)
+        self.assertEqual(config.training.lr_warmup_epochs, 2)
         self.assertFalse(config.supervision.enabled)
         self.assertEqual(config.inference.num_layers, 4)
         self.assertAlmostEqual(config.inference.layer_spacing, 0.00015)

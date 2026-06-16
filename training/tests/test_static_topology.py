@@ -487,6 +487,35 @@ class StaticTopologyTests(unittest.TestCase):
         self.assertEqual([record["epoch"] for record in records], [0, 1])
         self.assertTrue(all(torch.isfinite(torch.tensor(record["loss"])) for record in records))
 
+    def test_static_train_records_scheduled_learning_rate(self):
+        build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
+        reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, scale_params=self.scale, pin_memory=False)
+        try:
+            static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
+            builder = GpuFeatureBuilder(static_state, self.scale)
+            history = train_static_topology(
+                TrainableDeltaModel(),
+                reader,
+                static_state,
+                builder,
+                TrainConfig(
+                    lr=0.01,
+                    epochs=2,
+                    tbptt_window=2,
+                    warmup_steps=0,
+                    device="cpu",
+                    lr_scheduler="warmup_cosine",
+                    lr_warmup_epochs=2,
+                    min_lr=0.001,
+                ),
+            )
+        finally:
+            reader.close()
+
+        self.assertEqual(len(history), 2)
+        self.assertAlmostEqual(history[0]["lr"], 0.0055)
+        self.assertAlmostEqual(history[1]["lr"], 0.01)
+
     def test_static_rollout_can_start_from_model_pseudo_time_warmup(self):
         """验证固定拓扑推理可显式启用模型伪时间 warmup。"""
 

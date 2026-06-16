@@ -262,6 +262,11 @@ residual_transport =
 ```json
 "training": {
   "lr": 0.0001,
+  "lr_scheduler": "warmup_cosine",
+  "min_lr": 0.000001,
+  "lr_warmup_epochs": 30,
+  "lr_patience": 30,
+  "lr_factor": 0.5,
   "epochs": 1000,
   "tbptt_window": 5,
   "warmup_steps": 30,
@@ -277,6 +282,11 @@ residual_transport =
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `lr` | number | Adam 学习率。 |
+| `lr_scheduler` | string | 学习率调度策略。支持 `"none"`、`"warmup_cosine"` 和 `"plateau"`；默认 `"none"` 保持固定学习率。 |
+| `min_lr` | number | 调度器允许的最小学习率。`warmup_cosine` 会从 warmup 后的 `lr` 逐渐衰减到该值；`plateau` 降学习率时不会低于该值。 |
+| `lr_warmup_epochs` | integer | `warmup_cosine` 的线性学习率 warmup epoch 数。注意它不同于温度场伪时间 `warmup_steps`。 |
+| `lr_patience` | integer | `plateau` 策略中 loss 连续多少个 epoch 未改善后触发降学习率。 |
+| `lr_factor` | number | `plateau` 触发时的学习率缩放因子，新学习率为 `max(current_lr * lr_factor, min_lr)`。 |
 | `epochs` | integer | 最大训练轮数。 |
 | `tbptt_window` | integer | 截断反向传播的时间窗口长度。窗口越大，跨时间步梯度越完整，但显存消耗越高。 |
 | `warmup_steps` | integer | 每个 HDF5 文件开始训练前的伪时间 warmup 步数。`0` 表示直接从冷态初温开始。 |
@@ -292,6 +302,8 @@ residual_transport =
 - 一个 HDF5 文件是一条独立序列，文件之间不继承温度状态。
 - 同一 HDF5 文件内，温度状态会随 frame 自回归推进。
 - 每个文件开始时先初始化温度；若 `warmup_steps > 0`，会用当前模型前向传播若干步生成伪初温，不反向传播、不更新参数。
+- 若 `lr_scheduler = "warmup_cosine"`，训练入口会在每个 epoch 开始时设置本轮学习率；history 和 monitor 会记录该 epoch 实际使用的 `lr`。
+- 若 `lr_scheduler = "plateau"`，训练入口会根据 epoch 平均 loss 在 epoch 结束后调整下一轮学习率。
 - epoch loss 是该 epoch 内所有文件、所有 TBPTT 窗口损失的平均值。
 - 分阶段训练时，将 `resume_from_checkpoint` 设为 `true` 即可从上一阶段 checkpoint 继续；新阶段的 epoch 编号会从已加载 checkpoint 的下一轮开始，历史记录也会合并保存。
 

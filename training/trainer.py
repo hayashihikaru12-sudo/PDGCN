@@ -4,6 +4,7 @@ import torch
 
 from .config import TrainConfig
 from .graph_utils import graph_to_device
+from .lr_scheduler import build_lr_scheduler, optimizer_lr
 from .tbptt import initial_temperature_from_graph_seq, iter_tbptt_windows, train_tbptt_window
 from .warmup import pseudo_time_relax_initial_temperature
 
@@ -33,7 +34,10 @@ def train(model, graph_seq: Sequence, config: TrainConfig, optimizer: Optional[t
         optimizer = _build_optimizer(model, config)
 
     history = []
+    lr_scheduler = build_lr_scheduler(optimizer, config)
     for epoch in range(int(config.epochs)):
+        lr_scheduler.begin_epoch(epoch)
+        epoch_lr = optimizer_lr(optimizer)
         model.train()
         if int(config.warmup_steps) > 0:
             current_temperature = pseudo_time_relax_initial_temperature(
@@ -57,7 +61,8 @@ def train(model, graph_seq: Sequence, config: TrainConfig, optimizer: Optional[t
             current_temperature = final_temperature.detach()
 
         mean_loss = sum(epoch_losses) / max(len(epoch_losses), 1)
-        epoch_record = {"epoch": epoch, "loss": mean_loss, "window_losses": epoch_losses}
+        lr_scheduler.end_epoch(mean_loss)
+        epoch_record = {"epoch": epoch, "loss": mean_loss, "lr": epoch_lr, "window_losses": epoch_losses}
         history.append(epoch_record)
         if config.loss_threshold is not None and mean_loss < float(config.loss_threshold):
             epoch_record["stopped_early"] = True
