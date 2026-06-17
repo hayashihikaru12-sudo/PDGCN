@@ -215,6 +215,8 @@ def train_static_topology(
     monitor_frame_index: Optional[int] = None,
     start_epoch: int = 0,
     supervision_config=None,
+    lr_scheduler_state: Optional[dict] = None,
+    _lr_scheduler_state_out: Optional[list] = None,
 ):
     """使用固定拓扑流式数据管线训练 PD-GCN。
 
@@ -244,6 +246,8 @@ def train_static_topology(
         monitor_frame_index=monitor_frame_index,
         start_epoch=start_epoch,
         supervision_config=supervision_config,
+        lr_scheduler_state=lr_scheduler_state,
+        _lr_scheduler_state_out=_lr_scheduler_state_out,
     )
 
 
@@ -260,6 +264,8 @@ def train_static_topology_sequences(
     monitor_frame_index: Optional[int] = None,
     start_epoch: int = 0,
     supervision_config=None,
+    lr_scheduler_state: Optional[dict] = None,
+    _lr_scheduler_state_out: Optional[list] = None,
 ):
     """按独立 HDF5 序列训练固定拓扑 PD-GCN。"""
 
@@ -277,8 +283,11 @@ def train_static_topology_sequences(
     history = []
     start_epoch = int(start_epoch)
     lr_scheduler = build_lr_scheduler(optimizer, config)
+    if lr_scheduler_state is not None:
+        lr_scheduler.load_state_dict(lr_scheduler_state)
+    _lr_state_out = _lr_scheduler_state_out if _lr_scheduler_state_out is not None else None
     for epoch in range(start_epoch, start_epoch + int(config.epochs)):
-        lr_scheduler.begin_epoch(epoch - start_epoch)
+        lr_scheduler.begin_epoch(epoch)
         epoch_lr = optimizer_lr(optimizer)
         model.train()
         window_records = []
@@ -337,6 +346,8 @@ def train_static_topology_sequences(
             "file_window_counts": file_window_counts,
         }
         lr_scheduler.end_epoch(epoch_record["loss"])
+        if _lr_state_out is not None:
+            _lr_state_out[:] = [lr_scheduler.state_dict()]
         should_stop = config.loss_threshold is not None and epoch_record["loss"] < float(config.loss_threshold)
         if should_stop:
             epoch_record["stopped_early"] = True

@@ -92,6 +92,8 @@ def run_training_from_config(config_path):
         device=static_state.device,
     )
     start_epoch = int(resume_info["next_epoch"])
+    lr_scheduler_state_in = resume_info.get("lr_scheduler_state")
+    lr_scheduler_state_holder = []
 
     readers = [
         HDF5FrameReader(
@@ -141,6 +143,7 @@ def run_training_from_config(config_path):
             train_config=train_config,
             history=completed_history,
             resume_info=resume_info,
+            lr_scheduler_state=lr_scheduler_state_holder[0] if lr_scheduler_state_holder else None,
         )
 
     def epoch_callback(epoch_record):
@@ -161,6 +164,8 @@ def run_training_from_config(config_path):
             monitor_frame_index=monitor_frame_index,
             start_epoch=start_epoch,
             supervision_config=run_config.supervision,
+            lr_scheduler_state=lr_scheduler_state_in,
+            _lr_scheduler_state_out=lr_scheduler_state_holder,
         )
     except KeyboardInterrupt:
         save_latest_epoch_checkpoint()
@@ -183,6 +188,7 @@ def run_training_from_config(config_path):
         train_config=train_config,
         history=completed_history,
         resume_info=resume_info,
+        lr_scheduler_state=lr_scheduler_state_holder[0] if lr_scheduler_state_holder else None,
     )
     return {
         "history": completed_history,
@@ -211,7 +217,11 @@ def _save_training_artifacts(
     train_config,
     history,
     resume_info=None,
+    lr_scheduler_state=None,
 ):
+    resume_info = dict(resume_info or {"enabled": False})
+    if lr_scheduler_state is not None:
+        resume_info["lr_scheduler_state"] = lr_scheduler_state
     metadata = {
         "run_config": run_config_to_dict(run_config),
         "scale_params": asdict(scale_params),
@@ -220,7 +230,7 @@ def _save_training_artifacts(
         "model_config": asdict(model_config),
         "train_config": asdict(train_config),
         "history": history,
-        "resume": resume_info or {"enabled": False},
+        "resume": resume_info,
     }
     save_checkpoint(
         model,
@@ -260,19 +270,20 @@ def _maybe_resume_training(model, optimizer, checkpoint_path, *, base_dir, train
 
     optimizer_to_load = optimizer if bool(train_config.resume_optimizer_state) else None
     checkpoint = load_checkpoint(model, optimizer_to_load, resume_path, map_location=device)
-    for group in optimizer.param_groups:
-        group["lr"] = float(train_config.lr)
 
     metadata = checkpoint.get("metadata") or {}
     previous_history = _checkpoint_history(metadata)
     loaded_epoch = checkpoint.get("epoch")
     next_epoch = _next_epoch_from_checkpoint(loaded_epoch, previous_history)
+    resume_meta = metadata.get("resume") if isinstance(metadata, dict) else None
+    lr_scheduler_state = resume_meta.get("lr_scheduler_state") if isinstance(resume_meta, dict) else None
     return {
         "enabled": True,
         "checkpoint_path": str(resume_path),
         "loaded_epoch": int(loaded_epoch) if loaded_epoch is not None else None,
         "next_epoch": int(next_epoch),
         "optimizer_state_loaded": optimizer_to_load is not None and checkpoint.get("optimizer") is not None,
+        "lr_scheduler_state": lr_scheduler_state,
     }, previous_history
 
 

@@ -46,6 +46,12 @@ class NullLRScheduler:
     def end_epoch(self, metric: float) -> float:
         return optimizer_lr(self.optimizer)
 
+    def state_dict(self):
+        return {}
+
+    def load_state_dict(self, state: dict):
+        pass
+
 
 class WarmupCosineLRScheduler:
     def __init__(self, optimizer, *, base_lr: float, min_lr: float, total_epochs: int, warmup_epochs: int):
@@ -82,6 +88,12 @@ class WarmupCosineLRScheduler:
         cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
         return self.min_lr + (self.base_lr - self.min_lr) * cosine
 
+    def state_dict(self):
+        return {}
+
+    def load_state_dict(self, state: dict):
+        pass
+
 
 class PlateauLRScheduler:
     def __init__(self, optimizer, *, min_lr: float, patience: int, factor: float):
@@ -114,3 +126,10 @@ class PlateauLRScheduler:
                 _set_optimizer_lr(self.optimizer, next_lr)
             self.bad_epochs = 0
         return optimizer_lr(self.optimizer)
+
+    def state_dict(self):
+        return {"best": self.best, "bad_epochs": self.bad_epochs}
+
+    def load_state_dict(self, state: dict):
+        self.best = state.get("best")
+        self.bad_epochs = state.get("bad_epochs", 0)
