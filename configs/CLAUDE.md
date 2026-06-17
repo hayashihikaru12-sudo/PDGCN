@@ -16,6 +16,6 @@
 - `hyperparameters.physics_loss` 控制无源输运残差、出流边界和平滑正则等物理损失项。
 - `hyperparameters.training` 控制学习率、epoch、TBPTT、warmup、梯度裁剪和设备。
 
-`datasets[].scale.Q0` 表示表面热流标尺 `W/m^2`。训练入口会派生 `source_coefficient`，显式热源模块用它把 `q_surface*` 转换为顶层温升；热源不再进入 PD-GCN 节点特征。
+`datasets[].scale.Q0` 表示表面热流标尺 `W/m^2`。训练入口会派生 `source_coefficient`，显式热源模块用它把 `q_surface*` 转换为顶层温升；默认节点特征不包含热源，若在 `hyperparameters.model` 中启用 `include_q_in_features` / `include_delta_t_source_in_features`，则追加 `q*` / 当前步 `ΔT_Q*` 作为 PD-GCN 输入。
 
 `training/train_entry.py` 读取本目录配置，并通过 `training/run_config.py` 转换为训练所需的 dataclass 配置对象。

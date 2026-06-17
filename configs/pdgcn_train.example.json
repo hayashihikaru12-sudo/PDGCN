@@ -1,7 +1,7 @@
 {
   "monitoring": { "enabled": true },
   "supervision": {
-    "enabled": true,
+    "enabled": false,
     "temperature_dataset": "fem/temperature",
     "valid_mask_dataset": "fem/valid_mask",
     "lambda_temperature": 0.3,
@@ -16,7 +16,7 @@
   "datasets": [
     {
       "name": "case1",
-      "h5_dir": "../../autodl-tmp/case1_validTheta_50X50",
+      "h5_dir": "../../autodl-tmp/case_superrise_compressed",
       "cache_dir": "../runs/pdgcn/cache/case1",
       "scale": {
         "L0": 0.051764991760253906,
@@ -36,6 +36,8 @@
     "model": {
       "hidden_size": 128,
       "message_passing_num": 4,
+      "include_q_in_features": true,
+      "include_delta_t_source_in_features": true,
       "gamma_upwind": 0.8,
       "dropout": 0.0,
       "layer_norm": true
@@ -50,18 +52,18 @@
     "training": {
       "lr": 0.0001,
       "lr_scheduler": "warmup_cosine",
-      "min_lr": 0.000001,
+      "min_lr": 0.0000001,
       "lr_warmup_epochs": 30,
-      "lr_patience": 30,
+      "lr_patience": 10,
       "lr_factor": 0.5,
-      "epochs": 1000,
+      "epochs": 800,
       "tbptt_window": 5,
       "warmup_steps": 20,
       "grad_clip_norm": null,
-      "resume_from_checkpoint": true,
+      "resume_from_checkpoint": false,
       "resume_checkpoint_path": null,
-      "resume_optimizer_state": true,
-      "loss_threshold": 1.0,
+      "resume_optimizer_state": false,
+      "loss_threshold": 0.1,
       "device": null
     }
   }

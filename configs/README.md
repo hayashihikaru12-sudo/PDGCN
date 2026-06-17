@@ -77,7 +77,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 T_fem* = (T_fem - T_amb) / delta_T0
 ```
 
-FEM 温度不会进入额外节点特征通道；PDGCN 节点输入仍为 `[x*, y*, z*, fx, fy, fz, T*]`。
+FEM 温度不会进入额外节点特征通道。PDGCN 默认节点输入仍为 `[x*, y*, z*, fx, fy, fz, T*]`；若模型配置启用热源节点特征，FEM 温度只替换其中的 `T*` 列。
 
 ## `outputs`
 
@@ -190,6 +190,8 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 | `hidden_size` | integer | Encoder、Processor 和 Decoder 的隐空间维度。值越大表达能力越强，但显存和训练时间也会增加。 |
 | `message_passing_num` | integer | 消息传递层数。增加层数可以扩大图上的信息传播范围，但也更容易过平滑或训练变慢。 |
 | `gamma_upwind` | number | 上风项权重相关参数，用于加强流向方向上的信息传播偏置。 |
+| `include_q_in_features` | boolean | 是否把无量纲表面热流 `q*` 追加到节点特征，默认 `false`。 |
+| `include_delta_t_source_in_features` | boolean | 是否把当前步显式源温升 `ΔT_Q*` 追加到节点特征，默认 `false`。 |
 | `dropout` | number | MLP dropout 比例。当前示例为 `0.0`，表示不使用 dropout。 |
 | `layer_norm` | boolean | 是否在 MLP 中使用 LayerNorm。通常有助于稳定训练。 |
 
@@ -197,7 +199,7 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 
 | 项 | 维度 | 说明 |
 | --- | --- | --- |
-| 节点特征 | `7` | `[x*, y*, z*, fx, fy, fz, T*]`。热源不进入节点特征。 |
+| 节点特征 | `7` / `8` / `9` | 默认 `[x*, y*, z*, fx, fy, fz, T*]`；开启两个热源开关后为 `[x*, y*, z*, fx, fy, fz, T*, q*, ΔT_Q*]`。 |
 | 边特征 | `7` | `[dx*, dy*, dz*, d*, cos_theta, cos_phi, cos_phi_sq]`，其中 `cos_theta` 为接收节点切向速度方向与边方向的夹角余弦。 |
 | 全局特征 | `1` | 无量纲扫描速度大小 `v_scan / v0`。 |
 | 模型输出 | `1` | 无量纲温度增量 `delta_T*`。 |
@@ -253,7 +255,7 @@ residual_transport =
   - inverse_pe * diffusion
 ```
 
-训练时间推进采用算子分裂：先用显式表面热源得到 `T_source_applied*`，再把该温度输入无源 PD-GCN。PDE residual 的瞬态项只约束 PD-GCN 负责的无源面内输运增量。当 `residual_time_scheme = "explicit"` 时，`convection` 和 `diffusion` 使用 `T_source_applied*` 评估；当为 `"backward"` 时使用 `T_next*` 评估。
+训练时间推进采用算子分裂：先用显式表面热源得到 `T_source_applied*`，再把该温度输入无源 PD-GCN。若启用 `include_delta_t_source_in_features`，同一步的 `ΔT_Q*` 会写入节点特征；若启用 `include_q_in_features`，节点特征中也包含 `q*`。PDE residual 的瞬态项只约束 PD-GCN 负责的无源面内输运增量。当 `residual_time_scheme = "explicit"` 时，`convection` 和 `diffusion` 使用 `T_source_applied*` 评估；当为 `"backward"` 时使用 `T_next*` 评估。
 
 ## `hyperparameters.training`
 
@@ -383,7 +385,7 @@ T_inplane = T_src + delta_T_inplane
 T_next = implicit_fdm_step(T_inplane)
 ```
 
-其中 `delta_T_source` 只由显式表面热源模块作用于顶层；`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
+其中 `delta_T_source` 只由显式表面热源模块作用于顶层；若启用热源节点特征，多层图中也只有顶层保留 `q*` 和 `ΔT_Q*`，非顶层这两列置零。`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
 
 ## 调参注意事项
 

@@ -34,8 +34,12 @@ class EdgeBlock(nn.Module):
             layer_norm=False,
             dropout=config.dropout,
         )
+        # 可学习的迎风门控系数，初始化为配置中的 gamma_upwind 值。
+        # 设为 nn.Parameter 后梯度可直接优化，训练会自适应调整方向选择性强度。
+        self.gamma_upwind = nn.Parameter(torch.tensor(float(config.gamma_upwind)))
         self.last_alpha = None
         self.last_aniso_gate = None
+        self.last_gamma = None
 
     def forward(self, graph, raw_edge_attr):
         """计算带迎风和各向异性门控的边消息。
@@ -80,11 +84,15 @@ class EdgeBlock(nn.Module):
 
         返回:
             迎风权重张量，形状 ``[E, 1]``，数值为
-            ``ReLU(1 + gamma_upwind * cos_theta)``。
+            ``ReLU(1 + gamma_upwind * cos_theta)``，
+            其中 ``gamma_upwind`` 是可学习的 ``nn.Parameter``。
         """
 
         cos_theta = raw_edge_attr[:, 4:5]
-        return F.relu(1.0 + float(self.config.gamma_upwind) * cos_theta)
+        gamma = self.gamma_upwind
+        alpha = F.relu(1.0 + gamma * cos_theta)
+        self.last_gamma = gamma.detach()
+        return alpha
 
     def _aniso_gate(self, raw_edge_attr, message):
         """根据纤维方向相关边特征计算微观各向异性门控。

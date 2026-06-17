@@ -16,13 +16,13 @@ T_next = T_current + delta_T_source + delta_T_inplane + delta_T_thickness
 - `delta_T_inplane`：由无源 PD-GCN 计算，只负责曲面内对流、曲面扩散和纤维各向异性扩散。
 - `delta_T_thickness`：由厚度方向 Backward Euler 隐式 1D FDM 计算，负责层间导热和底层恒温边界。
 
-PD-GCN 节点输入固定为：
+PD-GCN 节点输入默认兼容为：
 
 ```text
 [x*, y*, z*, fx, fy, fz, T*]
 ```
 
-热源 `dynamic/Q` 不进入节点特征；它按表面热流 `q''` 读取，转换为 `W/m^2` 后由显式表面热源模块处理。
+若配置 `include_q_in_features=true` 和/或 `include_delta_t_source_in_features=true`，节点特征会在 `T*` 后追加 `q*` 和/或当前步 `ΔT_Q*`。热源 `dynamic/Q` 始终按表面热流 `q''` 读取，转换为 `W/m^2` 后由显式表面热源模块计算温升；新增热源节点特征只作为 PD-GCN 输入信息，不重新进入 PDE residual 源项。
 
 ## FEM 温度监督
 
@@ -51,7 +51,7 @@ $$
 - `teacher_forcing`：输入温度取 $T_{\mathrm{FEM},n}^*$，预测 $T_{\mathrm{pred},n+1}^*$ 与 $T_{\mathrm{FEM},n+1}^*$ 计算 masked MSE。
 - `rollout`：每个监督窗口从 FEM 起点帧初始化，窗口内使用模型预测自回归推进，并逐步对齐 FEM 温度场。
 - `mixed`：同时计算 teacher-forcing 单步监督和 rollout 路径监督。
-- FEM 温度不进入 PD-GCN 额外节点特征，节点输入维度仍为 7。
+- FEM 温度不进入 PD-GCN 额外节点特征；监督路径只替换节点输入中的 `T*` 列。若启用热源节点特征，`q*` 和 `ΔT_Q*` 仍来自 `dynamic/Q` 与显式热源模块。
 
 监督损失为：
 

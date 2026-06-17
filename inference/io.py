@@ -90,6 +90,7 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
                 device=raw.xyz.device,
                 dtype=raw.xyz.dtype,
             ),
+            model_config=model.config,
         )
 
     metadata = {

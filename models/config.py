@@ -1,9 +1,10 @@
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass(frozen=True)
 class PDGCNConfig:
-    node_input_size: int = 7
+    node_input_size: Optional[int] = None
     edge_input_size: int = 7
     global_input_size: int = 1
     hidden_size: int = 64
@@ -13,6 +14,8 @@ class PDGCNConfig:
     gamma_upwind: float = 0.8
     use_aniso_gate: bool = True
     include_global: bool = True
+    include_q_in_features: bool = False
+    include_delta_t_source_in_features: bool = False
 
     dropout: float = 0.0
     layer_norm: bool = True
@@ -56,6 +59,22 @@ class PDGCNConfig:
         返回:
             None。若维度或系数非法则抛出 ``ValueError``。
         """
+
+        expected_node_input_size = (
+            7
+            + int(bool(self.include_q_in_features))
+            + int(bool(self.include_delta_t_source_in_features))
+        )
+        if self.node_input_size is None:
+            object.__setattr__(self, "node_input_size", expected_node_input_size)
+        elif int(self.node_input_size) != expected_node_input_size:
+            raise ValueError(
+                "node_input_size must match enabled node feature channels: "
+                f"expected {expected_node_input_size} for "
+                f"include_q_in_features={self.include_q_in_features} and "
+                "include_delta_t_source_in_features="
+                f"{self.include_delta_t_source_in_features}, got {self.node_input_size}."
+            )
 
         positive_ints = (
             "node_input_size",

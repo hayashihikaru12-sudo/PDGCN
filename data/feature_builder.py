@@ -35,25 +35,57 @@ def build_node_type(num_nodes: int, boundary_nodes, *, device=None) -> torch.Ten
     return node_type
 
 
-def build_node_features(nodes_star, fibers, temperature_star) -> torch.Tensor:
+def build_node_features(
+    nodes_star,
+    fibers,
+    temperature_star,
+    *,
+    q_surface_star=None,
+    delta_t_source_star=None,
+    model_config=None,
+) -> torch.Tensor:
     """拼接 PD-GCN 节点输入特征。
 
     参数:
         nodes_star: 无量纲节点坐标，形状 ``[N, 3]``。
         fibers: 节点纤维方向，形状 ``[N, 3]``，函数内部会归一化为单位向量。
         temperature_star: 无量纲节点温度，形状 ``[N]`` 或 ``[N, 1]``。
+        q_surface_star: 可选无量纲表面热流，形状 ``[N]`` 或 ``[N, 1]``。
+        delta_t_source_star: 可选当前步显式热源温升，形状 ``[N]`` 或 ``[N, 1]``。
+        model_config: 可选模型配置，用于决定是否追加热源特征。
     返回:
-        节点特征张量，形状 ``[N, 7]``，列为
-        ``[x*, y*, z*, fx, fy, fz, T*]``。
+        节点特征张量，默认形状 ``[N, 7]``；开启热源特征后追加
+        ``q*`` 和/或 ``delta_T_Q*``。
     """
 
     fibers_unit = _normalize_vectors(fibers)
+    num_nodes = nodes_star.shape[0]
+    features = [
+        nodes_star,
+        fibers_unit,
+        temperature_star.reshape(num_nodes, 1),
+    ]
+    if bool(getattr(model_config, "include_q_in_features", False)):
+        if q_surface_star is None:
+            q_feature = torch.zeros(num_nodes, 1, device=nodes_star.device, dtype=nodes_star.dtype)
+        else:
+            q_feature = torch.as_tensor(q_surface_star, device=nodes_star.device, dtype=nodes_star.dtype).reshape(
+                num_nodes,
+                1,
+            )
+        features.append(q_feature)
+    if bool(getattr(model_config, "include_delta_t_source_in_features", False)):
+        if delta_t_source_star is None:
+            delta_feature = torch.zeros(num_nodes, 1, device=nodes_star.device, dtype=nodes_star.dtype)
+        else:
+            delta_feature = torch.as_tensor(
+                delta_t_source_star,
+                device=nodes_star.device,
+                dtype=nodes_star.dtype,
+            ).reshape(num_nodes, 1)
+        features.append(delta_feature)
     return torch.cat(
-        [
-            nodes_star,
-            fibers_unit,
-            temperature_star.reshape(nodes_star.shape[0], 1),
-        ],
+        features,
         dim=-1,
     )
 
@@ -112,6 +144,7 @@ def build_graph(
     scan_velocity,
     initial_temperature: Optional[torch.Tensor] = None,
     relaxation_steps: int = 20,
+    model_config=None,
 ) -> Data:
     """将单帧原始数据转换为 PyG ``Data`` 图对象。
 
@@ -126,7 +159,8 @@ def build_graph(
 
     返回:
         ``torch_geometric.data.Data`` 图对象，包含：
-        ``x`` 形状 ``[N, 7]``、``edge_index`` 形状 ``[2, E]``、
+        ``x`` 默认形状 ``[N, 7]``，开启热源节点特征后可为 ``[N, 8]`` 或 ``[N, 9]``；
+        ``edge_index`` 形状 ``[2, E]``、
         ``edge_attr`` 形状 ``[E, 7]``、``global_attr`` 形状 ``[1]``，
         以及边界节点索引属性。
     """
@@ -150,7 +184,13 @@ def build_graph(
         temperature = initial_temperature.to(device=device, dtype=dtype)
         temperature_star = temperature_to_dimensionless(temperature.reshape(raw_data.xyz.shape[0], 1), scale_params)
 
-    node_features = build_node_features(nodes_star, raw_data.fiber, temperature_star)
+    node_features = build_node_features(
+        nodes_star,
+        raw_data.fiber,
+        temperature_star,
+        q_surface_star=q_star,
+        model_config=model_config,
+    )
     edge_features = build_edge_features(
         nodes_star,
         raw_data.edge_index,
@@ -177,11 +217,32 @@ def build_graph(
     graph.num_frames = raw_data.num_frames
     graph.normal = raw_data.normal
     graph.velocity_direction = raw_data.velocity_direction
+    _attach_node_feature_layout(graph, model_config)
     graph.upwind_nodes = raw_data.boundary_nodes["upwind"]
     graph.downwind_nodes = raw_data.boundary_nodes["downwind"]
     graph.side_nodes = raw_data.boundary_nodes["side"]
 
     return graph
+
+
+def _attach_node_feature_layout(graph: Data, model_config):
+    q_index, delta_t_source_index = _node_feature_indices_from_config(model_config)
+    graph.q_feature_index = int(q_index)
+    graph.delta_t_source_feature_index = int(delta_t_source_index)
+    graph.include_q_in_features = q_index >= 0
+    graph.include_delta_t_source_in_features = delta_t_source_index >= 0
+
+
+def _node_feature_indices_from_config(model_config):
+    next_index = 7
+    q_index = -1
+    delta_t_source_index = -1
+    if bool(getattr(model_config, "include_q_in_features", False)):
+        q_index = next_index
+        next_index += 1
+    if bool(getattr(model_config, "include_delta_t_source_in_features", False)):
+        delta_t_source_index = next_index
+    return q_index, delta_t_source_index
 
 
 def _normalize_vectors(vectors, eps: float = 1e-12):

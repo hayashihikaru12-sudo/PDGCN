@@ -81,7 +81,7 @@ def run_training_from_config(config_path):
     device = train_config.device
     static_state = StaticGraphState.from_cache(cache_dir, device=device)
     model = PDGCN(model_config).to(static_state.device)
-    feature_builder = GpuFeatureBuilder(static_state, scale_params)
+    feature_builder = GpuFeatureBuilder(static_state, scale_params, model_config=model.config)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(train_config.lr))
     resume_info, previous_history = _maybe_resume_training(
         model,

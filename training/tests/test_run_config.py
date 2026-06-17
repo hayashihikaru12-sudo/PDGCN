@@ -116,6 +116,24 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(config.thermal_loss_base_temperature_star, 0.0)
         self.assertEqual(config.residual_time_scheme, "backward")
 
+    def test_pdgcn_config_derives_node_input_size_from_heat_source_feature_flags(self):
+        default_config = PDGCNConfig()
+        self.assertEqual(default_config.node_input_size, 7)
+        self.assertEqual(default_config.encoder_node_input_size, 8)
+
+        config = PDGCNConfig(
+            include_q_in_features=True,
+            include_delta_t_source_in_features=True,
+        )
+        self.assertEqual(config.node_input_size, 9)
+        self.assertEqual(config.encoder_node_input_size, 10)
+
+        delta_only = PDGCNConfig(include_delta_t_source_in_features=True)
+        self.assertEqual(delta_only.node_input_size, 8)
+
+        with self.assertRaisesRegex(ValueError, "node_input_size"):
+            PDGCNConfig(node_input_size=7, include_q_in_features=True)
+
     def test_pdgcn_config_from_scale_requires_physics_inputs_and_dt(self):
         scale = ScaleParams(L0=2.0, v0=4.0, T_amb=300.0, delta_T0=10.0, Q0=5.0)
 

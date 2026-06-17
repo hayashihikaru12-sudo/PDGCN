@@ -35,12 +35,13 @@ def pseudo_time_relax_initial_temperature(model, graph, warmup_steps: int):
     model.eval()
     try:
         for _ in range(int(warmup_steps)):
+            delta_t_source = graph_explicit_source_delta(graph, model.config)
             source_temperature = apply_dirichlet_boundary(
-                current_temperature + graph_explicit_source_delta(graph, model.config),
+                current_temperature + delta_t_source,
                 graph_boundary_nodes(graph),
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            graph_step = clone_graph_with_temperature(graph, source_temperature)
+            graph_step = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_t_source)
             delta_temperature = model(graph_step)
             current_temperature = apply_dirichlet_boundary(
                 source_temperature + delta_temperature,

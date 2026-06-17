@@ -139,7 +139,7 @@ def run_single_layer_inference_from_config(
         fem_temperature_dataset=inference_config.fem_temperature_dataset,
         fem_valid_mask_dataset=inference_config.fem_valid_mask_dataset,
     ) as frame_reader:
-        feature_builder = GpuFeatureBuilder(static_state, scale_params)
+        feature_builder = GpuFeatureBuilder(static_state, scale_params, model_config=model.config)
         timing_summary = write_single_layer_hdf5(
             selected_output,
             model=model,
@@ -365,12 +365,13 @@ def rollout_single_layer_static(
             step_start = time.perf_counter()
             node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
             graph = feature_builder.build(node_base_cpu, global_cpu, current_temperature)
+            delta_t_source = graph_explicit_source_delta(graph, model.config)
             source_temperature = apply_dirichlet_boundary(
-                current_temperature + graph_explicit_source_delta(graph, model.config),
+                current_temperature + delta_t_source,
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            graph = clone_graph_with_temperature(graph, source_temperature)
+            graph = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_t_source)
             next_temperature = apply_dirichlet_boundary(
                 source_temperature + model(graph),
                 static_state.boundary_nodes,
@@ -618,12 +619,13 @@ def _write_teacher_forcing_group(
             fem_next = _read_fem_temperature_star(frame_reader, frame_idx + 1, feature_builder, scale_params)
             node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
             graph = feature_builder.build(node_base_cpu, global_cpu, fem_current)
+            delta_t_source = graph_explicit_source_delta(graph, model.config)
             source_temperature = apply_dirichlet_boundary(
-                fem_current + graph_explicit_source_delta(graph, model.config),
+                fem_current + delta_t_source,
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            graph = clone_graph_with_temperature(graph, source_temperature)
+            graph = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_t_source)
             next_temperature = apply_dirichlet_boundary(
                 source_temperature + model(graph),
                 static_state.boundary_nodes,

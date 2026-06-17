@@ -14,13 +14,13 @@ T_next = T_current + delta_T_source + delta_T_inplane + delta_T_thickness
 - `delta_T_inplane`：由无源 PD-GCN 计算，只负责曲面内对流、曲面扩散和纤维各向异性扩散。
 - `delta_T_thickness`：由厚度方向 Backward Euler 隐式 1D FDM 计算，负责层间导热和底层恒温边界。
 
-PD-GCN 节点输入固定为：
+PD-GCN 节点输入默认兼容为：
 
 ```text
 [x*, y*, z*, fx, fy, fz, T*]
 ```
 
-热源 `dynamic/Q` 不进入节点特征；它按表面热流 `q''` 读取，转换为 `W/m^2` 后由显式表面热源模块处理。
+若配置 `include_q_in_features=true` 和/或 `include_delta_t_source_in_features=true`，节点特征会在 `T*` 后追加 `q*` 和/或当前步 `ΔT_Q*`。热源 `dynamic/Q` 始终按表面热流 `q''` 读取，转换为 `W/m^2` 后由显式表面热源模块计算温升；新增热源节点特征只作为 PD-GCN 输入信息，不重新进入 PDE residual 源项。
 
 ## FEM 温度监督
 
@@ -50,7 +50,7 @@ PD-GCN 节点输入固定为：
 
   转为无量纲温度。
 - `fem/temperature_unit` 可为 `degC`、`C` 或 `K`；代码只校验元数据，不自动转换温标。
-- FEM 温度只作为监督标签，不作为 PD-GCN 节点特征。
+- FEM 温度只作为监督标签，不作为 PD-GCN 额外节点特征；监督路径只替换节点输入中的 `T*` 列。
 - 监督启用时训练 transition 为 `n = 0 ... T-2`，输入温度取 `T_FEM,n*`，不使用 `warmup_steps` 生成训练输入。
 
 监督损失为：

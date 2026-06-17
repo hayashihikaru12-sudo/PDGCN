@@ -48,12 +48,13 @@ def rollout_window(model, window: Sequence, initial_temperature_star, *, return_
     source_temperatures = []
     current_temperature = initial_temperature_star
     for graph in window:
+        delta_t_source = graph_explicit_source_delta(graph, model.config)
         source_temperature = apply_dirichlet_boundary(
-            current_temperature + graph_explicit_source_delta(graph, model.config),
+            current_temperature + delta_t_source,
             graph_boundary_nodes(graph),
             value=getattr(model.config, "dirichlet_temperature_star", 0.0),
         )
-        graph_step = clone_graph_with_temperature(graph, source_temperature)
+        graph_step = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_t_source)
         delta_temperature = model(graph_step)
         next_temperature = source_temperature + delta_temperature
         next_temperature = apply_dirichlet_boundary(

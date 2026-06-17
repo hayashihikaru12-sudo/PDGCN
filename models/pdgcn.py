@@ -28,8 +28,8 @@ class PDGCN(nn.Module):
 
         参数:
             graph: ``torch_geometric.data.Data`` 图对象，需包含 ``x`` 形状
-                ``[N, 7]``、``edge_index`` 形状 ``[2, E]``、``edge_attr`` 形状
-                ``[E, 7]``，以及可选的 ``global_attr``。
+                ``[N, node_input_size]``、``edge_index`` 形状 ``[2, E]``、
+                ``edge_attr`` 形状 ``[E, 7]``，以及可选的 ``global_attr``。
 
         返回:
             温度残差张量 ``delta_T*``，形状 ``[N, output_size]``，默认 ``[N, 1]``。

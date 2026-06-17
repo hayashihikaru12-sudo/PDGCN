@@ -245,6 +245,33 @@ class MultilayerRolloutTests(unittest.TestCase):
         expected = torch.tensor([[[[3.0], [2.0]], [[0.0], [0.0]], [[0.0], [0.0]]]])
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
+    def test_multilayer_graph_zeroes_source_features_below_top_layer(self):
+        graph = make_graph()
+        graph.x = torch.zeros(2, 9)
+        graph.x[:, 6:7] = 2.0
+        graph.q_surface_star = torch.tensor([[1.0], [0.5]])
+        graph.q_feature_index = 7
+        graph.delta_t_source_feature_index = 8
+        graph.include_q_in_features = True
+        graph.include_delta_t_source_in_features = True
+        temperature = torch.full((3, 2, 1), 2.0)
+        source_delta = torch.zeros(3, 2, 1)
+        source_delta[0] = torch.tensor([[0.25], [0.125]])
+
+        multilayer = _build_multilayer_graph(
+            graph,
+            temperature,
+            source_delta,
+            layer_spacing_star=0.0,
+            layer_fiber_angles_deg=[0.0, 0.0, 0.0],
+            normal_offset_sign=-1,
+        )
+
+        expected_q = torch.tensor([[1.0], [0.5], [0.0], [0.0], [0.0], [0.0]])
+        expected_delta = torch.tensor([[0.25], [0.125], [0.0], [0.0], [0.0], [0.0]])
+        self.assertTrue(torch.allclose(multilayer.x[:, 7:8], expected_q, atol=1e-6))
+        self.assertTrue(torch.allclose(multilayer.x[:, 8:9], expected_delta, atol=1e-6))
+
     def test_cloud_interval_writes_every_nth_step_from_zero(self):
         written = [step for step in range(12) if _should_write_cloud_step(step, 5)]
 

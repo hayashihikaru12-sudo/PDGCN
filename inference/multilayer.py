@@ -97,6 +97,7 @@ def rollout_multilayer_fdm(
                         model,
                         graph,
                         source_temperature[0:1],
+                        source_delta[0:1],
                         effective_layer_batch_size=1,
                         layer_spacing_star=layer_spacing_star,
                         layer_fiber_angles_deg=layer_fiber_angles_deg,
@@ -114,6 +115,7 @@ def rollout_multilayer_fdm(
                         model,
                         graph,
                         source_temperature,
+                        source_delta,
                         effective_layer_batch_size=effective_layer_batch_size,
                         layer_spacing_star=layer_spacing_star,
                         layer_fiber_angles_deg=layer_fiber_angles_deg,
@@ -194,6 +196,7 @@ def _forward_model_by_layer_batches(
     model,
     graph,
     current_temperature,
+    source_delta,
     *,
     effective_layer_batch_size: int,
     layer_spacing_star: float,
@@ -211,6 +214,7 @@ def _forward_model_by_layer_batches(
             graph_step = _build_multilayer_graph(
                 graph,
                 current_temperature[layer_start:layer_end],
+                source_delta[layer_start:layer_end],
                 layer_spacing_star=layer_spacing_star,
                 layer_fiber_angles_deg=layer_fiber_angles_deg,
                 normal_offset_sign=int(normal_offset_sign),
@@ -382,6 +386,7 @@ def _initial_multilayer_temperature(
 def _build_multilayer_graph(
     graph,
     temperature_star,
+    source_delta_star=None,
     *,
     layer_spacing_star: float = 0.0,
     layer_fiber_angles_deg=None,
@@ -391,6 +396,7 @@ def _build_multilayer_graph(
     return _build_multilayer_graph_impl(
         graph,
         temperature_star,
+        source_delta_star,
         layer_spacing_star=layer_spacing_star,
         layer_fiber_angles_deg=layer_fiber_angles_deg,
         normal_offset_sign=normal_offset_sign,
@@ -401,6 +407,7 @@ def _build_multilayer_graph(
 def _build_multilayer_graph_impl(
     graph,
     temperature_star,
+    source_delta_star=None,
     *,
     layer_spacing_star: float,
     layer_fiber_angles_deg,
@@ -425,6 +432,7 @@ def _build_multilayer_graph_impl(
     x[:, 0:3] = multilayer_geometry["pos"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype)
     x[:, 3:6] = multilayer_geometry["fiber"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype)
     x[:, 6:7] = temperature_star.reshape(num_layers * num_nodes, 1).to(device=device, dtype=x.dtype)
+    _apply_multilayer_source_features(x, graph, layer_indices, num_nodes, source_delta_star)
 
     offsets = (torch.arange(num_layers, device=device, dtype=edge_index.dtype) * num_nodes).reshape(num_layers, 1, 1)
     edge_index_batched = (edge_index.reshape(1, 2, edge_count) + offsets).permute(1, 0, 2).reshape(
@@ -458,7 +466,41 @@ def _build_multilayer_graph_impl(
         data.normal = multilayer_geometry["normal"].reshape(num_layers * num_nodes, 3)
     if getattr(graph, "velocity_direction", None) is not None:
         data.velocity_direction = graph.velocity_direction
+    data.q_feature_index = int(getattr(graph, "q_feature_index", -1))
+    data.delta_t_source_feature_index = int(getattr(graph, "delta_t_source_feature_index", -1))
+    data.include_q_in_features = bool(getattr(graph, "include_q_in_features", False))
+    data.include_delta_t_source_in_features = bool(
+        getattr(graph, "include_delta_t_source_in_features", False)
+    )
     return data
+
+
+def _apply_multilayer_source_features(x, graph, layer_indices, num_nodes: int, source_delta_star):
+    inferred_layers = x.shape[0] // int(num_nodes)
+    layer_indices = _as_layer_indices(layer_indices, inferred_layers, x.device, dtype=torch.long)
+    num_layers = int(layer_indices.numel())
+
+    q_index = int(getattr(graph, "q_feature_index", -1))
+    if q_index >= 0 and x.shape[1] > q_index:
+        x[:, q_index : q_index + 1] = 0.0
+        top_mask = layer_indices == 0
+        if bool(top_mask.any().item()):
+            q_source = _graph_surface_heat_source_for_features(graph).to(device=x.device, dtype=x.dtype)
+            q_view = x[:, q_index : q_index + 1].reshape(num_layers, num_nodes, 1)
+            q_view[top_mask] = q_source.reshape(1, num_nodes, 1)
+
+    delta_index = int(getattr(graph, "delta_t_source_feature_index", -1))
+    if delta_index >= 0 and x.shape[1] > delta_index:
+        x[:, delta_index : delta_index + 1] = 0.0
+        if source_delta_star is not None:
+            delta = source_delta_star.to(device=x.device, dtype=x.dtype).reshape(num_layers, num_nodes, 1)
+            x[:, delta_index : delta_index + 1] = delta.reshape(num_layers * num_nodes, 1)
+
+
+def _graph_surface_heat_source_for_features(graph):
+    if hasattr(graph, "q_surface_star"):
+        return graph.q_surface_star.reshape(graph.num_nodes, 1)
+    return graph.x.new_zeros(graph.num_nodes, 1)
 
 
 def _validate_layer_fiber_angles(layer_fiber_angles_deg, num_layers: int):

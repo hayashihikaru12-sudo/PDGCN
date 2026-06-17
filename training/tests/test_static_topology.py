@@ -17,11 +17,12 @@ from training import (
     train_static_topology_sequences,
 )
 from training.config import TrainConfig
+from training.graph_utils import clone_graph_with_temperature, graph_explicit_source_delta
 from training.run_config import SupervisionRunConfig
 
 
 class TrainableDeltaModel(nn.Module):
-    def __init__(self):
+    def __init__(self, config=None):
         """初始化固定拓扑训练测试用模型。
 
         参数:
@@ -32,7 +33,7 @@ class TrainableDeltaModel(nn.Module):
         """
 
         super().__init__()
-        self.config = PDGCNConfig(lambda_outflow=0.0, inverse_pe=0.0, source_coefficient=0.0, pi_q=0.0)
+        self.config = config or PDGCNConfig(lambda_outflow=0.0, inverse_pe=0.0, source_coefficient=0.0, pi_q=0.0)
         self.delta = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, graph):
@@ -49,8 +50,8 @@ class TrainableDeltaModel(nn.Module):
 
 
 class RecordingDeltaModel(TrainableDeltaModel):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, config=None):
+        super().__init__(config)
         self.forward_temperatures = []
         self.warmup_deltas = []
 
@@ -183,6 +184,48 @@ class StaticTopologyTests(unittest.TestCase):
         self.assertTrue(torch.allclose(graph_fast.global_attr, graph_ref.global_attr, atol=1e-6))
         self.assertTrue(torch.allclose(graph_fast.q_surface_star, graph_ref.q_surface_star, atol=1e-6))
         reader.close()
+
+    def test_gpu_feature_builder_matches_cpu_with_heat_source_node_features(self):
+        model_config = PDGCNConfig(
+            include_q_in_features=True,
+            include_delta_t_source_in_features=True,
+            source_coefficient=2.0,
+            dt_star=0.5,
+        )
+        build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
+        reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, scale_params=self.scale, pin_memory=False)
+        try:
+            static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
+            builder = GpuFeatureBuilder(static_state, self.scale, model_config=model_config)
+
+            node_base, global_condition = reader.read_frame(0)
+            graph_fast = builder.build(node_base, global_condition, torch.zeros(4, 1))
+
+            raw = HDF5Loader(self.h5_path, scale_params=self.scale).load_graph_data(0)
+            graph_ref = build_graph(
+                raw,
+                self.scale,
+                scan_velocity=0.002,
+                initial_temperature=torch.full((4, 1), 300.0),
+                model_config=model_config,
+            )
+            delta_source = graph_explicit_source_delta(graph_fast, model_config)
+            source_temperature = graph_fast.x[:, 6:7] + delta_source
+            graph_input = clone_graph_with_temperature(
+                graph_fast,
+                source_temperature,
+                delta_t_source_star=delta_source,
+            )
+
+            self.assertEqual(tuple(graph_fast.x.shape), (4, 9))
+            self.assertTrue(torch.allclose(graph_fast.x, graph_ref.x, atol=1e-6))
+            self.assertTrue(torch.allclose(graph_fast.x[:, 7:8], graph_fast.q_surface_star, atol=1e-6))
+            self.assertTrue(torch.allclose(graph_fast.x[:, 8:9], torch.zeros(4, 1), atol=1e-6))
+            self.assertTrue(torch.allclose(delta_source, graph_fast.q_surface_star, atol=1e-6))
+            self.assertTrue(torch.allclose(graph_input.x[:, 8:9], delta_source, atol=1e-6))
+            self.assertTrue(torch.allclose(graph_input.q_surface_star, graph_fast.q_surface_star, atol=1e-6))
+        finally:
+            reader.close()
 
     def test_edge_cos_theta_uses_receiver_tangent_velocity(self):
         tilted_h5_path = self.root / "tilted_normal.h5"
@@ -319,16 +362,19 @@ class StaticTopologyTests(unittest.TestCase):
         reader = HDF5FrameReader(self.h5_path, expected_num_nodes=4, scale_params=self.scale, pin_memory=False)
         try:
             static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
-            builder = GpuFeatureBuilder(static_state, self.scale)
+            model_config = PDGCNConfig(
+                hidden_size=8,
+                message_passing_num=1,
+                include_q_in_features=True,
+                include_delta_t_source_in_features=True,
+                lambda_outflow=0.0,
+                inverse_pe=0.0,
+                source_coefficient=0.0,
+                pi_q=0.0,
+            )
+            builder = GpuFeatureBuilder(static_state, self.scale, model_config=model_config)
             model = PDGCN(
-                PDGCNConfig(
-                    hidden_size=8,
-                    message_passing_num=1,
-                    lambda_outflow=0.0,
-                    inverse_pe=0.0,
-                    source_coefficient=0.0,
-                    pi_q=0.0,
-                )
+                model_config
             )
 
             history = train_static_topology(
@@ -355,10 +401,18 @@ class StaticTopologyTests(unittest.TestCase):
             require_fem_temperature=True,
             pin_memory=False,
         )
-        model = RecordingDeltaModel()
+        model_config = PDGCNConfig(
+            include_q_in_features=True,
+            include_delta_t_source_in_features=True,
+            lambda_outflow=0.0,
+            inverse_pe=0.0,
+            source_coefficient=0.0,
+            pi_q=0.0,
+        )
+        model = RecordingDeltaModel(config=model_config)
         try:
             static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
-            builder = GpuFeatureBuilder(static_state, self.scale)
+            builder = GpuFeatureBuilder(static_state, self.scale, model_config=model.config)
             history = train_static_topology(
                 model,
                 reader,

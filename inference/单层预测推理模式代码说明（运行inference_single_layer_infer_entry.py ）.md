@@ -48,7 +48,7 @@ T*_next = apply_dirichlet( apply_dirichlet(T*_in + ΔT*_source) + PDGCN(graph) )
 | ④ Dirichlet 边界 | `apply_dirichlet_boundary(...)` | 再次强制边界约束，得到最终 `T*_next` |
 
 其中：
-- `graph` 的节点特征为 `[x*, y*, z*, fx, fy, fz, T*]`，热源 **不进入**节点特征
+- `graph` 的节点特征默认为 `[x*, y*, z*, fx, fy, fz, T*]`；若 checkpoint 配置启用热源特征，则追加 `q*` 和/或当前步 `ΔT_Q*`
 - `dirichlet_temperature_star` 默认为 `0.0`，取自 `model.config`
 - warmup 阶段（可选）在 rollout 开始前用 `pseudo_time_relax_initial_temperature` 对初始温度做伪时间弛豫
 

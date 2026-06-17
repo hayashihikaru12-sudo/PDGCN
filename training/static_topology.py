@@ -11,7 +11,7 @@ from data.static_cache import STATIC_FILE, HDF5FrameReader
 from pde import apply_dirichlet_boundary, total_loss
 
 from .config import TrainConfig
-from .graph_utils import clone_graph_with_temperature, graph_explicit_source_delta
+from .graph_utils import clone_graph_with_temperature, graph_explicit_source_delta, node_feature_indices_from_config
 from .lr_scheduler import build_lr_scheduler, optimizer_lr
 from .warmup import pseudo_time_relax_initial_temperature
 
@@ -64,7 +64,7 @@ class StaticGraphState:
 class GpuFeatureBuilder:
     """在目标设备上由基础动态特征生成 PD-GCN 节点和边特征。"""
 
-    def __init__(self, static_state: StaticGraphState, scale_params: ScaleParams, *, dtype=torch.float32):
+    def __init__(self, static_state: StaticGraphState, scale_params: ScaleParams, *, model_config=None, dtype=torch.float32):
         """初始化 GPU 特征构建器和复用缓冲区。
 
         参数:
@@ -80,9 +80,12 @@ class GpuFeatureBuilder:
         self.scale_params = scale_params
         self.device = static_state.device
         self.dtype = dtype
+        self.model_config = model_config
+        self.node_input_size = int(getattr(model_config, "node_input_size", 7))
+        self.q_feature_index, self.delta_t_source_feature_index = node_feature_indices_from_config(model_config)
         self.node_base = torch.empty(static_state.num_nodes, 13, device=self.device, dtype=dtype)
         self.global_raw = torch.empty(1, device=self.device, dtype=dtype)
-        self.x = torch.empty(static_state.num_nodes, 7, device=self.device, dtype=dtype)
+        self.x = torch.empty(static_state.num_nodes, self.node_input_size, device=self.device, dtype=dtype)
         self.edge_attr = torch.empty(static_state.num_edges, 7, device=self.device, dtype=dtype)
         self.q_surface_star = torch.empty(static_state.num_nodes, 1, device=self.device, dtype=dtype)
         self.graph = Data(
@@ -98,6 +101,10 @@ class GpuFeatureBuilder:
         self.graph.upwind_nodes = static_state.boundary_nodes["upwind"]
         self.graph.downwind_nodes = static_state.boundary_nodes["downwind"]
         self.graph.side_nodes = static_state.boundary_nodes["side"]
+        self.graph.q_feature_index = int(self.q_feature_index)
+        self.graph.delta_t_source_feature_index = int(self.delta_t_source_feature_index)
+        self.graph.include_q_in_features = self.q_feature_index >= 0
+        self.graph.include_delta_t_source_in_features = self.delta_t_source_feature_index >= 0
 
     def build(self, node_base_cpu, global_cpu, temperature_star):
         """用当前帧基础特征更新复用图对象。
@@ -132,6 +139,10 @@ class GpuFeatureBuilder:
         self.x[:, 0:3] = coords_star
         self.x[:, 3:6] = fibers_unit
         self.x[:, 6:7] = temperature
+        if self.q_feature_index >= 0:
+            self.x[:, self.q_feature_index : self.q_feature_index + 1] = q_surface_star
+        if self.delta_t_source_feature_index >= 0:
+            self.x[:, self.delta_t_source_feature_index : self.delta_t_source_feature_index + 1].zero_()
         self.q_surface_star[:, 0:1] = q_surface_star
 
         source = self.static_state.source
@@ -159,6 +170,10 @@ class GpuFeatureBuilder:
         self.graph.global_attr = self.global_raw
         self.graph.pos = self.x[:, 0:3]
         self.graph.q_surface_star = self.q_surface_star
+        self.graph.q_feature_index = int(self.q_feature_index)
+        self.graph.delta_t_source_feature_index = int(self.delta_t_source_feature_index)
+        self.graph.include_q_in_features = self.q_feature_index >= 0
+        self.graph.include_delta_t_source_in_features = self.delta_t_source_feature_index >= 0
         return self.graph
 
     def initial_temperature(self):
@@ -195,6 +210,10 @@ def _snapshot_graph_for_tbptt(graph):
         snapshot.q_surface_star = graph.q_surface_star.clone()
     if hasattr(graph, "q_surface"):
         snapshot.q_surface = graph.q_surface.clone()
+    snapshot.q_feature_index = int(getattr(graph, "q_feature_index", -1))
+    snapshot.delta_t_source_feature_index = int(getattr(graph, "delta_t_source_feature_index", -1))
+    snapshot.include_q_in_features = bool(getattr(graph, "include_q_in_features", False))
+    snapshot.include_delta_t_source_in_features = bool(getattr(graph, "include_delta_t_source_in_features", False))
     snapshot.num_nodes = graph.num_nodes
     snapshot.upwind_nodes = graph.upwind_nodes
     snapshot.downwind_nodes = graph.downwind_nodes
@@ -312,6 +331,7 @@ def train_static_topology_sequences(
                 slice_callback({"epoch": epoch, "slice_index": file_index, "frame_reader": frame_reader})
 
         window_losses = [record["loss_total"] for record in window_records]
+        gamma_values = _collect_gamma_upwind(model)
         epoch_record = {
             "epoch": epoch,
             "loss": sum(window_losses) / max(len(window_losses), 1),
@@ -342,6 +362,8 @@ def train_static_topology_sequences(
             "temperature_max": _max_records(window_records, "temperature_max"),
             "temperature_min": _min_records(window_records, "temperature_min"),
             "temperature_var": _mean_records(window_records, "temperature_var"),
+            "gamma_upwind": float(gamma_values.mean()) if len(gamma_values) > 0 else float(model.config.gamma_upwind),
+            "gamma_upwind_std": float(gamma_values.std()) if len(gamma_values) > 1 else 0.0,
             "window_losses": window_losses,
             "file_window_counts": file_window_counts,
         }
@@ -413,12 +435,13 @@ def _train_one_static_sequence_epoch(
             graph = _snapshot_graph_for_tbptt(
                 feature_builder.build(node_base_cpu, global_cpu, window_temperature)
             )
+            delta_t_source = graph_explicit_source_delta(graph, model.config)
             source_temperature = apply_dirichlet_boundary(
-                window_temperature + graph_explicit_source_delta(graph, model.config),
+                window_temperature + delta_t_source,
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            graph = clone_graph_with_temperature(graph, source_temperature)
+            graph = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_t_source)
             delta_temperature = model(graph)
             next_temperature = apply_dirichlet_boundary(
                 source_temperature + delta_temperature,
@@ -600,12 +623,13 @@ def _run_static_training_step(
     graph = _snapshot_graph_for_tbptt(
         feature_builder.build(node_base_cpu, global_cpu, current_temperature)
     )
+    delta_t_source = graph_explicit_source_delta(graph, model.config)
     source_temperature = apply_dirichlet_boundary(
-        current_temperature + graph_explicit_source_delta(graph, model.config),
+        current_temperature + delta_t_source,
         static_state.boundary_nodes,
         value=getattr(model.config, "dirichlet_temperature_star", 0.0),
     )
-    graph = clone_graph_with_temperature(graph, source_temperature)
+    graph = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_t_source)
     delta_temperature = model(graph)
     next_temperature = apply_dirichlet_boundary(
         source_temperature + delta_temperature,
@@ -693,12 +717,13 @@ def evaluate_static_topology_sequence(
         for frame_idx in range(frame_reader.num_frames):
             node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
             graph = feature_builder.build(node_base_cpu, global_cpu, current_temperature)
+            delta_t_source = graph_explicit_source_delta(graph, model.config)
             source_temperature = apply_dirichlet_boundary(
-                current_temperature + graph_explicit_source_delta(graph, model.config),
+                current_temperature + delta_t_source,
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            graph = clone_graph_with_temperature(graph, source_temperature)
+            graph = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_t_source)
             next_temperature = apply_dirichlet_boundary(
                 source_temperature + model(graph),
                 static_state.boundary_nodes,
@@ -996,12 +1021,13 @@ def rollout_static_topology(
         for frame_idx in range(int(steps)):
             node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
             graph = feature_builder.build(node_base_cpu, global_cpu, current_temperature)
+            delta_t_source = graph_explicit_source_delta(graph, model.config)
             source_temperature = apply_dirichlet_boundary(
-                current_temperature + graph_explicit_source_delta(graph, model.config),
+                current_temperature + delta_t_source,
                 static_state.boundary_nodes,
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            graph = clone_graph_with_temperature(graph, source_temperature)
+            graph = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_t_source)
             next_temperature = apply_dirichlet_boundary(
                 source_temperature + model(graph),
                 static_state.boundary_nodes,
@@ -1025,6 +1051,34 @@ def rollout_static_topology(
 def _normalize_vectors(vectors, *, eps: float):
     norm = torch.linalg.norm(vectors, dim=-1, keepdim=True).clamp_min(eps)
     return vectors / norm
+
+
+def _collect_gamma_upwind(model):
+    """从模型各 EdgeBlock 收集可学习的 gamma_upwind 值。
+
+    遍历 Processor 中每层 GnBlock 的 EdgeBlock，提取
+    ``gamma_upwind`` ``nn.Parameter`` 的当前值。
+    若模型非 PDGCN（如测试 mock），返回空张量。
+
+    参数:
+        model: ``PDGCN`` 模型实例或测试 mock。
+
+    返回:
+        一维 ``torch.Tensor``，包含所有 EdgeBlock 的 gamma 值。
+    """
+    gamma_list = []
+    processor = getattr(model, "processor", None)
+    if processor is not None:
+        blocks = getattr(processor, "blocks", [])
+        for block in blocks:
+            edge_block = getattr(block, "edge_block", None)
+            if edge_block is not None and hasattr(edge_block, "gamma_upwind"):
+                gamma_param = edge_block.gamma_upwind
+                if isinstance(gamma_param, torch.nn.Parameter):
+                    gamma_list.append(gamma_param.detach().cpu())
+    if not gamma_list:
+        return torch.tensor([], dtype=torch.float32)
+    return torch.stack(gamma_list)
 
 
 def _default_device():

@@ -135,7 +135,7 @@ def run_diagnostic_steps(
         )
 
         # 模型推理
-        graph_input = clone_graph_with_temperature(graph, source_temperature)
+        graph_input = clone_graph_with_temperature(graph, source_temperature, delta_t_source_star=delta_source)
         delta_inplane = model(graph_input)
 
         next_temperature = apply_dirichlet_boundary(
@@ -252,7 +252,7 @@ def main():
     print_decoder_bias(model)
 
     # 3) 使用实际 HDF5 运行诊断
-    feature_builder = GpuFeatureBuilder(static_state, scale_params)
+    feature_builder = GpuFeatureBuilder(static_state, scale_params, model_config=model.config)
     with HDF5FrameReader(
         selected_h5,
         expected_num_nodes=static_state.num_nodes,

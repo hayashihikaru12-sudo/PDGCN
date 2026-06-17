@@ -32,6 +32,8 @@ EPOCH_METRIC_FIELDS = (
     "temperature_max",
     "temperature_min",
     "temperature_var",
+    "gamma_upwind",
+    "gamma_upwind_std",
 )
 SLICE_METRIC_FIELDS = (
     "epoch",

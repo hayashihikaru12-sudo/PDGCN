@@ -5,7 +5,7 @@ PDGCN 是面向曲面铺放热场预测的图神经网络训练框架。项目�
 ## 项目特点
 
 - 使用 PyTorch Geometric 表示曲面局部窗口图。
-- 节点特征固定为 `[x*, y*, z*, fx, fy, fz, T*]`，不再把热源作为 PD-GCN 输入。
+- 节点特征默认保持 `[x*, y*, z*, fx, fy, fz, T*]`；可通过配置追加 `q*` 和 `ΔT_Q*`，让 PD-GCN 感知当前步热源分布。
 - 显式表面热源模块将 HDF5 中的表面热流 `q''` 转换为顶层温升。
 - 边特征编码局部几何、扫描方向和纤维各向异性关系。
 - 使用无源曲面内输运 residual、出流边界约束和图梯度平滑正则训练 PD-GCN。
@@ -64,11 +64,13 @@ HDF5 原始切片采用生成程序的原生单位：几何为 `mm`，速度为 
 - `velocity_speed`: `mm/s -> m/s`
 - `velocity_direction_local`: 局部坐标中的速度方向；若 HDF5 坐标系为 `nip_local_velocity_side_normal`，默认 `[1, 0, 0]`。
 - `path/heat_center_step_distance`、`path/slice_path_length`: `mm -> m`
-- `dynamic/Q`: `W/mm^2 -> W/m^2`，作为表面热流 `q''` 保存在图对象的 `q_surface_star` 字段中；PD-GCN 节点特征不包含该字段。
+- `dynamic/Q`: `W/mm^2 -> W/m^2`，作为表面热流 `q''` 保存在图对象的 `q_surface_star` 字段中；若启用 `include_q_in_features`，还会以 `q* = q'' / Q0` 追加到节点特征。
 
 边特征中的 `cos_theta` 使用接收节点处的切向速度方向计算：先将 `velocity_direction_local` 投影到 `dynamic/normal` 给出的节点切平面，再与边方向取点积。旧静态缓存不包含法向和速度方向，升级数据后需要删除并重建 `datasets[].cache_dir`。
 
 因此训练配置中的 `datasets[].scale` 必须使用 SI：`L0` 为 `m`，`v0` 为 `m/s`，`Q0` 为表面热流标尺 `W/m^2`，`K0` 为 `W/(m·K)`，`rho` 为 `kg/m^3`，`Cp` 为 `J/(kg·K)`。`heat_source_effective_thickness` 为必填字段，单位 `m`，用于显式热源温升公式；`heat_source_absorptivity` 默认为 `1.0`。
+
+热源节点特征为可选消融项，默认关闭以兼容旧 checkpoint。开启 `include_q_in_features=true` 和 `include_delta_t_source_in_features=true` 后，节点特征布局为 `[x*, y*, z*, fx, fy, fz, T*, q*, ΔT_Q*]`。其中 `ΔT_Q* = heat_source_absorptivity * source_coefficient * dt_star * q*`，只作为 PD-GCN 输入信息；PDE residual 仍保持无源输运形式。
 
 详细配置说明见 [configs/README.md](configs/README.md)。
 
@@ -135,7 +137,7 @@ runs/pdgcn/multilayer_prediction_vtk/
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
 - `metadata`：JSON 字符串数据集，同时写入根属性副本；记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、`dt_star`、FDM 系数、层分块大小、VTK 输出间隔、无量纲化参数和推理/渲染耗时。
 
-层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。多层推进顺序固定为：顶层显式表面热源、所有层无源 PD-GCN 面内输运、厚度方向 1D FDM、底层恒温钳制。下层不读取热源，能量只能由厚度 FDM 从上层传入；下层几何沿节点曲面法向偏移，纤维方向按 `layer_fiber_angles_deg` 绕节点法向旋转。
+层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。多层推进顺序固定为：顶层显式表面热源、所有层无源 PD-GCN 面内输运、厚度方向 1D FDM、底层恒温钳制。下层不读取热源，能量只能由厚度 FDM 从上层传入；若启用热源节点特征，下层的 `q*` 和 `ΔT_Q*` 特征会置零。下层几何沿节点曲面法向偏移，纤维方向按 `layer_fiber_angles_deg` 绕节点法向旋转。
 
 `infer_entry.py` 只保存 HDF5。需要云图时，使用 `render_entry.py` 根据 HDF5 结果按 `cloud_interval` 离线输出 ParaView 可读取的 legacy `.vtk` 合并三维拓扑云图，文件名形如
 `temperature_step_000000.vtk`。每个 VTK 从真实 `edge_index` 恢复 Gmsh 三角网格面，并在相邻层之间生成 `UNSTRUCTURED_GRID` wedge 体单元，可在 ParaView 中用 `temperature` 或 `temperature_star` 着色。拓扑渲染必须使用全节点，不能按节点数降采样。

@@ -6,23 +6,64 @@ from pde import compute_surface_source_delta_star
 
 
 TEMPERATURE_SLICE = slice(6, 7)
+Q_FEATURE_INDEX_ATTR = "q_feature_index"
+DELTA_T_SOURCE_FEATURE_INDEX_ATTR = "delta_t_source_feature_index"
+MISSING_FEATURE_INDEX = -1
 
 
-def clone_graph_with_temperature(graph, temperature_star):
-    """复制图对象并替换节点温度特征。
+def node_feature_indices_from_config(model_config):
+    """根据模型配置返回可选节点特征列索引。"""
+
+    next_index = 7
+    q_index = MISSING_FEATURE_INDEX
+    delta_t_source_index = MISSING_FEATURE_INDEX
+    if bool(getattr(model_config, "include_q_in_features", False)):
+        q_index = next_index
+        next_index += 1
+    if bool(getattr(model_config, "include_delta_t_source_in_features", False)):
+        delta_t_source_index = next_index
+    return q_index, delta_t_source_index
+
+
+def set_graph_node_feature_layout(graph, model_config):
+    """在图对象上记录可选节点特征的列布局。"""
+
+    q_index, delta_t_source_index = node_feature_indices_from_config(model_config)
+    graph.q_feature_index = int(q_index)
+    graph.delta_t_source_feature_index = int(delta_t_source_index)
+    graph.include_q_in_features = q_index >= 0
+    graph.include_delta_t_source_in_features = delta_t_source_index >= 0
+    return graph
+
+
+def clone_graph_with_temperature(graph, temperature_star, *, delta_t_source_star=None):
+    """复制图对象并替换节点温度和当前步显式源温升特征。
 
     参数:
         graph: PyG ``Data`` 图对象，``x`` 至少包含第 7 列温度特征。
         temperature_star: 新的无量纲温度张量，形状 ``[N, 1]``。
+        delta_t_source_star: 可选当前步显式热源温升，形状 ``[N, 1]``。
 
     返回:
         新的图对象，``x[:, 6:7]`` 已替换为 ``temperature_star``，
+        若图包含 ``delta_t_source`` 特征列，也会同步写入该列；
         其他字段继承自输入图。
     """
 
     cloned = graph.clone()
     cloned.x = graph.x.clone()
-    cloned.x[:, TEMPERATURE_SLICE] = temperature_star.to(device=cloned.x.device, dtype=cloned.x.dtype)
+    temperature = temperature_star.to(device=cloned.x.device, dtype=cloned.x.dtype).reshape(graph.num_nodes, 1)
+    cloned.x[:, TEMPERATURE_SLICE] = temperature
+    delta_index = _feature_index(cloned, DELTA_T_SOURCE_FEATURE_INDEX_ATTR)
+    if delta_index >= 0:
+        if delta_t_source_star is None:
+            delta_t_source = torch.zeros_like(temperature)
+        else:
+            delta_t_source = delta_t_source_star.to(device=cloned.x.device, dtype=cloned.x.dtype).reshape(
+                graph.num_nodes,
+                1,
+            )
+        cloned.x[:, delta_index : delta_index + 1] = delta_t_source
     return cloned
 
 
@@ -70,6 +111,15 @@ def graph_explicit_source_delta(graph, model_config):
         source_coefficient=source_coefficient,
         absorptivity=getattr(model_config, "heat_source_absorptivity", 1.0),
     ).to(device=graph.x.device, dtype=graph.x.dtype)
+
+
+def _feature_index(graph, attr_name: str) -> int:
+    index = int(getattr(graph, attr_name, MISSING_FEATURE_INDEX))
+    if index < 0:
+        return MISSING_FEATURE_INDEX
+    if graph.x.ndim != 2 or graph.x.shape[1] <= index:
+        return MISSING_FEATURE_INDEX
+    return index
 
 
 def graph_boundary_nodes(graph) -> Dict[str, torch.Tensor]:
