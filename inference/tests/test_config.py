@@ -74,10 +74,23 @@ class InferenceConfigTests(unittest.TestCase):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, normal_offset_sign=0)
 
     def test_single_layer_config_accepts_modes(self):
-        config = SingleLayerInferenceRunConfig(mode="both", vtu_interval=2)
+        config = SingleLayerInferenceRunConfig(
+            mode="both",
+            vtu_interval=2,
+            batch_mode=True,
+            h5_dir="inputs",
+            output_dir="outputs",
+            output_prefix="pre_",
+            prediction_group_path="prediction/pdgcn_single_layer",
+        )
 
         self.assertEqual(config.mode, "both")
         self.assertEqual(config.vtu_interval, 2)
+        self.assertTrue(config.batch_mode)
+        self.assertEqual(config.h5_dir, "inputs")
+        self.assertEqual(config.output_dir, "outputs")
+        self.assertEqual(config.output_prefix, "pre_")
+        self.assertEqual(config.prediction_group_path, "prediction/pdgcn_single_layer")
 
     def test_single_layer_config_rejects_bad_mode(self):
         with self.assertRaisesRegex(ValueError, "mode"):
@@ -86,6 +99,16 @@ class InferenceConfigTests(unittest.TestCase):
     def test_single_layer_config_rejects_bad_vtu_interval(self):
         with self.assertRaisesRegex(ValueError, "vtu_interval"):
             SingleLayerInferenceRunConfig(vtu_interval=0)
+
+    def test_single_layer_config_rejects_bad_batch_paths(self):
+        with self.assertRaisesRegex(ValueError, "h5_dir"):
+            SingleLayerInferenceRunConfig(h5_dir="")
+        with self.assertRaisesRegex(ValueError, "output_dir"):
+            SingleLayerInferenceRunConfig(output_dir="")
+        with self.assertRaisesRegex(ValueError, "output_prefix"):
+            SingleLayerInferenceRunConfig(output_prefix="")
+        with self.assertRaisesRegex(ValueError, "prediction_group_path"):
+            SingleLayerInferenceRunConfig(prediction_group_path="prediction//bad")
 
 
 if __name__ == "__main__":

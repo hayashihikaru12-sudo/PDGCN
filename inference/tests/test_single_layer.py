@@ -7,6 +7,7 @@ import h5py
 import numpy as np
 import torch
 
+from inference.single_layer_infer_entry import main as single_layer_entry_main
 from inference.single_layer import run_single_layer_inference_from_config
 from models import PDGCN, PDGCNConfig
 
@@ -86,16 +87,18 @@ class SingleLayerInferenceTests(unittest.TestCase):
         result = run_single_layer_inference_from_config(infer_config_path)
 
         self.assertEqual(result["output_path"], str(output_path.resolve()))
+        self.assertEqual(result["prediction_group_path"], "prediction/pdgcn_single_layer")
+        with h5py.File(h5_path, "r") as h5_file:
+            self.assertIn("dynamic", h5_file)
+            self.assertIn("fem", h5_file)
+            self.assertNotIn("prediction", h5_file)
         with h5py.File(output_path, "r") as h5_file:
-            self.assertEqual(tuple(h5_file["temperature"].shape), (2, 4, 1))
-            self.assertEqual(tuple(h5_file["temperature_star"].shape), (2, 4, 1))
-            self.assertEqual(tuple(h5_file["teacher_forcing/temperature"].shape), (1, 4, 1))
-            self.assertEqual(tuple(h5_file["teacher_forcing/frame_index"].shape), (1,))
-            self.assertIn("fem_temperature", h5_file)
-            self.assertIn("temperature_error", h5_file)
-            metadata = json.loads(h5_file.attrs["metadata"])
-            self.assertTrue(metadata["has_fem_temperature"])
-            self.assertTrue(metadata["teacher_forcing_enabled"])
+            self.assertIn("dynamic", h5_file)
+            self.assertIn("fem", h5_file)
+            group = h5_file["prediction/pdgcn_single_layer"]
+            self.assertEqual(sorted(group.keys()), ["temperature"])
+            self.assertEqual(tuple(group["temperature"].shape), (2, 4, 1))
+            self.assertEqual(group["temperature"].dtype, np.dtype("float32"))
         vtu_dir = output_path.with_name(f"{output_path.stem}_vtu")
         first_vtu = vtu_dir / "temperature_step_000000.vtu"
         second_vtu = vtu_dir / "temperature_step_000001.vtu"
@@ -103,8 +106,170 @@ class SingleLayerInferenceTests(unittest.TestCase):
         self.assertTrue(second_vtu.exists())
         text = second_vtu.read_text(encoding="utf-8")
         self.assertIn('Name="temperature"', text)
-        self.assertIn('Name="fem_temperature"', text)
-        self.assertIn('Name="teacher_temperature_error"', text)
+        self.assertNotIn('Name="temperature_star"', text)
+        self.assertNotIn('Name="fem_temperature"', text)
+        self.assertNotIn('Name="teacher_temperature_error"', text)
+
+        result_second = run_single_layer_inference_from_config(infer_config_path)
+        self.assertEqual(result_second["output_path"], str(output_path.resolve()))
+        with h5py.File(output_path, "r") as h5_file:
+            self.assertIn("prediction/pdgcn_single_layer/temperature", h5_file)
+
+    def test_single_layer_batch_writes_prefixed_outputs_and_summarizes_failures(self):
+        h5_dir = self.root / "h5_batch"
+        output_dir = self.root / "batch_outputs"
+        h5_dir.mkdir()
+        good_one = h5_dir / "case1.h5"
+        good_ten = h5_dir / "case10.h5"
+        bad_zero = h5_dir / "case0_bad.h5"
+        checkpoint_path = self.root / "checkpoint.pt"
+        self._write_source_h5(good_one)
+        self._write_source_h5(good_ten)
+        with h5py.File(bad_zero, "w") as h5_file:
+            h5_file.create_dataset("not_a_slice", data=np.array([1], dtype=np.int64))
+        self._write_checkpoint(checkpoint_path)
+        train_config_path = self.root / "train_batch.json"
+        infer_config_path = self.root / "single_batch_infer.json"
+        train_config_path.write_text(
+            json.dumps(
+                {
+                    "outputs": {
+                        "checkpoint_path": str(checkpoint_path.resolve()),
+                        "history_path": "history.json",
+                    },
+                    "datasets": [
+                        {
+                            "name": "case_batch",
+                            "h5_dir": str(h5_dir.resolve()),
+                            "cache_dir": str((self.root / "batch_cache").resolve()),
+                            "scale": {
+                                "L0": 0.002,
+                                "v0": 0.002,
+                                "T_amb": 300.0,
+                                "delta_T0": 10.0,
+                                "Q0": 2.0e6,
+                                "K0": 8.0,
+                                "rho": 2.0,
+                                "Cp": 1.0,
+                                "heat_source_effective_thickness": 0.001,
+                            },
+                        }
+                    ],
+                    "hyperparameters": {
+                        "model": {"hidden_size": 8, "message_passing_num": 1},
+                        "physics_loss": {"lambda_outflow": 0.0},
+                        "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        infer_config_path.write_text(
+            json.dumps(
+                {
+                    "training_config": "train_batch.json",
+                    "single_layer_inference": {
+                        "batch_mode": True,
+                        "h5_dir": str(h5_dir.resolve()),
+                        "output_dir": str(output_dir.resolve()),
+                        "steps": 2,
+                        "warmup_steps": 0,
+                        "mode": "both",
+                        "write_vtu": True,
+                        "vtu_interval": 1,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_single_layer_inference_from_config(infer_config_path)
+
+        self.assertTrue(result["batch_mode"])
+        self.assertEqual(result["processed_count"], 3)
+        self.assertEqual(result["succeeded_count"], 2)
+        self.assertEqual(result["failed_count"], 1)
+        self.assertTrue((output_dir / "pre_case1.h5").exists())
+        self.assertTrue((output_dir / "pre_case10.h5").exists())
+        self.assertFalse((output_dir / "pre_case0_bad.h5").exists())
+        self.assertTrue((output_dir / "pre_case1_vtu" / "temperature_step_000000.vtu").exists())
+        self.assertTrue((output_dir / "pre_case10_vtu" / "temperature_step_000001.vtu").exists())
+        with h5py.File(output_dir / "pre_case1.h5", "r") as h5_file:
+            self.assertIn("dynamic", h5_file)
+            group = h5_file["prediction/pdgcn_single_layer"]
+            self.assertEqual(sorted(group.keys()), ["temperature"])
+            self.assertEqual(tuple(group["temperature"].shape), (2, 4, 1))
+
+    def test_single_layer_entry_respects_config_batch_mode_without_cli_flag(self):
+        h5_dir = self.root / "h5_entry_batch"
+        output_dir = self.root / "entry_batch_outputs"
+        h5_dir.mkdir()
+        h5_path = h5_dir / "case1.h5"
+        checkpoint_path = self.root / "checkpoint.pt"
+        self._write_source_h5(h5_path)
+        self._write_checkpoint(checkpoint_path)
+        train_config_path = self.root / "train_entry_batch.json"
+        infer_config_path = self.root / "single_entry_batch_infer.json"
+        train_config_path.write_text(
+            json.dumps(
+                {
+                    "outputs": {
+                        "checkpoint_path": str(checkpoint_path.resolve()),
+                        "history_path": "history.json",
+                    },
+                    "datasets": [
+                        {
+                            "name": "case_entry_batch",
+                            "h5_dir": str((self.root / "unused_dataset_dir").resolve()),
+                            "cache_dir": str((self.root / "entry_batch_cache").resolve()),
+                            "scale": {
+                                "L0": 0.002,
+                                "v0": 0.002,
+                                "T_amb": 300.0,
+                                "delta_T0": 10.0,
+                                "Q0": 2.0e6,
+                                "K0": 8.0,
+                                "rho": 2.0,
+                                "Cp": 1.0,
+                                "heat_source_effective_thickness": 0.001,
+                            },
+                        }
+                    ],
+                    "hyperparameters": {
+                        "model": {"hidden_size": 8, "message_passing_num": 1},
+                        "physics_loss": {"lambda_outflow": 0.0},
+                        "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        infer_config_path.write_text(
+            json.dumps(
+                {
+                    "training_config": "train_entry_batch.json",
+                    "single_layer_inference": {
+                        "batch_mode": True,
+                        "h5_path": None,
+                        "h5_dir": str(h5_dir.resolve()),
+                        "output_dir": str(output_dir.resolve()),
+                        "steps": 2,
+                        "warmup_steps": 0,
+                        "mode": "both",
+                        "write_vtu": False,
+                        "vtu_interval": 1,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        exit_code = single_layer_entry_main(["--config", str(infer_config_path)])
+
+        self.assertEqual(exit_code, 0)
+        self.assertTrue((output_dir / "pre_case1.h5").exists())
+        with h5py.File(output_dir / "pre_case1.h5", "r") as h5_file:
+            self.assertIn("prediction/pdgcn_single_layer/temperature", h5_file)
 
     def _write_checkpoint(self, path):
         model_config = PDGCNConfig(

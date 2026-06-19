@@ -214,4 +214,6 @@ runs/         训练输出，不进入 Git
 D:\ProgramData\CondaEnv\PIGNN\python.exe inference\single_layer_infer_entry.py --config configs\pdgcn_single_layer_infer.example.json
 ```
 
-单层入口默认输出 `runs/pdgcn/single_layer_prediction.h5`，并按 `single_layer_inference.vtu_interval` 写出 ParaView 可读取的 `.vtu` 曲面文件。默认 `mode="both"`：自回归预测始终输出；若 HDF5 存在 `fem/temperature`，还会输出 teacher-forcing 一步预测和温度误差场。
+单层入口默认输出 `runs/pdgcn/single_layer_prediction.h5`，输出文件会保留原始 HDF5 内容，并在 `prediction/pdgcn_single_layer/temperature` 中按帧写入预测真实温度，形状与 `fem/temperature` 保持一致为 `[time, node, 1]`；原始输入 HDF5 不会被原地修改。
+
+单层入口也支持批量推理：设置 `single_layer_inference.batch_mode=true` 后，会按自然升序遍历 `h5_dir` 下直属 `.h5`/`.hdf5` 文件，并把增强后的 HDF5 写入 `output_dir/pre_<原文件名>`；对应 VTU 目录写入同一个 `output_dir` 下的 `pre_<原stem>_vtu/`。批量中单个文件失败时会继续处理其他文件，并在命令行汇总成功和失败清单。

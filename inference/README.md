@@ -211,7 +211,7 @@ T_next = T_current + delta_T_source + delta_T_inplane
 runs/pdgcn/single_layer_prediction.h5
 ```
 
-其中 `temperature` 和 `temperature_star` 为自回归单层预测，形状为 `[time, node, 1]`。若输入 HDF5 包含 `fem/temperature`，且 `mode` 为 `both` 或 `teacher_forcing`，还会写出 `teacher_forcing/temperature`、`teacher_forcing/temperature_star`、`teacher_forcing/temperature_error` 和 `teacher_forcing/frame_index`，用于检查训练语义下的一步预测误差。
+输出文件会先复制原始输入 HDF5，再在 `prediction/pdgcn_single_layer/temperature` 下按帧写入预测真实温度，因此原始 HDF5 不会被原地修改。该数据集形状为 `[time, node, 1]`，组织方式与 `fem/temperature` 保持一致；不再额外写入无量纲温度、误差场、metrics 或 metadata。
 
 若 `write_vtu=true`，入口会按 `vtu_interval` 直接输出 ParaView 可读取的单层 `.vtu` 曲面文件，默认目录为：
 
@@ -224,6 +224,8 @@ runs/pdgcn/single_layer_prediction.h5
 ```text
 temperature_step_000000.vtu
 ```
+
+批量推理可设置 `single_layer_inference.batch_mode=true`，或命令行传入 `--batch --h5-dir <输入目录> --output-dir <输出目录>`。批量模式会按自然升序遍历输入目录直属 `.h5`/`.hdf5` 文件，增强 HDF5 写入 `<output_dir>/pre_<原文件名>`，VTU 写入 `<output_dir>/pre_<原stem>_vtu/`。单个文件失败时不会中止整个批次，入口会在最后打印成功和失败清单。
 
 可选覆盖参数：
 

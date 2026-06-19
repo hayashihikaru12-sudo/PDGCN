@@ -85,6 +85,11 @@ class SingleLayerInferenceRunConfig:
     output_path: str = "../runs/pdgcn/single_layer_prediction.h5"
     dataset_index: int = 0
     h5_path: Optional[str] = None
+    h5_dir: Optional[str] = None
+    output_dir: Optional[str] = None
+    output_prefix: str = "pre_"
+    prediction_group_path: str = "prediction/pdgcn_single_layer"
+    batch_mode: bool = False
     steps: Optional[int] = None
     warmup_steps: Optional[int] = None
     mode: str = "both"
@@ -99,6 +104,19 @@ class SingleLayerInferenceRunConfig:
             raise ValueError(
                 f"single_layer_inference.dataset_index must be non-negative, got {self.dataset_index}."
             )
+        if not isinstance(self.batch_mode, bool):
+            raise ValueError("single_layer_inference.batch_mode must be a boolean.")
+        if self.h5_dir is not None and (not isinstance(self.h5_dir, str) or not self.h5_dir.strip()):
+            raise ValueError("single_layer_inference.h5_dir must be null or a non-empty string.")
+        if self.output_dir is not None and (
+            not isinstance(self.output_dir, str) or not self.output_dir.strip()
+        ):
+            raise ValueError("single_layer_inference.output_dir must be null or a non-empty string.")
+        if not isinstance(self.output_prefix, str) or not self.output_prefix:
+            raise ValueError("single_layer_inference.output_prefix must be a non-empty string.")
+        if not isinstance(self.prediction_group_path, str) or not self.prediction_group_path.strip():
+            raise ValueError("single_layer_inference.prediction_group_path must be a non-empty string.")
+        _validate_hdf5_group_path(self.prediction_group_path, "single_layer_inference.prediction_group_path")
         if self.steps is not None and int(self.steps) <= 0:
             raise ValueError(f"single_layer_inference.steps must be positive when set, got {self.steps}.")
         if self.warmup_steps is not None and int(self.warmup_steps) < 0:
@@ -124,3 +142,9 @@ class SingleLayerInferenceRunConfig:
             raise ValueError(
                 "single_layer_inference.fem_valid_mask_dataset must be null or a non-empty string."
             )
+
+
+def _validate_hdf5_group_path(value: str, name: str):
+    parts = str(value).strip("/").split("/")
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"{name} must be a relative HDF5 group path, got {value!r}.")

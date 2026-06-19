@@ -397,7 +397,7 @@ T_next = implicit_fdm_step(T_inplane)
 
 ## `single_layer_inference`
 
-单层推理配置位于 `configs/pdgcn_single_layer_infer.example.json`。该入口用于检查单层 PD-GCN 自身推理效果，不启用多层 FDM。
+单层推理配置位于 `configs/pdgcn_single_layer_infer.example.json`。该入口用于检查单层 PD-GCN 自身推理效果，不启用多层 FDM。输出 HDF5 会先复制原始输入文件，再把预测数据写入 `prediction/pdgcn_single_layer`，因此原始输入 HDF5 不会被原地修改。
 
 运行命令：
 
@@ -405,13 +405,31 @@ T_next = implicit_fdm_step(T_inplane)
 D:\ProgramData\CondaEnv\PIGNN\python.exe inference\single_layer_infer_entry.py --config configs\pdgcn_single_layer_infer.example.json
 ```
 
+### 单文件与批量模式选择
+
+直接运行 `inference/single_layer_infer_entry.py` 时，会优先使用 JSON 中的 `single_layer_inference.batch_mode`。只有显式传入命令行参数 `--batch` 或 `--no-batch` 时，才会覆盖 JSON 配置。
+
+- 单文件模式：设置 `batch_mode=false`。此时入口使用 `h5_path` 作为输入 HDF5，并把增强后的 HDF5 写入 `output_path`；若 `h5_path=null`，入口会退回到训练配置 `datasets[dataset_index].h5_dir` 中自然排序的第一个 HDF5 文件。
+- 批量模式：设置 `batch_mode=true`。此时入口使用 `h5_dir` 作为输入目录，非递归遍历直属 `.h5`/`.hdf5` 文件，并把增强后的 HDF5 写入 `output_dir/<output_prefix><原文件名>`；对应 VTU 写入 `output_dir/<output_prefix><原stem>_vtu/`。
+
+为避免模式混淆，批量模式建议保持 `h5_path=null`，单文件模式建议明确填写 `h5_path`。如果看到程序访问训练配置中的 `../../autodl-tmp/...` 等目录，通常说明当前实际进入了单文件模式，且 `h5_path` 为空。
+
 关键字段：
 
 | 参数 | 说明 |
 | --- | --- |
-| `mode` | `"autoregressive"`、`"teacher_forcing"` 或 `"both"`；默认 `"both"`。 |
+| `output_path` | 单文件模式的增强 HDF5 输出路径。输出文件保留原 HDF5 内容，并新增预测组。 |
+| `h5_path` | 单文件模式输入 HDF5；为 `null` 时使用所选数据集目录中自然升序的第一个文件。 |
+| `batch_mode` | 是否启用批量推理。启用后遍历 `h5_dir` 下直属 `.h5`/`.hdf5` 文件。 |
+| `h5_dir` | 批量模式输入目录；为 `null` 时使用 `datasets[dataset_index].h5_dir`。 |
+| `output_dir` | 批量模式输出目录。增强 HDF5 和对应 VTU 目录都写入该目录。 |
+| `output_prefix` | 批量输出文件名前缀，默认 `pre_`，例如 `case1.h5` 输出为 `pre_case1.h5`。 |
+| `prediction_group_path` | 预测结果组路径，默认 `prediction/pdgcn_single_layer`。 |
+| `mode` | 兼容字段，可为 `"autoregressive"`、`"teacher_forcing"` 或 `"both"`；HDF5 落盘仅保存自回归预测温度。 |
 | `write_vtu` | 是否在推理后写出单层 `.vtu` 曲面文件。 |
 | `vtu_interval` | VTU 输出帧间隔，从第 0 帧开始采样。 |
-| `vtu_output_dir` | VTU 输出目录；为 `null` 时使用 `<output_path stem>_vtu/`。 |
+| `vtu_output_dir` | 单文件模式 VTU 输出目录；为 `null` 时使用 `<output_path stem>_vtu/`。批量模式固定使用 `<output_dir>/<output_prefix><原stem>_vtu/`。 |
 | `fem_temperature_dataset` | FEM 温度数据集路径，默认 `fem/temperature`。 |
 | `fem_valid_mask_dataset` | FEM mask 数据集路径，默认 `fem/valid_mask`。 |
+
+`prediction/pdgcn_single_layer` 内仅新增 `temperature` 数据集，形状为 `[time, node, 1]`，按帧写入预测真实温度，组织方式与 `fem/temperature` 保持一致。
