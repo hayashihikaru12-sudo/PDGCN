@@ -2,7 +2,7 @@ import torch.nn as nn
 
 
 def build_mlp(in_size: int, hidden_size: int, out_size: int, *, layer_norm: bool = True, dropout: float = 0.0):
-    """构建三层前馈 MLP 模块。
+    """构建三层前馈 MLP 模块，使用 GELU 激活函数。
 
     参数:
         in_size: 输入特征维度。
@@ -19,7 +19,7 @@ def build_mlp(in_size: int, hidden_size: int, out_size: int, *, layer_norm: bool
     # 构建初始两层结构：输入投影 -> 隐层激活。
     layers = [
         nn.Linear(in_size, hidden_size),
-        nn.ReLU(),
+        nn.GELU(),
     ]
     # 可选 dropout：仅在 dropout > 0 时启用。
     if dropout > 0:
@@ -29,7 +29,7 @@ def build_mlp(in_size: int, hidden_size: int, out_size: int, *, layer_norm: bool
     layers.extend(
         [
             nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.GELU(),
         ]
     )
     # 第二个隐层后的可选 dropout。
