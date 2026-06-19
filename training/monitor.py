@@ -12,6 +12,12 @@ import numpy as np
 EPOCH_METRIC_FIELDS = (
     "epoch",
     "lr",
+    "epoch_time_seconds",
+    "elapsed_time_seconds",
+    "total_training_time_seconds",
+    "eta_seconds",
+    "batch_time_mean_seconds",
+    "window_time_mean_seconds",
     "loss_total",
     "loss_physics",
     "loss_supervised",
@@ -38,6 +44,9 @@ EPOCH_METRIC_FIELDS = (
 SLICE_METRIC_FIELDS = (
     "epoch",
     "slice_index",
+    "slice_time_seconds",
+    "batch_time_mean_seconds",
+    "window_time_mean_seconds",
     "loss_total",
     "loss_physics",
     "loss_supervised",
@@ -82,16 +91,19 @@ class LossMonitor:
         self.records = []
 
     def __call__(self, epoch_record):
-        epoch = int(epoch_record["epoch"])
-        loss = float(epoch_record["loss"])
-        self.records.append({"epoch": epoch, "loss": loss})
+        record = _json_ready_record(epoch_record)
+        epoch = int(record["epoch"])
+        loss = float(record["loss"])
+        timing = self._tick_timing(epoch)
+        _set_default_timing_fields(record, timing)
+        self.records.append(record)
 
         self.print_fn(
             _format_epoch_message(
                 epoch=epoch,
                 loss=loss,
                 total_epochs=self.total_epochs,
-                timing=self._tick_timing(epoch),
+                timing=timing,
             )
         )
 
@@ -168,16 +180,22 @@ class TrainingProcessMonitor:
 
     def __call__(self, epoch_record, monitor_payload=None):
         record = _json_ready_record(epoch_record)
-        self.records.append(record)
 
         epoch = int(record["epoch"])
         loss = float(record.get("loss_total", record.get("loss", 0.0)))
+        timing = self._tick_timing(epoch)
+        _set_default_timing_fields(record, timing)
+        self.records.append(record)
         self.print_fn(
             _format_epoch_message(
                 epoch=epoch,
                 loss=loss,
                 total_epochs=self.total_epochs,
-                timing=self._tick_timing(epoch),
+                timing={
+                    "epoch_seconds": record["epoch_time_seconds"],
+                    "elapsed_seconds": record["elapsed_time_seconds"],
+                    "eta_seconds": record.get("eta_seconds"),
+                },
             )
         )
 
@@ -296,6 +314,13 @@ def _format_duration(seconds: float):
     hours, remainder = divmod(total_seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _set_default_timing_fields(record, timing):
+    record.setdefault("epoch_time_seconds", timing["epoch_seconds"])
+    record.setdefault("elapsed_time_seconds", timing["elapsed_seconds"])
+    record.setdefault("total_training_time_seconds", record["elapsed_time_seconds"])
+    record.setdefault("eta_seconds", timing.get("eta_seconds"))
 
 
 def _create_metric_group(h5_file, group_name: str, fields):

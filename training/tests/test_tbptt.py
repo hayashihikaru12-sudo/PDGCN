@@ -3,9 +3,10 @@ import unittest
 import torch
 import torch.nn as nn
 from torch_geometric.data import Data
+from unittest import mock
 
 from models import PDGCNConfig
-from training.tbptt import iter_tbptt_windows, rollout_window
+from training.tbptt import iter_tbptt_windows, rollout_window, train_tbptt_window
 
 
 class ConstantDeltaModel(nn.Module):
@@ -99,6 +100,20 @@ class TBPTTTests(unittest.TestCase):
         self.assertEqual(tuple(predictions.shape), (2, 3, 1))
         self.assertTrue(torch.allclose(predictions[0], torch.ones(3, 1)))
         self.assertTrue(torch.allclose(final_temperature, torch.full((3, 1), 2.0)))
+
+    def test_train_tbptt_window_passes_surface_heat_flux_to_total_loss(self):
+        model = ConstantDeltaModel(delta=1.0)
+        graph = make_graph()
+        graph.q_surface_star = torch.tensor([[0.0], [0.5], [1.0]])
+
+        with mock.patch("training.tbptt.total_loss", return_value=torch.tensor(2.0)) as total_loss_mock:
+            loss, _ = train_tbptt_window(model, [graph], torch.zeros(3, 1))
+
+        self.assertTrue(torch.allclose(loss, torch.tensor(2.0)))
+        kwargs = total_loss_mock.call_args.kwargs
+        self.assertTrue(torch.equal(kwargs["q_surface_star"], graph.q_surface_star))
+        self.assertTrue(kwargs["adaptive_pde_node_weight_enabled"])
+        self.assertAlmostEqual(kwargs["adaptive_pde_node_weight_min"], 0.2)
 
 
 if __name__ == "__main__":

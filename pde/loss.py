@@ -115,6 +115,7 @@ def total_loss(
     T_current,
     v_scan_star,
     Q_star=None,
+    q_surface_star=None,
     dt_star,
     edge_index,
     edge_attr,
@@ -129,6 +130,8 @@ def total_loss(
     thermal_loss_beta: float = 0.0,
     thermal_loss_base_temperature_star=0.0,
     residual_time_scheme: str = "explicit",
+    adaptive_pde_node_weight_enabled: bool = False,
+    adaptive_pde_node_weight_min: float = 0.2,
     return_components: bool = False,
     eps: float = 1e-12,
 ):
@@ -195,7 +198,14 @@ def total_loss(
         loss_pde = residual_2d.square().mean()
         loss_beta = thermal_loss_term_2d.square().mean()
     else:
-        loss_pde = residual_2d[:, interior_nodes].square().mean()
+        loss_pde = _compute_pde_loss(
+            residual_2d,
+            interior_nodes,
+            q_surface_star=q_surface_star,
+            adaptive_enabled=adaptive_pde_node_weight_enabled,
+            min_weight=adaptive_pde_node_weight_min,
+            eps=eps,
+        )
         loss_beta = thermal_loss_term_2d[:, interior_nodes].square().mean()
 
     outflow_nodes = _concat_boundary_nodes(boundary_nodes, ("downwind",), device=residual_2d.device)
@@ -242,6 +252,36 @@ def _concat_boundary_nodes(boundary_nodes: Optional[Dict[str, torch.Tensor]], na
     if not selected:
         return torch.empty(0, device=device, dtype=torch.long)
     return torch.unique(torch.cat(selected, dim=0))
+
+
+def _compute_pde_loss(
+    residual_2d,
+    interior_nodes,
+    *,
+    q_surface_star,
+    adaptive_enabled: bool,
+    min_weight: float,
+    eps: float,
+):
+    residual_interior = residual_2d[:, interior_nodes]
+    if not adaptive_enabled or q_surface_star is None:
+        return residual_interior.square().mean()
+
+    q_2d, _ = _as_time_node(q_surface_star, name="q_surface_star")
+    q_2d = q_2d.to(device=residual_2d.device, dtype=residual_2d.dtype)
+    q_2d = _broadcast_to_match(q_2d, residual_2d, name="q_surface_star")
+    q_abs = q_2d.abs()
+    max_abs = q_abs.max(dim=1, keepdim=True).values
+    weights = float(min_weight) + (1.0 - float(min_weight)) * q_abs / max_abs.add(float(eps))
+    weights = weights[:, interior_nodes]
+    weight_sum = weights.sum(dim=1, keepdim=True)
+    uniform_weights = torch.full_like(weights, 1.0 / float(interior_nodes.numel()))
+    normalized_weights = torch.where(
+        weight_sum > float(eps),
+        weights / weight_sum.clamp_min(float(eps)),
+        uniform_weights,
+    ).detach()
+    return (normalized_weights * residual_interior.square()).sum(dim=1).mean()
 
 
 def _interior_nodes(num_nodes: int, boundary_nodes: Optional[Dict[str, torch.Tensor]], *, device):

@@ -98,6 +98,14 @@ class TrainerTests(unittest.TestCase):
         self.assertEqual(len(history), 1)
         self.assertIn("loss", history[0])
         self.assertIn("lr", history[0])
+        self.assertIn("epoch_time_seconds", history[0])
+        self.assertIn("elapsed_time_seconds", history[0])
+        self.assertIn("total_training_time_seconds", history[0])
+        self.assertIn("batch_time_seconds", history[0])
+        self.assertIn("batch_time_mean_seconds", history[0])
+        self.assertEqual(len(history[0]["batch_time_seconds"]), len(history[0]["window_losses"]))
+        self.assertGreaterEqual(history[0]["epoch_time_seconds"], 0.0)
+        self.assertGreaterEqual(history[0]["total_training_time_seconds"], history[0]["epoch_time_seconds"])
         self.assertNotEqual(float(before), float(model.delta.detach()))
 
     def test_train_records_scheduled_learning_rate(self):

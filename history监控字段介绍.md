@@ -127,3 +127,22 @@ $$L_{\text{total}} = L_{\text{physics}} + \lambda_T \cdot L_{\text{temperature}}
 4. **分析 rollout 质量**：比较 `loss_teacher_forcing_temperature` 和 `loss_rollout_temperature`，后者通常更大。两者差距反映模型在自回归路径上的误差累积程度。
 5. **窗口分析**：`window_losses` 若呈明显上升趋势（靠后窗口损失更大），表明 TBPTT 窗口长度可能需要调整或模型需要更强的长时间稳定性约束。
 6. **跨实验对比**：`metadata` 中包含完整的运行配置，可直接对比不同实验的超参数设置。
+
+---
+
+## 训练时间字段
+
+新增时间字段均以秒为单位，使用 wall-clock 计时；在 CUDA 设备上会在采样前后同步 GPU，尽量避免异步 kernel 导致耗时偏低。
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `epoch_time_seconds` | float | 当前 epoch 的实际训练耗时。 |
+| `elapsed_time_seconds` | float | 从本次训练调用开始到当前 epoch 结束的累计耗时。 |
+| `total_training_time_seconds` | float | 当前已完成训练的总耗时；最后一条 history 记录中的该字段即本次训练总耗时。 |
+| `eta_seconds` | float/null | 根据当前平均 epoch 耗时估算的剩余时间；仅 monitor 侧可估算时写入。 |
+| `batch_time_seconds` | array[float] | 当前 epoch 内每个 batch/TBPTT window 的耗时列表，与 `window_losses` 一一对应。 |
+| `batch_time_mean_seconds` | float | 当前 epoch 的平均 batch/TBPTT window 耗时。 |
+| `window_time_seconds` | array[float] | `batch_time_seconds` 的语义别名，保留与已有 `window_losses` 命名一致。 |
+| `window_time_mean_seconds` | float | `batch_time_mean_seconds` 的语义别名。 |
+
+HDF5 monitor 的 `epoch_metrics` 会写入 `epoch_time_seconds`、`elapsed_time_seconds`、`total_training_time_seconds`、`eta_seconds`、`batch_time_mean_seconds` 和 `window_time_mean_seconds`；逐 window 的完整列表保存在 `history.json`。

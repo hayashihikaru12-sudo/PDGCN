@@ -47,7 +47,9 @@
       "lambda_pde": 1.0,
       "lambda_outflow": 1.0,
       "gradient_regularization": 0.0001,
-      "residual_time_scheme": "backward"
+      "residual_time_scheme": "backward",
+      "adaptive_pde_node_weight_enabled": true,
+      "adaptive_pde_node_weight_min": 0.2
     },
     "training": {
       "lr": 0.0001,

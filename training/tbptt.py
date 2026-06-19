@@ -4,7 +4,13 @@ import torch
 
 from pde import apply_dirichlet_boundary, total_loss
 
-from .graph_utils import clone_graph_with_temperature, graph_boundary_nodes, graph_explicit_source_delta, graph_temperature
+from .graph_utils import (
+    clone_graph_with_temperature,
+    graph_boundary_nodes,
+    graph_explicit_source_delta,
+    graph_surface_heat_source,
+    graph_temperature,
+)
 
 
 def iter_tbptt_windows(graph_seq: Sequence, window_size: int):
@@ -100,6 +106,7 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
             T_next=prediction,
             T_current=source_temperature,
             v_scan_star=graph.global_attr,
+            q_surface_star=graph_surface_heat_source(graph),
             dt_star=model.config.dt_star,
             edge_index=graph.edge_index,
             edge_attr=graph.edge_attr,
@@ -111,6 +118,8 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
             gradient_regularization=model.config.gradient_regularization,
             dirichlet_temperature_star=model.config.dirichlet_temperature_star,
             residual_time_scheme=model.config.residual_time_scheme,
+            adaptive_pde_node_weight_enabled=model.config.adaptive_pde_node_weight_enabled,
+            adaptive_pde_node_weight_min=model.config.adaptive_pde_node_weight_min,
         )
         losses.append(loss)
 

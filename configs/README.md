@@ -225,6 +225,8 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 | `lambda_outflow` | number | 出流边界 Neumann 软约束损失权重。越大越强调 downwind 边界法向温度梯度接近零。 |
 | `gradient_regularization` | number | 图梯度平滑损失权重，作用于边界钳制后的预测温度 `T_next_bc*`，抑制相邻内部节点的高频温度振荡。推荐从 `1e-4` 到 `1e-2` 调参；过大可能抹平热峰。 |
 | `residual_time_scheme` | string | PDE 空间项的时间离散方式。可选 `"explicit"` 或 `"backward"`。 |
+| `adaptive_pde_node_weight_enabled` | boolean | 是否启用基于无量纲表面热流 `q_surface_star` 的 PDE residual 节点自适应权重；默认 `true`。 |
+| `adaptive_pde_node_weight_min` | number | 零热流节点的最低 PDE 权重，范围 `[0, 1]`，默认 `0.2`。 |
 
 当前总损失为：
 
@@ -254,6 +256,8 @@ residual_transport =
   + convection
   - inverse_pe * diffusion
 ```
+
+当 `adaptive_pde_node_weight_enabled = true` 时，`loss_pde` 会在内部节点上使用由 `q_surface_star` 派生的归一化节点权重统计 residual MSE；`loss_outflow`、`loss_smooth` 和 FEM 监督损失不受影响。
 
 训练时间推进采用算子分裂：先用显式表面热源得到 `T_source_applied*`，再把该温度输入无源 PD-GCN。若启用 `include_delta_t_source_in_features`，同一步的 `ΔT_Q*` 会写入节点特征；若启用 `include_q_in_features`，节点特征中也包含 `q*`。PDE residual 的瞬态项只约束 PD-GCN 负责的无源面内输运增量。当 `residual_time_scheme = "explicit"` 时，`convection` 和 `diffusion` 使用 `T_source_applied*` 评估；当为 `"backward"` 时使用 `T_next*` 评估。
 

@@ -1,4 +1,5 @@
 from typing import Optional, Sequence
+import time
 
 import torch
 
@@ -35,7 +36,10 @@ def train(model, graph_seq: Sequence, config: TrainConfig, optimizer: Optional[t
 
     history = []
     lr_scheduler = build_lr_scheduler(optimizer, config)
+    training_start_time = time.perf_counter()
     for epoch in range(int(config.epochs)):
+        _synchronize_if_cuda(device)
+        epoch_start_time = time.perf_counter()
         lr_scheduler.begin_epoch(epoch)
         epoch_lr = optimizer_lr(optimizer)
         model.train()
@@ -48,21 +52,41 @@ def train(model, graph_seq: Sequence, config: TrainConfig, optimizer: Optional[t
         else:
             current_temperature = initial_temperature_from_graph_seq(graph_seq).detach()
         epoch_losses = []
+        window_times = []
 
         for window in iter_tbptt_windows(graph_seq, config.tbptt_window):
+            _synchronize_if_cuda(device)
+            window_start_time = time.perf_counter()
             optimizer.zero_grad()
             loss, final_temperature = train_tbptt_window(model, window, current_temperature)
             loss.backward()
             if config.grad_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
             optimizer.step()
+            _synchronize_if_cuda(device)
 
             epoch_losses.append(float(loss.detach().cpu()))
+            window_times.append(max(0.0, time.perf_counter() - window_start_time))
             current_temperature = final_temperature.detach()
 
         mean_loss = sum(epoch_losses) / max(len(epoch_losses), 1)
+        _synchronize_if_cuda(device)
+        epoch_time_seconds = max(0.0, time.perf_counter() - epoch_start_time)
+        elapsed_time_seconds = max(0.0, time.perf_counter() - training_start_time)
         lr_scheduler.end_epoch(mean_loss)
-        epoch_record = {"epoch": epoch, "loss": mean_loss, "lr": epoch_lr, "window_losses": epoch_losses}
+        epoch_record = {
+            "epoch": epoch,
+            "loss": mean_loss,
+            "lr": epoch_lr,
+            "epoch_time_seconds": epoch_time_seconds,
+            "elapsed_time_seconds": elapsed_time_seconds,
+            "total_training_time_seconds": elapsed_time_seconds,
+            "batch_time_seconds": window_times,
+            "batch_time_mean_seconds": _mean_values(window_times),
+            "window_losses": epoch_losses,
+            "window_time_seconds": window_times,
+            "window_time_mean_seconds": _mean_values(window_times),
+        }
         history.append(epoch_record)
         if config.loss_threshold is not None and mean_loss < float(config.loss_threshold):
             epoch_record["stopped_early"] = True
@@ -86,3 +110,13 @@ def _build_optimizer(model, config: TrainConfig):
     if config.optimizer == "Adam":
         return torch.optim.Adam(model.parameters(), lr=float(config.lr))
     raise ValueError(f"Unsupported optimizer: {config.optimizer}.")
+
+
+def _mean_values(values):
+    values = [float(value) for value in values]
+    return sum(values) / max(len(values), 1)
+
+
+def _synchronize_if_cuda(device):
+    if torch.device(device).type == "cuda":
+        torch.cuda.synchronize(device)

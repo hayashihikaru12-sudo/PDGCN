@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Callable, Optional, Sequence
 
 import torch
@@ -11,7 +12,12 @@ from data.static_cache import STATIC_FILE, HDF5FrameReader
 from pde import apply_dirichlet_boundary, total_loss
 
 from .config import TrainConfig
-from .graph_utils import clone_graph_with_temperature, graph_explicit_source_delta, node_feature_indices_from_config
+from .graph_utils import (
+    clone_graph_with_temperature,
+    graph_explicit_source_delta,
+    graph_surface_heat_source,
+    node_feature_indices_from_config,
+)
 from .lr_scheduler import build_lr_scheduler, optimizer_lr
 from .warmup import pseudo_time_relax_initial_temperature
 
@@ -305,7 +311,10 @@ def train_static_topology_sequences(
     if lr_scheduler_state is not None:
         lr_scheduler.load_state_dict(lr_scheduler_state)
     _lr_state_out = _lr_scheduler_state_out if _lr_scheduler_state_out is not None else None
+    training_start_time = time.perf_counter()
     for epoch in range(start_epoch, start_epoch + int(config.epochs)):
+        _synchronize_if_cuda(device)
+        epoch_start_time = time.perf_counter()
         lr_scheduler.begin_epoch(epoch)
         epoch_lr = optimizer_lr(optimizer)
         model.train()
@@ -331,11 +340,22 @@ def train_static_topology_sequences(
                 slice_callback({"epoch": epoch, "slice_index": file_index, "frame_reader": frame_reader})
 
         window_losses = [record["loss_total"] for record in window_records]
+        window_times = [float(record.get("window_time_seconds", 0.0)) for record in window_records]
         gamma_values = _collect_gamma_upwind(model)
+        _synchronize_if_cuda(device)
+        epoch_time_seconds = max(0.0, time.perf_counter() - epoch_start_time)
+        elapsed_time_seconds = max(0.0, time.perf_counter() - training_start_time)
         epoch_record = {
             "epoch": epoch,
             "loss": sum(window_losses) / max(len(window_losses), 1),
             "lr": epoch_lr,
+            "epoch_time_seconds": epoch_time_seconds,
+            "elapsed_time_seconds": elapsed_time_seconds,
+            "total_training_time_seconds": elapsed_time_seconds,
+            "batch_time_seconds": window_times,
+            "batch_time_mean_seconds": _mean_values(window_times),
+            "window_time_seconds": window_times,
+            "window_time_mean_seconds": _mean_values(window_times),
             "loss_total": _mean_records(window_records, "loss_total"),
             "loss_physics": _mean_records(window_records, "loss_physics"),
             "loss_supervised": _mean_records(window_records, "loss_supervised"),
@@ -423,6 +443,8 @@ def _train_one_static_sequence_epoch(
     window_records = []
     selected_snapshot = None
     for start in range(0, frame_reader.num_frames, int(config.tbptt_window)):
+        _synchronize_if_cuda(static_state.device)
+        window_start_time = time.perf_counter()
         end = min(start + int(config.tbptt_window), frame_reader.num_frames)
         optimizer.zero_grad()
         loss_terms = []
@@ -472,10 +494,14 @@ def _train_one_static_sequence_epoch(
         if config.grad_clip_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
         optimizer.step()
+        _synchronize_if_cuda(static_state.device)
+        window_time_seconds = max(0.0, time.perf_counter() - window_start_time)
 
         window_record = _aggregate_component_records(component_records)
         window_record.update(_temperature_stats(window_temperature, feature_builder.scale_params))
         window_record["loss_total"] = float(loss.detach().cpu())
+        window_record["batch_time_seconds"] = window_time_seconds
+        window_record["window_time_seconds"] = window_time_seconds
         window_records.append(window_record)
         if window_snapshot is not None:
             selected_snapshot = window_snapshot
@@ -503,6 +529,8 @@ def _train_one_static_sequence_epoch_supervised(
     selected_snapshot = None
     num_transitions = frame_reader.num_frames - 1
     for start in range(0, num_transitions, window_size):
+        _synchronize_if_cuda(static_state.device)
+        window_start_time = time.perf_counter()
         end = min(start + window_size, num_transitions)
         optimizer.zero_grad()
         loss_terms = []
@@ -598,11 +626,15 @@ def _train_one_static_sequence_epoch_supervised(
         if config.grad_clip_norm is not None:
             torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
         optimizer.step()
+        _synchronize_if_cuda(static_state.device)
+        window_time_seconds = max(0.0, time.perf_counter() - window_start_time)
 
         window_record = _aggregate_component_records(component_records)
         if window_temperature is not None:
             window_record.update(_temperature_stats(window_temperature, feature_builder.scale_params))
         window_record["loss_total"] = float(loss.detach().cpu())
+        window_record["batch_time_seconds"] = window_time_seconds
+        window_record["window_time_seconds"] = window_time_seconds
         window_records.append(window_record)
         if window_snapshot is not None:
             selected_snapshot = window_snapshot
@@ -765,6 +797,7 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
         T_next=next_temperature,
         T_current=current_temperature,
         v_scan_star=graph.global_attr,
+        q_surface_star=graph_surface_heat_source(graph),
         dt_star=model.config.dt_star,
         edge_index=static_state.edge_index,
         edge_attr=graph.edge_attr,
@@ -776,6 +809,8 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
         gradient_regularization=model.config.gradient_regularization,
         dirichlet_temperature_star=model.config.dirichlet_temperature_star,
         residual_time_scheme=model.config.residual_time_scheme,
+        adaptive_pde_node_weight_enabled=model.config.adaptive_pde_node_weight_enabled,
+        adaptive_pde_node_weight_min=model.config.adaptive_pde_node_weight_min,
         return_components=True,
     )
     components["loss_physics"] = components["loss_total"]
@@ -952,6 +987,11 @@ def _mean_records(records, key: str) -> float:
     return sum(values) / max(len(values), 1)
 
 
+def _mean_values(values) -> float:
+    values = [float(value) for value in values]
+    return sum(values) / max(len(values), 1)
+
+
 def _max_records(records, key: str) -> float:
     values = [float(record[key]) for record in records if key in record]
     return max(values) if values else 0.0
@@ -1083,3 +1123,8 @@ def _collect_gamma_upwind(model):
 
 def _default_device():
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _synchronize_if_cuda(device):
+    if torch.device(device).type == "cuda":
+        torch.cuda.synchronize(device)

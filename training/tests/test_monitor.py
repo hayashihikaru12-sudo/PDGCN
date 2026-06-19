@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -56,9 +57,19 @@ class MonitorTimingTests(unittest.TestCase):
             self.assertIn("epoch_time=00:00:03", messages[0])
             self.assertIn("elapsed=00:00:03", messages[0])
             self.assertIn("eta=00:00:03", messages[0])
+            history_payload = json.loads((Path(tmpdir) / "history.json").read_text(encoding="utf-8"))
+            self.assertEqual(history_payload["history"][0]["epoch_time_seconds"], 3.0)
+            self.assertEqual(history_payload["history"][0]["elapsed_time_seconds"], 3.0)
+            self.assertEqual(history_payload["history"][0]["total_training_time_seconds"], 3.0)
+            self.assertEqual(history_payload["history"][0]["eta_seconds"], 3.0)
             with h5py.File(Path(tmpdir) / "monitor_data.h5", "r") as h5_file:
                 self.assertIn("loss_smooth", h5_file["epoch_metrics"])
+                self.assertIn("epoch_time_seconds", h5_file["epoch_metrics"])
+                self.assertIn("elapsed_time_seconds", h5_file["epoch_metrics"])
+                self.assertIn("total_training_time_seconds", h5_file["epoch_metrics"])
+                self.assertIn("batch_time_mean_seconds", h5_file["epoch_metrics"])
                 self.assertIn("loss_smooth", h5_file["slice_metrics"])
+                self.assertIn("slice_time_seconds", h5_file["slice_metrics"])
                 self.assertIn("loss_temperature", h5_file["epoch_metrics"])
                 self.assertIn("loss_rollout_temperature", h5_file["epoch_metrics"])
                 self.assertIn("loss_teacher_forcing_temperature", h5_file["slice_metrics"])

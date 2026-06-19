@@ -276,6 +276,68 @@ class TotalLossComponentTests(unittest.TestCase):
             )
         )
 
+
+class AdaptivePdeNodeWeightTests(unittest.TestCase):
+    def _weighted_components(self, *, q_surface_star, enabled=True, min_weight=0.2, t_next=None):
+        edge_index = torch.empty((2, 0), dtype=torch.long)
+        edge_attr = torch.empty((0, 7), dtype=torch.float32)
+        if t_next is None:
+            t_next = torch.tensor([[0.0], [2.0], [4.0], [0.0]])
+        return total_loss(
+            T_next=t_next,
+            T_current=torch.zeros(4, 1),
+            v_scan_star=0.0,
+            q_surface_star=q_surface_star,
+            dt_star=1.0,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            boundary_nodes={
+                "upwind": torch.tensor([0]),
+                "side": torch.tensor([3]),
+                "downwind": torch.empty(0, dtype=torch.long),
+            },
+            inverse_pe=0.0,
+            lambda_outflow=0.0,
+            adaptive_pde_node_weight_enabled=enabled,
+            adaptive_pde_node_weight_min=min_weight,
+            return_components=True,
+        )
+
+    def test_adaptive_pde_loss_matches_manual_heat_flux_weighting(self):
+        components = self._weighted_components(q_surface_star=torch.tensor([[0.0], [1.0], [3.0], [0.0]]))
+
+        raw_weights = torch.tensor([0.2 + 0.8 / 3.0, 1.0])
+        normalized = raw_weights / raw_weights.sum()
+        expected = (normalized * torch.tensor([4.0, 16.0])).sum()
+        self.assertTrue(torch.allclose(components["loss_pde"], expected, atol=1e-6))
+
+    def test_adaptive_pde_loss_keeps_old_mean_when_disabled(self):
+        components = self._weighted_components(
+            q_surface_star=torch.tensor([[0.0], [1.0], [3.0], [0.0]]),
+            enabled=False,
+        )
+
+        self.assertTrue(torch.allclose(components["loss_pde"], torch.tensor(10.0), atol=1e-6))
+
+    def test_adaptive_pde_loss_uses_uniform_weights_when_heat_flux_is_zero(self):
+        components = self._weighted_components(
+            q_surface_star=torch.zeros(4, 1),
+            enabled=True,
+            min_weight=0.0,
+        )
+
+        self.assertTrue(torch.allclose(components["loss_pde"], torch.tensor(10.0), atol=1e-6))
+
+    def test_adaptive_pde_weights_do_not_backpropagate_to_heat_flux(self):
+        q_surface_star = torch.tensor([[0.0], [1.0], [3.0], [0.0]], requires_grad=True)
+        t_next = torch.tensor([[0.0], [2.0], [4.0], [0.0]], requires_grad=True)
+        components = self._weighted_components(q_surface_star=q_surface_star, t_next=t_next)
+
+        components["loss_pde"].backward()
+
+        self.assertIsNone(q_surface_star.grad)
+        self.assertIsNotNone(t_next.grad)
+
     def test_beta_monitor_loss_is_zero_when_beta_is_zero(self):
         edge_index = torch.empty((2, 0), dtype=torch.long)
         edge_attr = torch.empty((0, 7), dtype=torch.float32)

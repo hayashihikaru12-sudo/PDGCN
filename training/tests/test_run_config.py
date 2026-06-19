@@ -120,6 +120,8 @@ class RunConfigTests(unittest.TestCase):
         default_config = PDGCNConfig()
         self.assertEqual(default_config.node_input_size, 7)
         self.assertEqual(default_config.encoder_node_input_size, 8)
+        self.assertTrue(default_config.adaptive_pde_node_weight_enabled)
+        self.assertAlmostEqual(default_config.adaptive_pde_node_weight_min, 0.2)
 
         config = PDGCNConfig(
             include_q_in_features=True,
@@ -133,6 +135,14 @@ class RunConfigTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "node_input_size"):
             PDGCNConfig(node_input_size=7, include_q_in_features=True)
+
+    def test_pdgcn_config_rejects_invalid_adaptive_pde_node_weight_settings(self):
+        with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_enabled"):
+            PDGCNConfig(adaptive_pde_node_weight_enabled=1)
+        with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_min"):
+            PDGCNConfig(adaptive_pde_node_weight_min=-0.1)
+        with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_min"):
+            PDGCNConfig(adaptive_pde_node_weight_min=1.1)
 
     def test_pdgcn_config_from_scale_requires_physics_inputs_and_dt(self):
         scale = ScaleParams(L0=2.0, v0=4.0, T_amb=300.0, delta_T0=10.0, Q0=5.0)
@@ -177,6 +187,8 @@ class RunConfigTests(unittest.TestCase):
                     "gradient_regularization": 0.001,
                     "thermal_loss_beta": 0.25,
                     "residual_time_scheme": "backward",
+                    "adaptive_pde_node_weight_enabled": True,
+                    "adaptive_pde_node_weight_min": 0.35,
                 },
                 "training": {
                     "lr": 0.001,
@@ -211,6 +223,15 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.model["hidden_size"], 8)
         self.assertEqual(config.model["lambda_outflow"], 0.0)
         self.assertEqual(config.model["residual_time_scheme"], "backward")
+        self.assertTrue(config.model["adaptive_pde_node_weight_enabled"])
+        self.assertAlmostEqual(config.model["adaptive_pde_node_weight_min"], 0.35)
+        model_config = pdgcn_config_from_scale(
+            config.scale.to_scale_params(),
+            dt=1.0,
+            model_overrides=config.model,
+        )
+        self.assertTrue(model_config.adaptive_pde_node_weight_enabled)
+        self.assertAlmostEqual(model_config.adaptive_pde_node_weight_min, 0.35)
         self.assertEqual(config.training.device, "cpu")
         self.assertEqual(config.training.lr_scheduler, "warmup_cosine")
         self.assertAlmostEqual(config.training.min_lr, 1e-5)

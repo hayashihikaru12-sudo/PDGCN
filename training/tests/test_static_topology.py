@@ -389,6 +389,14 @@ class StaticTopologyTests(unittest.TestCase):
 
         self.assertEqual(len(history), 1)
         self.assertEqual(len(history[0]["window_losses"]), 1)
+        self.assertIn("epoch_time_seconds", history[0])
+        self.assertIn("elapsed_time_seconds", history[0])
+        self.assertIn("total_training_time_seconds", history[0])
+        self.assertIn("batch_time_seconds", history[0])
+        self.assertIn("batch_time_mean_seconds", history[0])
+        self.assertEqual(len(history[0]["batch_time_seconds"]), len(history[0]["window_losses"]))
+        self.assertGreaterEqual(history[0]["epoch_time_seconds"], 0.0)
+        self.assertGreaterEqual(history[0]["batch_time_mean_seconds"], 0.0)
         self.assertTrue(torch.isfinite(torch.tensor(history[0]["window_losses"])).all())
 
     def test_static_train_supervised_uses_fem_teacher_forcing(self):

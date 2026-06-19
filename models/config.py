@@ -33,6 +33,8 @@ class PDGCNConfig:
     thermal_loss_beta: float = 0.0
     thermal_loss_base_temperature_star: float = 0.0
     residual_time_scheme: str = "explicit"
+    adaptive_pde_node_weight_enabled: bool = True
+    adaptive_pde_node_weight_min: float = 0.2
 
     @property
     def encoder_node_input_size(self) -> int:
@@ -114,6 +116,16 @@ class PDGCNConfig:
             )
         if float(self.thermal_loss_beta) < 0:
             raise ValueError(f"thermal_loss_beta must be non-negative, got {self.thermal_loss_beta}.")
+        if not isinstance(self.adaptive_pde_node_weight_enabled, bool):
+            raise ValueError(
+                "adaptive_pde_node_weight_enabled must be a boolean, "
+                f"got {self.adaptive_pde_node_weight_enabled!r}."
+            )
+        if not 0.0 <= float(self.adaptive_pde_node_weight_min) <= 1.0:
+            raise ValueError(
+                "adaptive_pde_node_weight_min must be in [0, 1], "
+                f"got {self.adaptive_pde_node_weight_min}."
+            )
         if str(self.residual_time_scheme).strip().lower().replace("-", "_") not in (
             "explicit",
             "explicit_euler",
