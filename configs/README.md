@@ -225,8 +225,15 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 | `lambda_outflow` | number | 出流边界 Neumann 软约束损失权重。越大越强调 downwind 边界法向温度梯度接近零。 |
 | `gradient_regularization` | number | 图梯度平滑损失权重，作用于边界钳制后的预测温度 `T_next_bc*`，抑制相邻内部节点的高频温度振荡。推荐从 `1e-4` 到 `1e-2` 调参；过大可能抹平热峰。 |
 | `residual_time_scheme` | string | PDE 空间项的时间离散方式。可选 `"explicit"` 或 `"backward"`。 |
-| `adaptive_pde_node_weight_enabled` | boolean | 是否启用基于无量纲表面热流 `q_surface_star` 的 PDE residual 节点自适应权重；默认 `true`。 |
-| `adaptive_pde_node_weight_min` | number | 零热流节点的最低 PDE 权重，范围 `[0, 1]`，默认 `0.2`。 |
+| `adaptive_pde_node_weight_enabled` | boolean | 是否启用 PDE residual 内部节点动态权重；默认 `true`。 |
+| `adaptive_pde_node_weight_scheme` | string | 动态权重方案。可选 `"heat_flux"`、`"temperature_continuous_clamped"`、`"temperature_hard_threshold"` 或 `"none"`；默认 `"heat_flux"`，保持旧版行为。 |
+| `adaptive_pde_node_weight_min` | number | `"heat_flux"` 方案中零热流节点的最低 PDE 权重，范围 `[0, 1]`，默认 `0.2`。 |
+| `temperature_pde_node_weight_beta` | number | 方案 B 连续截断的温度权重斜率，默认 `0.5`。 |
+| `temperature_pde_node_weight_max` | number | 方案 B 连续截断的权重上限，默认 `8.0`。 |
+| `temperature_pde_node_weight_threshold` | number | 方案 C 硬阈值的无量纲温度阈值，默认 `1.0`。 |
+| `temperature_pde_node_weight_high` | number | 方案 C 硬阈值中热区节点权重，默认 `4.0`。 |
+| `adaptive_pde_node_weight_warmup_enabled` | boolean | 是否对 B/C 温度权重启用 epoch 级 warmup；默认 `false`。 |
+| `adaptive_pde_node_weight_warmup_epochs` | integer | warmup 阶段长度，默认 `50`。启用后前 `E` 个 epoch 使用均匀权重，`E` 到 `2E` 线性引入完整温度权重。 |
 
 当前总损失为：
 
@@ -257,7 +264,19 @@ residual_transport =
   - inverse_pe * diffusion
 ```
 
-当 `adaptive_pde_node_weight_enabled = true` 时，`loss_pde` 会在内部节点上使用由 `q_surface_star` 派生的归一化节点权重统计 residual MSE；`loss_outflow`、`loss_smooth` 和 FEM 监督损失不受影响。
+当 `adaptive_pde_node_weight_enabled = true` 时，`loss_pde` 会在内部节点上按 `adaptive_pde_node_weight_scheme` 使用归一化节点权重统计 residual MSE；`loss_outflow`、`loss_smooth` 和 FEM 监督损失不受影响。`"heat_flux"` 使用 `q_surface_star`，`"temperature_continuous_clamped"` 使用方案 B：
+
+```text
+w = clamp(1 + beta * max(0, T_source_applied*), 1, W_max)
+```
+
+`"temperature_hard_threshold"` 使用方案 C：
+
+```text
+w = W_high if T_source_applied* > threshold else 1
+```
+
+三类动态权重为互斥方案，不叠乘。权重计算结果会 `detach()`，只改变 residual MSE 的统计权重。
 
 训练时间推进采用算子分裂：先用显式表面热源得到 `T_source_applied*`，再把该温度输入无源 PD-GCN。若启用 `include_delta_t_source_in_features`，同一步的 `ΔT_Q*` 会写入节点特征；若启用 `include_q_in_features`，节点特征中也包含 `q*`。PDE residual 的瞬态项只约束 PD-GCN 负责的无源面内输运增量。当 `residual_time_scheme = "explicit"` 时，`convection` 和 `diffusion` 使用 `T_source_applied*` 评估；当为 `"backward"` 时使用 `T_next*` 评估。
 

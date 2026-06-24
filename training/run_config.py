@@ -21,7 +21,14 @@ PHYSICS_LOSS_FIELDS = {
     "thermal_loss_base_temperature_star",
     "residual_time_scheme",
     "adaptive_pde_node_weight_enabled",
+    "adaptive_pde_node_weight_scheme",
     "adaptive_pde_node_weight_min",
+    "temperature_pde_node_weight_beta",
+    "temperature_pde_node_weight_max",
+    "temperature_pde_node_weight_threshold",
+    "temperature_pde_node_weight_high",
+    "adaptive_pde_node_weight_warmup_enabled",
+    "adaptive_pde_node_weight_warmup_epochs",
 }
 
 

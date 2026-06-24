@@ -329,6 +329,7 @@ def train_static_topology_sequences(
                 feature_builder,
                 config,
                 optimizer,
+                epoch=epoch,
                 monitor_frame_index=monitor_frame_index,
                 supervision_config=supervision_config,
             )
@@ -412,6 +413,7 @@ def _train_one_static_sequence_epoch(
     config: TrainConfig,
     optimizer: torch.optim.Optimizer,
     *,
+    epoch: int = 0,
     monitor_frame_index: Optional[int] = None,
     supervision_config=None,
 ):
@@ -424,6 +426,7 @@ def _train_one_static_sequence_epoch(
             config,
             optimizer,
             supervision_config,
+            epoch=epoch,
             monitor_frame_index=monitor_frame_index,
         )
 
@@ -476,6 +479,7 @@ def _train_one_static_sequence_epoch(
                 source_temperature,
                 graph,
                 static_state,
+                epoch=epoch,
             )
             loss_terms.append(components["loss_total"])
             component_records.append(_detach_loss_record(components))
@@ -518,6 +522,7 @@ def _train_one_static_sequence_epoch_supervised(
     optimizer: torch.optim.Optimizer,
     supervision_config,
     *,
+    epoch: int = 0,
     monitor_frame_index: Optional[int] = None,
 ):
     if frame_reader.num_frames < 2:
@@ -556,6 +561,7 @@ def _train_one_static_sequence_epoch_supervised(
                     feature_builder,
                     frame_idx,
                     fem_current,
+                    epoch=epoch,
                 )
                 supervision_components = _compute_supervision_components(
                     next_temperature,
@@ -573,6 +579,7 @@ def _train_one_static_sequence_epoch_supervised(
                     feature_builder,
                     frame_idx,
                     rollout_temperature,
+                    epoch=epoch,
                 )
                 rollout_components = _compute_supervision_components(
                     next_temperature,
@@ -591,6 +598,7 @@ def _train_one_static_sequence_epoch_supervised(
                         feature_builder,
                         frame_idx,
                         fem_current,
+                        epoch=epoch,
                         compute_components=False,
                     )
                     teacher_components = _compute_supervision_components(
@@ -649,6 +657,7 @@ def _run_static_training_step(
     frame_idx: int,
     current_temperature,
     *,
+    epoch: int = 0,
     compute_components: bool = True,
 ):
     node_base_cpu, global_cpu = frame_reader.read_frame(frame_idx)
@@ -676,6 +685,7 @@ def _run_static_training_step(
             source_temperature,
             graph,
             static_state,
+            epoch=epoch,
         )
     return graph, source_temperature, next_temperature, components
 
@@ -767,6 +777,7 @@ def evaluate_static_topology_sequence(
                 source_temperature,
                 graph,
                 static_state,
+                epoch=epoch,
             )
             component_records.append(_detach_loss_record(components))
             if _should_capture_frame(frame_idx, monitor_frame_index, frame_reader.num_frames):
@@ -792,7 +803,15 @@ def evaluate_static_topology_sequence(
     return record, {"snapshot": snapshot} if snapshot is not None else {}
 
 
-def _compute_loss_components(model, next_temperature, current_temperature, graph, static_state: StaticGraphState):
+def _compute_loss_components(
+    model,
+    next_temperature,
+    current_temperature,
+    graph,
+    static_state: StaticGraphState,
+    *,
+    epoch: int = 0,
+):
     components = total_loss(
         T_next=next_temperature,
         T_current=current_temperature,
@@ -810,7 +829,16 @@ def _compute_loss_components(model, next_temperature, current_temperature, graph
         dirichlet_temperature_star=model.config.dirichlet_temperature_star,
         residual_time_scheme=model.config.residual_time_scheme,
         adaptive_pde_node_weight_enabled=model.config.adaptive_pde_node_weight_enabled,
+        adaptive_pde_node_weight_scheme=model.config.adaptive_pde_node_weight_scheme,
         adaptive_pde_node_weight_min=model.config.adaptive_pde_node_weight_min,
+        pde_node_weight_temperature_star=current_temperature,
+        pde_node_weight_epoch=epoch,
+        temperature_pde_node_weight_beta=model.config.temperature_pde_node_weight_beta,
+        temperature_pde_node_weight_max=model.config.temperature_pde_node_weight_max,
+        temperature_pde_node_weight_threshold=model.config.temperature_pde_node_weight_threshold,
+        temperature_pde_node_weight_high=model.config.temperature_pde_node_weight_high,
+        adaptive_pde_node_weight_warmup_enabled=model.config.adaptive_pde_node_weight_warmup_enabled,
+        adaptive_pde_node_weight_warmup_epochs=model.config.adaptive_pde_node_weight_warmup_epochs,
         return_components=True,
     )
     components["loss_physics"] = components["loss_total"]

@@ -58,7 +58,7 @@ def train(model, graph_seq: Sequence, config: TrainConfig, optimizer: Optional[t
             _synchronize_if_cuda(device)
             window_start_time = time.perf_counter()
             optimizer.zero_grad()
-            loss, final_temperature = train_tbptt_window(model, window, current_temperature)
+            loss, final_temperature = train_tbptt_window(model, window, current_temperature, epoch=epoch)
             loss.backward()
             if config.grad_clip_norm is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))

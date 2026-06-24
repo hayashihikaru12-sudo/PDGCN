@@ -98,6 +98,7 @@ class SingleLayerInferenceRunConfig:
     vtu_output_dir: Optional[str] = None
     fem_temperature_dataset: str = "fem/temperature"
     fem_valid_mask_dataset: Optional[str] = "fem/valid_mask"
+    write_fem_vtu: bool = True
 
     def __post_init__(self):
         if int(self.dataset_index) < 0:
@@ -106,6 +107,8 @@ class SingleLayerInferenceRunConfig:
             )
         if not isinstance(self.batch_mode, bool):
             raise ValueError("single_layer_inference.batch_mode must be a boolean.")
+        if not isinstance(self.write_fem_vtu, bool):
+            raise ValueError("single_layer_inference.write_fem_vtu must be a boolean.")
         if self.h5_dir is not None and (not isinstance(self.h5_dir, str) or not self.h5_dir.strip()):
             raise ValueError("single_layer_inference.h5_dir must be null or a non-empty string.")
         if self.output_dir is not None and (

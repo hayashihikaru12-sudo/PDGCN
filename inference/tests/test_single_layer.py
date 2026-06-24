@@ -8,8 +8,61 @@ import numpy as np
 import torch
 
 from inference.single_layer_infer_entry import main as single_layer_entry_main
-from inference.single_layer import run_single_layer_inference_from_config
+from inference.single_layer import (
+    _build_qv_tag,
+    _build_single_layer_vtu_name,
+    _format_filename_scalar,
+    run_single_layer_inference_from_config,
+)
 from models import PDGCN, PDGCNConfig
+
+
+class SingleLayerVtuFilenameTests(unittest.TestCase):
+    def test_format_filename_scalar_case_style(self):
+        # 小数点 -> p，整数无小数点，与源 case_*.h5 文件名风格一致
+        self.assertEqual(_format_filename_scalar(0.6666666865348816), "0p666667")
+        self.assertEqual(_format_filename_scalar(25.0), "25")
+        self.assertEqual(_format_filename_scalar(10.0), "10")
+        self.assertEqual(_format_filename_scalar(0.5), "0p5")
+        # 0 仍按整数渲染
+        self.assertEqual(_format_filename_scalar(0.0), "0")
+
+    def test_build_single_layer_vtu_name_with_and_without_tag(self):
+        self.assertEqual(
+            _build_single_layer_vtu_name("INF", 20, "Q0p666667_V25"),
+            "INF_temperature_step_Q0p666667_V25_000020.vtu",
+        )
+        self.assertEqual(
+            _build_single_layer_vtu_name("FEM", 0, ""),
+            "FEM_temperature_step_000000.vtu",
+        )
+
+    def test_build_qv_tag_reads_attrs_and_degrades_when_missing(self):
+        root = Path("inference/tests/_tmp_qv_tag")
+        if root.exists():
+            shutil.rmtree(root)
+        root.mkdir(parents=True)
+        h5_path = root / "case.h5"
+        with h5py.File(h5_path, "w") as h5_file:
+            h5_file.attrs["heat_source_qmax"] = np.float32(0.6666667)
+            h5_file.attrs["velocity_speed"] = 25.0
+            with h5py.File(h5_path, "r") as h5_file:
+                self.assertEqual(_build_qv_tag(h5_file), "Q0p666667_V25")
+
+        h5_no_q = root / "no_q.h5"
+        with h5py.File(h5_no_q, "w") as h5_file:
+            h5_file.attrs["velocity_speed"] = 10.0
+        with h5py.File(h5_no_q, "r") as h5_file:
+            # heat_source_qmax 缺失时只保留 V token，不报错
+            self.assertEqual(_build_qv_tag(h5_file), "V10")
+
+        h5_empty = root / "empty.h5"
+        with h5py.File(h5_empty, "w") as _:
+            pass
+        with h5py.File(h5_empty, "r") as h5_file:
+            # 两个 attr 都缺失时返回空串
+            self.assertEqual(_build_qv_tag(h5_file), "")
+        shutil.rmtree(root)
 
 
 class SingleLayerInferenceTests(unittest.TestCase):
@@ -100,15 +153,24 @@ class SingleLayerInferenceTests(unittest.TestCase):
             self.assertEqual(tuple(group["temperature"].shape), (2, 4, 1))
             self.assertEqual(group["temperature"].dtype, np.dtype("float32"))
         vtu_dir = output_path.with_name(f"{output_path.stem}_vtu")
-        first_vtu = vtu_dir / "temperature_step_000000.vtu"
-        second_vtu = vtu_dir / "temperature_step_000001.vtu"
+        tag = "Q0p666667_V2"
+        first_vtu = vtu_dir / f"INF_temperature_step_{tag}_000000.vtu"
+        second_vtu = vtu_dir / f"INF_temperature_step_{tag}_000001.vtu"
         self.assertTrue(first_vtu.exists())
         self.assertTrue(second_vtu.exists())
+        # 源 HDF5 含 fem/temperature，应同步生成 FEM_* 对比 vtu
+        first_fem_vtu = vtu_dir / f"FEM_temperature_step_{tag}_000000.vtu"
+        second_fem_vtu = vtu_dir / f"FEM_temperature_step_{tag}_000001.vtu"
+        self.assertTrue(first_fem_vtu.exists())
+        self.assertTrue(second_fem_vtu.exists())
         text = second_vtu.read_text(encoding="utf-8")
         self.assertIn('Name="temperature"', text)
         self.assertNotIn('Name="temperature_star"', text)
         self.assertNotIn('Name="fem_temperature"', text)
         self.assertNotIn('Name="teacher_temperature_error"', text)
+        fem_text = second_fem_vtu.read_text(encoding="utf-8")
+        self.assertIn('Name="temperature"', fem_text)
+        self.assertIn('Name="fem_valid_mask"', fem_text)
 
         result_second = run_single_layer_inference_from_config(infer_config_path)
         self.assertEqual(result_second["output_path"], str(output_path.resolve()))
@@ -192,8 +254,12 @@ class SingleLayerInferenceTests(unittest.TestCase):
         self.assertTrue((output_dir / "pre_case1.h5").exists())
         self.assertTrue((output_dir / "pre_case10.h5").exists())
         self.assertFalse((output_dir / "pre_case0_bad.h5").exists())
-        self.assertTrue((output_dir / "pre_case1_vtu" / "temperature_step_000000.vtu").exists())
-        self.assertTrue((output_dir / "pre_case10_vtu" / "temperature_step_000001.vtu").exists())
+        tag = "Q0p666667_V2"
+        self.assertTrue((output_dir / "pre_case1_vtu" / f"INF_temperature_step_{tag}_000000.vtu").exists())
+        self.assertTrue((output_dir / "pre_case10_vtu" / f"INF_temperature_step_{tag}_000001.vtu").exists())
+        # 源 HDF5 含 fem/temperature，批量模式应同步生成 FEM_* vtu
+        self.assertTrue((output_dir / "pre_case1_vtu" / f"FEM_temperature_step_{tag}_000000.vtu").exists())
+        self.assertTrue((output_dir / "pre_case10_vtu" / f"FEM_temperature_step_{tag}_000001.vtu").exists())
         with h5py.File(output_dir / "pre_case1.h5", "r") as h5_file:
             self.assertIn("dynamic", h5_file)
             group = h5_file["prediction/pdgcn_single_layer"]
@@ -271,6 +337,82 @@ class SingleLayerInferenceTests(unittest.TestCase):
         with h5py.File(output_dir / "pre_case1.h5", "r") as h5_file:
             self.assertIn("prediction/pdgcn_single_layer/temperature", h5_file)
 
+    def test_single_layer_skips_fem_vtu_when_fem_missing(self):
+        h5_dir = self.root / "h5_no_fem"
+        output_dir = self.root / "no_fem_outputs"
+        h5_dir.mkdir()
+        h5_path = h5_dir / "case1.h5"
+        checkpoint_path = self.root / "checkpoint.pt"
+        self._write_source_h5(h5_path, include_fem=False)
+        self._write_checkpoint(checkpoint_path)
+        train_config_path = self.root / "train_no_fem.json"
+        infer_config_path = self.root / "single_no_fem_infer.json"
+        train_config_path.write_text(
+            json.dumps(
+                {
+                    "outputs": {
+                        "checkpoint_path": str(checkpoint_path.resolve()),
+                        "history_path": "history.json",
+                    },
+                    "datasets": [
+                        {
+                            "name": "case_no_fem",
+                            "h5_dir": str(h5_dir.resolve()),
+                            "cache_dir": str((self.root / "no_fem_cache").resolve()),
+                            "scale": {
+                                "L0": 0.002,
+                                "v0": 0.002,
+                                "T_amb": 300.0,
+                                "delta_T0": 10.0,
+                                "Q0": 2.0e6,
+                                "K0": 8.0,
+                                "rho": 2.0,
+                                "Cp": 1.0,
+                                "heat_source_effective_thickness": 0.001,
+                            },
+                        }
+                    ],
+                    "hyperparameters": {
+                        "model": {"hidden_size": 8, "message_passing_num": 1},
+                        "physics_loss": {"lambda_outflow": 0.0},
+                        "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        infer_config_path.write_text(
+            json.dumps(
+                {
+                    "training_config": "train_no_fem.json",
+                    "single_layer_inference": {
+                        "batch_mode": True,
+                        "h5_dir": str(h5_dir.resolve()),
+                        "output_dir": str(output_dir.resolve()),
+                        "steps": 2,
+                        "warmup_steps": 0,
+                        "mode": "both",
+                        "write_vtu": True,
+                        "vtu_interval": 1,
+                        "write_fem_vtu": True,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_single_layer_inference_from_config(infer_config_path)
+
+        self.assertTrue(result["batch_mode"])
+        self.assertEqual(result["succeeded_count"], 1)
+        vtu_dir = output_dir / "pre_case1_vtu"
+        tag = "Q0p666667_V2"
+        # 无 fem/temperature 时仍正常生成 INF_* vtu，但不生成 FEM_* vtu、不报错
+        self.assertTrue((vtu_dir / f"INF_temperature_step_{tag}_000000.vtu").exists())
+        self.assertTrue((vtu_dir / f"INF_temperature_step_{tag}_000001.vtu").exists())
+        self.assertFalse((vtu_dir / f"FEM_temperature_step_{tag}_000000.vtu").exists())
+        self.assertFalse((vtu_dir / f"FEM_temperature_step_{tag}_000001.vtu").exists())
+
     def _write_checkpoint(self, path):
         model_config = PDGCNConfig(
             hidden_size=8,
@@ -292,7 +434,7 @@ class SingleLayerInferenceTests(unittest.TestCase):
             path,
         )
 
-    def _write_source_h5(self, path):
+    def _write_source_h5(self, path, *, include_fem=True):
         xyz = np.array(
             [
                 [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]],
@@ -314,6 +456,7 @@ class SingleLayerInferenceTests(unittest.TestCase):
 
         with h5py.File(path, "w") as h5_file:
             h5_file.attrs["velocity_speed"] = 2.0
+            h5_file.attrs["heat_source_qmax"] = np.float32(0.6666667)
             h5_file.attrs["velocity_direction_local"] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
             dynamic = h5_file.create_group("dynamic")
             dynamic.create_dataset("xyz", data=xyz)
@@ -328,10 +471,11 @@ class SingleLayerInferenceTests(unittest.TestCase):
             path_group = h5_file.create_group("path")
             path_group.create_dataset("heat_center_step_distance", data=np.float64(0.5))
             path_group.create_dataset("slice_path_length", data=np.float64(0.5))
-            fem = h5_file.create_group("fem")
-            fem.create_dataset("temperature", data=fem_temperature)
-            fem.create_dataset("temperature_unit", data="degC")
-            fem.create_dataset("valid_mask", data=np.ones((2, 4, 1), dtype=np.uint8))
+            if include_fem:
+                fem = h5_file.create_group("fem")
+                fem.create_dataset("temperature", data=fem_temperature)
+                fem.create_dataset("temperature_unit", data="degC")
+                fem.create_dataset("valid_mask", data=np.ones((2, 4, 1), dtype=np.uint8))
 
 
 if __name__ == "__main__":

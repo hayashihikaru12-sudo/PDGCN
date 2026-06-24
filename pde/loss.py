@@ -131,7 +131,16 @@ def total_loss(
     thermal_loss_base_temperature_star=0.0,
     residual_time_scheme: str = "explicit",
     adaptive_pde_node_weight_enabled: bool = False,
+    adaptive_pde_node_weight_scheme: str = "heat_flux",
     adaptive_pde_node_weight_min: float = 0.2,
+    pde_node_weight_temperature_star=None,
+    pde_node_weight_epoch: int = 0,
+    temperature_pde_node_weight_beta: float = 0.5,
+    temperature_pde_node_weight_max: float = 8.0,
+    temperature_pde_node_weight_threshold: float = 1.0,
+    temperature_pde_node_weight_high: float = 4.0,
+    adaptive_pde_node_weight_warmup_enabled: bool = False,
+    adaptive_pde_node_weight_warmup_epochs: int = 50,
     return_components: bool = False,
     eps: float = 1e-12,
 ):
@@ -202,8 +211,17 @@ def total_loss(
             residual_2d,
             interior_nodes,
             q_surface_star=q_surface_star,
+            temperature_star=pde_node_weight_temperature_star,
             adaptive_enabled=adaptive_pde_node_weight_enabled,
+            scheme=adaptive_pde_node_weight_scheme,
             min_weight=adaptive_pde_node_weight_min,
+            temperature_beta=temperature_pde_node_weight_beta,
+            temperature_max=temperature_pde_node_weight_max,
+            temperature_threshold=temperature_pde_node_weight_threshold,
+            temperature_high=temperature_pde_node_weight_high,
+            warmup_enabled=adaptive_pde_node_weight_warmup_enabled,
+            warmup_epochs=adaptive_pde_node_weight_warmup_epochs,
+            epoch=pde_node_weight_epoch,
             eps=eps,
         )
         loss_beta = thermal_loss_term_2d[:, interior_nodes].square().mean()
@@ -259,29 +277,127 @@ def _compute_pde_loss(
     interior_nodes,
     *,
     q_surface_star,
+    temperature_star,
     adaptive_enabled: bool,
+    scheme: str,
     min_weight: float,
+    temperature_beta: float,
+    temperature_max: float,
+    temperature_threshold: float,
+    temperature_high: float,
+    warmup_enabled: bool,
+    warmup_epochs: int,
+    epoch: int,
     eps: float,
 ):
     residual_interior = residual_2d[:, interior_nodes]
-    if not adaptive_enabled or q_surface_star is None:
+    scheme = str(scheme).strip().lower().replace("-", "_")
+    if not adaptive_enabled or scheme == "none":
         return residual_interior.square().mean()
+
+    if scheme == "heat_flux":
+        weights = _heat_flux_pde_weights(
+            q_surface_star,
+            residual_2d,
+            min_weight=float(min_weight),
+            eps=float(eps),
+        )
+    elif scheme == "temperature_continuous_clamped":
+        weights = _temperature_continuous_clamped_weights(
+            temperature_star,
+            residual_2d,
+            beta=float(temperature_beta),
+            max_weight=float(temperature_max),
+        )
+        weights = _apply_temperature_weight_warmup(
+            weights,
+            warmup_enabled=bool(warmup_enabled),
+            warmup_epochs=int(warmup_epochs),
+            epoch=int(epoch),
+        )
+    elif scheme == "temperature_hard_threshold":
+        weights = _temperature_hard_threshold_weights(
+            temperature_star,
+            residual_2d,
+            threshold=float(temperature_threshold),
+            high_weight=float(temperature_high),
+        )
+        weights = _apply_temperature_weight_warmup(
+            weights,
+            warmup_enabled=bool(warmup_enabled),
+            warmup_epochs=int(warmup_epochs),
+            epoch=int(epoch),
+        )
+    else:
+        raise ValueError(
+            "adaptive_pde_node_weight_scheme must be one of 'none', 'heat_flux', "
+            "'temperature_continuous_clamped', or 'temperature_hard_threshold', "
+            f"got {scheme!r}."
+        )
+
+    weights = weights[:, interior_nodes]
+    normalized_weights = _normalize_pde_node_weights(weights, interior_nodes.numel(), eps=eps).detach()
+    return (normalized_weights * residual_interior.square()).sum(dim=1).mean()
+
+
+def _heat_flux_pde_weights(q_surface_star, residual_2d, *, min_weight: float, eps: float):
+    if q_surface_star is None:
+        return torch.ones_like(residual_2d)
 
     q_2d, _ = _as_time_node(q_surface_star, name="q_surface_star")
     q_2d = q_2d.to(device=residual_2d.device, dtype=residual_2d.dtype)
     q_2d = _broadcast_to_match(q_2d, residual_2d, name="q_surface_star")
     q_abs = q_2d.abs()
     max_abs = q_abs.max(dim=1, keepdim=True).values
-    weights = float(min_weight) + (1.0 - float(min_weight)) * q_abs / max_abs.add(float(eps))
-    weights = weights[:, interior_nodes]
+    return float(min_weight) + (1.0 - float(min_weight)) * q_abs / max_abs.add(float(eps))
+
+
+def _temperature_continuous_clamped_weights(temperature_star, residual_2d, *, beta: float, max_weight: float):
+    temperature_2d = _temperature_weight_signal(temperature_star, residual_2d)
+    weights = 1.0 + float(beta) * torch.relu(temperature_2d)
+    return weights.clamp(min=1.0, max=float(max_weight))
+
+
+def _temperature_hard_threshold_weights(temperature_star, residual_2d, *, threshold: float, high_weight: float):
+    temperature_2d = _temperature_weight_signal(temperature_star, residual_2d)
+    high = torch.full_like(temperature_2d, float(high_weight))
+    low = torch.ones_like(temperature_2d)
+    return torch.where(temperature_2d > float(threshold), high, low)
+
+
+def _temperature_weight_signal(temperature_star, residual_2d):
+    if temperature_star is None:
+        raise ValueError(
+            "pde_node_weight_temperature_star is required when adaptive_pde_node_weight_scheme "
+            "uses a temperature-based scheme."
+        )
+    temperature_2d, _ = _as_time_node(temperature_star, name="pde_node_weight_temperature_star")
+    temperature_2d = temperature_2d.to(device=residual_2d.device, dtype=residual_2d.dtype)
+    return _broadcast_to_match(temperature_2d, residual_2d, name="pde_node_weight_temperature_star")
+
+
+def _apply_temperature_weight_warmup(weights, *, warmup_enabled: bool, warmup_epochs: int, epoch: int):
+    if not warmup_enabled:
+        return weights
+    if int(warmup_epochs) <= 0:
+        raise ValueError(f"adaptive_pde_node_weight_warmup_epochs must be positive, got {warmup_epochs}.")
+    if int(epoch) < int(warmup_epochs):
+        return torch.ones_like(weights)
+    if int(epoch) < 2 * int(warmup_epochs):
+        factor = float(int(epoch) - int(warmup_epochs)) / float(warmup_epochs)
+        return 1.0 + factor * (weights - 1.0)
+    return weights
+
+
+def _normalize_pde_node_weights(weights, num_nodes: int, *, eps: float):
     weight_sum = weights.sum(dim=1, keepdim=True)
-    uniform_weights = torch.full_like(weights, 1.0 / float(interior_nodes.numel()))
+    uniform_weights = torch.full_like(weights, 1.0 / float(num_nodes))
     normalized_weights = torch.where(
         weight_sum > float(eps),
         weights / weight_sum.clamp_min(float(eps)),
         uniform_weights,
     ).detach()
-    return (normalized_weights * residual_interior.square()).sum(dim=1).mean()
+    return normalized_weights
 
 
 def _interior_nodes(num_nodes: int, boundary_nodes: Optional[Dict[str, torch.Tensor]], *, device):

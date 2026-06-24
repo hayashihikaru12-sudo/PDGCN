@@ -172,6 +172,7 @@ def run_single_layer_inference_from_config(
                     require_fem=require_fem,
                     prediction_group_path=prediction_group_path,
                     write_vtu=bool(inference_config.write_vtu),
+                    write_fem_vtu=bool(inference_config.write_fem_vtu),
                 )
                 item["status"] = "succeeded"
                 results.append(item)
@@ -239,6 +240,7 @@ def run_single_layer_inference_from_config(
         require_fem=require_fem,
         prediction_group_path=prediction_group_path,
         write_vtu=bool(inference_config.write_vtu),
+        write_fem_vtu=bool(inference_config.write_fem_vtu),
     )
 
 
@@ -292,6 +294,7 @@ def _run_single_layer_inference_for_h5(
     require_fem: bool,
     prediction_group_path: str,
     write_vtu: bool,
+    write_fem_vtu: bool,
 ):
     timing = derive_timing_from_hdf5(selected_h5, scale_params, scan_velocity=scan_velocity)
     num_frames, _ = read_hdf5_temperature_shape(selected_h5)
@@ -325,7 +328,13 @@ def _run_single_layer_inference_for_h5(
                 prediction_group_path=prediction_group_path,
             )
 
-        render_summary = {"render_seconds": 0.0, "rendered_steps": [], "vtu_output_dir": str(selected_vtu_dir)}
+        render_summary = {
+            "render_seconds": 0.0,
+            "rendered_steps": [],
+            "fem_rendered_steps": [],
+            "fem_vtu_written": False,
+            "vtu_output_dir": str(selected_vtu_dir),
+        }
         if write_vtu:
             render_summary = render_single_layer_surfaces_from_hdf5(
                 temp_output,
@@ -335,6 +344,7 @@ def _run_single_layer_inference_for_h5(
                 source_h5=temp_output,
                 scale_params=scale_params,
                 scan_velocity=timing.get("velocity_speed", scale_params.v0),
+                write_fem_vtu=bool(write_fem_vtu),
             )
         total_seconds = float(timing_summary["inference_seconds"]) + float(render_summary["render_seconds"])
         temp_output.replace(selected_output)
@@ -568,6 +578,7 @@ def render_single_layer_surfaces_from_hdf5(
     source_h5=None,
     scale_params=None,
     scan_velocity=None,
+    write_fem_vtu: bool = True,
 ):
     prediction_h5 = Path(prediction_h5)
     metadata = None
@@ -611,47 +622,90 @@ def render_single_layer_surfaces_from_hdf5(
         scan_velocity = hdf5_timing.get("velocity_speed", scale_params.v0)
     loader = HDF5Loader(source_h5, scale_params=scale_params)
     rendered_steps = []
+    fem_rendered_steps = []
     start_render = time.perf_counter()
     with h5py.File(prediction_h5, "r") as output_file:
         output_group = _resolve_single_layer_prediction_group(
             output_file,
             prediction_group_path=prediction_group_path,
         )
+        # 输出 HDF5 是源文件副本，根级 attrs 保留 heat_source_qmax 与 velocity_speed，
+        # 用它们构造文件名 Q/V 标记，便于一眼区分不同工况的可视化结果。
+        qv_tag = _build_qv_tag(output_file)
+        # FEM 原始温度场保存在输出 HDF5 副本的根级（fem/temperature），
+        # 与推理预测组同源，可直接复用同一曲面网格生成对比 vtu。
+        fem_temperature_dataset = output_file["fem/temperature"] if "fem/temperature" in output_file else None
+        fem_valid_mask_dataset = (
+            output_file["fem/valid_mask"]
+            if fem_temperature_dataset is not None and "fem/valid_mask" in output_file
+            else None
+        )
+        fem_available = write_fem_vtu and fem_temperature_dataset is not None
+
+        def _maybe_write_fem(step, coords, edge_index, num_nodes):
+            if not fem_available:
+                return
+            if int(step) >= int(fem_temperature_dataset.shape[0]):
+                return
+            _write_single_layer_fem_step_vtu(
+                coords,
+                edge_index,
+                num_nodes,
+                fem_temperature_dataset,
+                fem_valid_mask_dataset,
+                vtu_output_dir=vtu_output_dir,
+                step=int(step),
+                qv_tag=qv_tag,
+            )
+            fem_rendered_steps.append(int(step))
+
         if "temperature" in output_group:
             steps = int(output_group["temperature"].shape[0])
             for step in range(steps):
                 if not _should_write_cloud_step(step, vtu_interval):
                     continue
+                coords, edge_index, num_nodes = _build_single_layer_step_surface(
+                    loader, scale_params, scan_velocity, step
+                )
                 _write_single_layer_step_vtu(
                     output_group,
-                    loader,
-                    scale_params,
-                    scan_velocity=scan_velocity,
+                    coords,
+                    edge_index,
+                    num_nodes,
                     vtu_output_dir=vtu_output_dir,
                     step=int(step),
                     teacher_only=False,
+                    qv_tag=qv_tag,
                 )
+                _maybe_write_fem(step, coords, edge_index, num_nodes)
                 rendered_steps.append(int(step))
         elif "teacher_forcing" in output_group:
             frame_indices = np.asarray(output_group["teacher_forcing/frame_index"], dtype=np.int64)
             for teacher_index, step in enumerate(frame_indices):
                 if not _should_write_cloud_step(int(step), vtu_interval):
                     continue
+                coords, edge_index, num_nodes = _build_single_layer_step_surface(
+                    loader, scale_params, scan_velocity, step
+                )
                 _write_single_layer_step_vtu(
                     output_group,
-                    loader,
-                    scale_params,
-                    scan_velocity=scan_velocity,
+                    coords,
+                    edge_index,
+                    num_nodes,
                     vtu_output_dir=vtu_output_dir,
                     step=int(step),
                     teacher_only=True,
                     teacher_index=int(teacher_index),
+                    qv_tag=qv_tag,
                 )
+                _maybe_write_fem(step, coords, edge_index, num_nodes)
                 rendered_steps.append(int(step))
 
     return {
         "render_seconds": time.perf_counter() - start_render,
         "rendered_steps": rendered_steps,
+        "fem_rendered_steps": fem_rendered_steps,
+        "fem_vtu_written": bool(fem_rendered_steps),
         "vtu_output_dir": str(vtu_output_dir),
     }
 
@@ -686,17 +740,53 @@ def _read_single_layer_metadata_from_group(group):
     return json.loads(str(metadata_json))
 
 
-def _write_single_layer_step_vtu(
-    output_file,
-    loader,
-    scale_params,
-    *,
-    scan_velocity,
-    vtu_output_dir,
-    step: int,
-    teacher_only: bool,
-    teacher_index=None,
-):
+def _format_filename_scalar(value, *, max_decimals: int = 6) -> str:
+    """Format a physical scalar for a filename, case-style (``.`` -> ``p``).
+
+    Integer-valued quantities render without a decimal point (``25`` -> ``25``);
+    fractional values keep significant digits with ``p`` in place of ``.``
+    (``0.6666667`` -> ``0p666667``), matching the source ``case_*.h5`` naming.
+    """
+    value = float(value)
+    if abs(value - round(value)) < 1e-9:
+        return str(int(round(value)))
+    text = f"{value:.{max_decimals}f}".rstrip("0").rstrip(".")
+    return text.replace(".", "p")
+
+
+def _build_single_layer_vtu_name(prefix: str, step: int, qv_tag: str) -> str:
+    """Compose a single-layer VTU filename with optional Q/V tag.
+
+    Without a tag: ``INF_temperature_step_000000.vtu``
+    With a tag:    ``INF_temperature_step_Q0p666667_V25_000000.vtu``
+    """
+    if qv_tag:
+        return f"{prefix}_temperature_step_{qv_tag}_{int(step):06d}.vtu"
+    return f"{prefix}_temperature_step_{int(step):06d}.vtu"
+
+
+def _build_qv_tag(h5_file) -> str:
+    """Build a ``Q<v>_V<v>`` filename tag from HDF5 root attributes.
+
+    ``Q`` is read from ``heat_source_qmax`` (native W/mm^2) and ``V`` from
+    ``velocity_speed`` (native mm/s). When either attribute is missing the
+    corresponding token is omitted, so the tag degrades gracefully rather than
+    failing rendering.
+    """
+    tokens = []
+    if "heat_source_qmax" in h5_file.attrs:
+        tokens.append(f"Q{_format_filename_scalar(h5_file.attrs['heat_source_qmax'])}")
+    if "velocity_speed" in h5_file.attrs:
+        tokens.append(f"V{_format_filename_scalar(h5_file.attrs['velocity_speed'])}")
+    return "_".join(tokens)
+
+
+def _build_single_layer_step_surface(loader, scale_params, scan_velocity, step):
+    """Construct the single-layer surface geometry (coords + edges) for one frame.
+
+    Shared by the INF and FEM VTU writers so both files use an identical mesh
+    and are directly comparable in ParaView.
+    """
     raw = loader.load_graph_data(int(step), device=torch.device("cpu"))
     graph = build_graph(
         raw,
@@ -711,6 +801,22 @@ def _write_single_layer_step_vtu(
     )
     coords = graph.pos.detach().cpu().numpy() * float(scale_params.L0)
     edge_index = graph.edge_index.detach().cpu().numpy()
+    return coords, edge_index, int(graph.num_nodes)
+
+
+def _write_single_layer_step_vtu(
+    output_file,
+    coords,
+    edge_index,
+    num_nodes,
+    *,
+    vtu_output_dir,
+    step: int,
+    teacher_only: bool,
+    teacher_index=None,
+    qv_tag: str = "",
+):
+    """Write the PDGCN inference temperature field as an INF_ prefixed VTU."""
 
     if teacher_only:
         group = output_file["teacher_forcing"]
@@ -731,45 +837,52 @@ def _write_single_layer_step_vtu(
 
     point_values = {
         "temperature": temperature,
-        "time_step": np.full((graph.num_nodes,), float(step), dtype=np.float32),
+        "time_step": np.full((num_nodes,), float(step), dtype=np.float32),
     }
     if temperature_star is not None:
         point_values["temperature_star"] = temperature_star
-    if "fem_temperature" in output_file and step < output_file["fem_temperature"].shape[0]:
-        fem_temperature = np.asarray(output_file["fem_temperature"][step], dtype=np.float64).reshape(-1)
-        point_values["fem_temperature"] = fem_temperature
-        if "temperature_error" in output_file:
-            point_values["temperature_error"] = np.asarray(
-                output_file["temperature_error"][step],
-                dtype=np.float64,
-            ).reshape(-1)
-            point_values["abs_temperature_error"] = np.abs(point_values["temperature_error"])
-        if "fem_valid_mask" in output_file:
-            point_values["fem_valid_mask"] = np.asarray(output_file["fem_valid_mask"][step], dtype=np.float64).reshape(-1)
-    if "teacher_forcing" in output_file and int(step) > 0:
-        group = output_file["teacher_forcing"]
-        frame_index = np.asarray(group["frame_index"], dtype=np.int64)
-        matches = np.nonzero(frame_index == int(step))[0]
-        if matches.size > 0:
-            index = int(matches[0])
-            point_values["teacher_temperature"] = np.asarray(group["temperature"][index], dtype=np.float64).reshape(-1)
-            if "temperature_star" in group:
-                point_values["teacher_temperature_star"] = np.asarray(
-                    group["temperature_star"][index],
-                    dtype=np.float64,
-                ).reshape(-1)
-            if "temperature_error" in group:
-                point_values["teacher_temperature_error"] = np.asarray(
-                    group["temperature_error"][index],
-                    dtype=np.float64,
-                ).reshape(-1)
 
     write_surface_vtu(
-        Path(vtu_output_dir) / f"temperature_step_{step:06d}.vtu",
+        Path(vtu_output_dir) / _build_single_layer_vtu_name("INF", step, qv_tag),
         coords,
         point_data=point_values,
         edge_index=edge_index,
         title=f"PDGCN step {step} single layer",
+    )
+
+
+def _write_single_layer_fem_step_vtu(
+    coords,
+    edge_index,
+    num_nodes,
+    fem_temperature_dataset,
+    fem_valid_mask_dataset,
+    *,
+    vtu_output_dir,
+    step: int,
+    qv_tag: str = "",
+):
+    """Write the original FEM temperature field as a FEM_ prefixed VTU.
+
+    The scalar field is named ``temperature`` to match the INF VTU, so the two
+    files can share one ParaView color map for direct side-by-side comparison.
+    """
+    temperature = np.asarray(fem_temperature_dataset[int(step)], dtype=np.float64).reshape(-1)
+    point_values = {
+        "temperature": temperature,
+        "time_step": np.full((num_nodes,), float(step), dtype=np.float32),
+    }
+    if fem_valid_mask_dataset is not None and int(step) < int(fem_valid_mask_dataset.shape[0]):
+        point_values["fem_valid_mask"] = np.asarray(
+            fem_valid_mask_dataset[int(step)], dtype=np.float64
+        ).reshape(-1)
+
+    write_surface_vtu(
+        Path(vtu_output_dir) / _build_single_layer_vtu_name("FEM", step, qv_tag),
+        coords,
+        point_data=point_values,
+        edge_index=edge_index,
+        title=f"FEM step {step} single layer",
     )
 
 

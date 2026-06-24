@@ -87,16 +87,30 @@ prediction/pdgcn_single_layer/temperature
 
 ## 五、VTU 渲染输出的监控场
 
-VTU 文件按 `vtu_interval` 间隔采样输出，文件名为 `temperature_step_XXXXXX.vtu`。
+VTU 文件按 `vtu_interval` 间隔采样输出，写入同一 vtu 输出目录，通过文件名前缀区分来源：
+
+- `INF_temperature_step_<QV>_<step>.vtu`：PDGCN 推理预测温度场
+- `FEM_temperature_step_<QV>_<step>.vtu`：原始 FEM 有限元温度场（当配置 `write_fem_vtu=true` 且 HDF5 含 `fem/temperature` 时同步生成；缺失则自动跳过、不报错）
+
+其中 `<QV>` 为工况标记，从输出 HDF5 副本根级 attrs 读取并以 case 文件名风格（小数点写作 `p`）拼入文件名，便于一眼区分不同热源强度与扫描速度的可视化结果：
+
+- `Q` 取自 `heat_source_qmax`（原始单位 W/mm²，例 `0.6666667` → `Q0p666667`）；缺失时省略 `Q` token。
+- `V` 取自 `velocity_speed`（原始单位 mm/s，例 `25` → `V25`）；缺失时省略 `V` token。
+- 两个 token 都缺失时回退为不带标记的 `INF_temperature_step_<step>.vtu`。
+
+示例：`INF_temperature_step_Q0p666667_V25_000020.vtu`、`FEM_temperature_step_Q0p666667_V25_000020.vtu`。
+
+INF 与 FEM 两类文件使用完全一致的曲面网格（节点坐标与三角连接），温度标量字段都命名为 `temperature`，因此可在 ParaView 中对 `INF_*` 与 `FEM_*` 套用同一 color map 直接并排对比。采样步集合相同（同 `vtu_interval`），保证逐步对齐。
 
 每个 VTU 文件包含以下 point data（节点标量场）：
 
-| 场名 | 含义 | 必含 |
-|------|------|------|
-| `temperature` | 有量纲预测温度 | ✅ |
-| `time_step` | 时间步索引 | ✅ |
+| 场名 | 含义 | INF | FEM |
+|------|------|:---:|:---:|
+| `temperature` | 有量纲温度（INF 为预测值，FEM 为原始有限元值） | ✅ | ✅ |
+| `time_step` | 时间步索引 | ✅ | ✅ |
+| `fem_valid_mask` | FEM 有效节点掩码（仅当 HDF5 含 `fem/valid_mask`） | — | 可选 |
 
-VTU 使用 Gmsh 三角网格面 + `UNSTRUCTURED_GRID` 格式，可在 ParaView 中直接打开查看。渲染旧版预测 HDF5 时，如果文件中仍存在 `temperature_star` 或历史诊断字段，渲染函数会继续兼容读取；新推理文件默认只写出 `temperature` 与 `time_step`。
+VTU 使用 Gmsh 三角网格面 + `UNSTRUCTURED_GRID` 格式，可在 ParaView 中直接打开查看。渲染旧版预测 HDF5 时，如果文件中仍存在 `temperature_star`，INF VTU 会继续兼容读取并追加该字段；新推理文件默认只写出 `temperature` 与 `time_step`。
 
 ---
 
@@ -128,6 +142,8 @@ prediction/pdgcn_single_layer/temperature
 ```
 
 两者均采用 `[time, node, 1]` 组织形式，后续分析脚本可直接按帧索引和节点索引对齐后计算误差、RMSE、MAE 或其他自定义指标。推理入口本身不再把这些对比指标写回 HDF5。
+
+此外，VTU 渲染阶段会按 `write_fem_vtu` 配置同步生成 `FEM_temperature_step_XXXXXX.vtu`，与推理 `INF_temperature_step_XXXXXX.vtu` 同目录、同网格，可在 ParaView 中直接可视化对比（详见第五节）。
 
 ---
 
@@ -173,9 +189,10 @@ prediction/pdgcn_single_layer/temperature
 | `mode` | string | 兼容字段，可为 `"autoregressive"` / `"teacher_forcing"` / `"both"`；HDF5 仅保存自回归预测温度 |
 | `write_vtu` | bool | 是否输出 VTU 可视化文件 |
 | `vtu_interval` | int | VTU 输出间隔（每 N 步输出一个） |
-| `vtu_output_dir` | string/null | 单文件 VTU 输出目录，null 时自动在 output 旁创建 `*_vtu` 目录；批量模式固定写入 `output_dir/pre_<原stem>_vtu/` |
+| `vtu_output_dir` | string/null | 单文件 VTU 输出目录，null 时自动在 output 旁创建 `*_vtu` 目录；批量模式固定写入 `output_dir/pre_<原stem>_vtu/`，`INF_*` 与 `FEM_*` VTU 同目录保存 |
 | `fem_temperature_dataset` | string | HDF5 中 FEM 温度数据集路径 |
 | `fem_valid_mask_dataset` | string/null | HDF5 中 FEM 有效掩码数据集路径，null 时使用全 1 掩码 |
+| `write_fem_vtu` | bool | 是否同步生成原始 FEM 温度场的 `FEM_temperature_step_XXXXXX.vtu`，默认 `true`；HDF5 不含 `fem/temperature` 时自动跳过 |
 
 批量推理命令示例：
 

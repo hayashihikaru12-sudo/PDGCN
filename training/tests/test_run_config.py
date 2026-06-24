@@ -121,7 +121,14 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(default_config.node_input_size, 7)
         self.assertEqual(default_config.encoder_node_input_size, 8)
         self.assertTrue(default_config.adaptive_pde_node_weight_enabled)
+        self.assertEqual(default_config.adaptive_pde_node_weight_scheme, "heat_flux")
         self.assertAlmostEqual(default_config.adaptive_pde_node_weight_min, 0.2)
+        self.assertAlmostEqual(default_config.temperature_pde_node_weight_beta, 0.5)
+        self.assertAlmostEqual(default_config.temperature_pde_node_weight_max, 8.0)
+        self.assertAlmostEqual(default_config.temperature_pde_node_weight_threshold, 1.0)
+        self.assertAlmostEqual(default_config.temperature_pde_node_weight_high, 4.0)
+        self.assertFalse(default_config.adaptive_pde_node_weight_warmup_enabled)
+        self.assertEqual(default_config.adaptive_pde_node_weight_warmup_epochs, 50)
 
         config = PDGCNConfig(
             include_q_in_features=True,
@@ -139,10 +146,26 @@ class RunConfigTests(unittest.TestCase):
     def test_pdgcn_config_rejects_invalid_adaptive_pde_node_weight_settings(self):
         with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_enabled"):
             PDGCNConfig(adaptive_pde_node_weight_enabled=1)
+        with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_scheme"):
+            PDGCNConfig(adaptive_pde_node_weight_scheme="bad")
         with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_min"):
             PDGCNConfig(adaptive_pde_node_weight_min=-0.1)
         with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_min"):
             PDGCNConfig(adaptive_pde_node_weight_min=1.1)
+        with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_beta"):
+            PDGCNConfig(temperature_pde_node_weight_beta=-0.1)
+        with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_max"):
+            PDGCNConfig(temperature_pde_node_weight_max=0.9)
+        with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_high"):
+            PDGCNConfig(temperature_pde_node_weight_high=0.9)
+        with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_threshold"):
+            PDGCNConfig(temperature_pde_node_weight_threshold=0.0)
+        with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_threshold"):
+            PDGCNConfig(temperature_pde_node_weight_threshold=-5.0)
+        with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_warmup_enabled"):
+            PDGCNConfig(adaptive_pde_node_weight_warmup_enabled=1)
+        with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_warmup_epochs"):
+            PDGCNConfig(adaptive_pde_node_weight_warmup_epochs=0)
 
     def test_pdgcn_config_from_scale_requires_physics_inputs_and_dt(self):
         scale = ScaleParams(L0=2.0, v0=4.0, T_amb=300.0, delta_T0=10.0, Q0=5.0)
@@ -188,7 +211,14 @@ class RunConfigTests(unittest.TestCase):
                     "thermal_loss_beta": 0.25,
                     "residual_time_scheme": "backward",
                     "adaptive_pde_node_weight_enabled": True,
+                    "adaptive_pde_node_weight_scheme": "temperature_continuous_clamped",
                     "adaptive_pde_node_weight_min": 0.35,
+                    "temperature_pde_node_weight_beta": 0.75,
+                    "temperature_pde_node_weight_max": 6.0,
+                    "temperature_pde_node_weight_threshold": 1.25,
+                    "temperature_pde_node_weight_high": 5.0,
+                    "adaptive_pde_node_weight_warmup_enabled": True,
+                    "adaptive_pde_node_weight_warmup_epochs": 25,
                 },
                 "training": {
                     "lr": 0.001,
@@ -224,6 +254,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.model["lambda_outflow"], 0.0)
         self.assertEqual(config.model["residual_time_scheme"], "backward")
         self.assertTrue(config.model["adaptive_pde_node_weight_enabled"])
+        self.assertEqual(config.model["adaptive_pde_node_weight_scheme"], "temperature_continuous_clamped")
         self.assertAlmostEqual(config.model["adaptive_pde_node_weight_min"], 0.35)
         model_config = pdgcn_config_from_scale(
             config.scale.to_scale_params(),
@@ -231,7 +262,14 @@ class RunConfigTests(unittest.TestCase):
             model_overrides=config.model,
         )
         self.assertTrue(model_config.adaptive_pde_node_weight_enabled)
+        self.assertEqual(model_config.adaptive_pde_node_weight_scheme, "temperature_continuous_clamped")
         self.assertAlmostEqual(model_config.adaptive_pde_node_weight_min, 0.35)
+        self.assertAlmostEqual(model_config.temperature_pde_node_weight_beta, 0.75)
+        self.assertAlmostEqual(model_config.temperature_pde_node_weight_max, 6.0)
+        self.assertAlmostEqual(model_config.temperature_pde_node_weight_threshold, 1.25)
+        self.assertAlmostEqual(model_config.temperature_pde_node_weight_high, 5.0)
+        self.assertTrue(model_config.adaptive_pde_node_weight_warmup_enabled)
+        self.assertEqual(model_config.adaptive_pde_node_weight_warmup_epochs, 25)
         self.assertEqual(config.training.device, "cpu")
         self.assertEqual(config.training.lr_scheduler, "warmup_cosine")
         self.assertAlmostEqual(config.training.min_lr, 1e-5)

@@ -107,12 +107,15 @@ class TBPTTTests(unittest.TestCase):
         graph.q_surface_star = torch.tensor([[0.0], [0.5], [1.0]])
 
         with mock.patch("training.tbptt.total_loss", return_value=torch.tensor(2.0)) as total_loss_mock:
-            loss, _ = train_tbptt_window(model, [graph], torch.zeros(3, 1))
+            loss, _ = train_tbptt_window(model, [graph], torch.zeros(3, 1), epoch=7)
 
         self.assertTrue(torch.allclose(loss, torch.tensor(2.0)))
         kwargs = total_loss_mock.call_args.kwargs
         self.assertTrue(torch.equal(kwargs["q_surface_star"], graph.q_surface_star))
+        self.assertTrue(torch.equal(kwargs["pde_node_weight_temperature_star"], graph.q_surface_star))
+        self.assertEqual(kwargs["pde_node_weight_epoch"], 7)
         self.assertTrue(kwargs["adaptive_pde_node_weight_enabled"])
+        self.assertEqual(kwargs["adaptive_pde_node_weight_scheme"], "heat_flux")
         self.assertAlmostEqual(kwargs["adaptive_pde_node_weight_min"], 0.2)
 
 

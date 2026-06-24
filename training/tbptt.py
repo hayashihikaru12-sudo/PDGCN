@@ -77,7 +77,7 @@ def rollout_window(model, window: Sequence, initial_temperature_star, *, return_
     return torch.stack(predictions, dim=0), current_temperature
 
 
-def train_tbptt_window(model, window: Sequence, initial_temperature_star):
+def train_tbptt_window(model, window: Sequence, initial_temperature_star, *, epoch: int = 0):
     """计算单个 TBPTT 窗口的物理损失。
 
     参数:
@@ -119,7 +119,16 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star):
             dirichlet_temperature_star=model.config.dirichlet_temperature_star,
             residual_time_scheme=model.config.residual_time_scheme,
             adaptive_pde_node_weight_enabled=model.config.adaptive_pde_node_weight_enabled,
+            adaptive_pde_node_weight_scheme=model.config.adaptive_pde_node_weight_scheme,
             adaptive_pde_node_weight_min=model.config.adaptive_pde_node_weight_min,
+            pde_node_weight_temperature_star=source_temperature,
+            pde_node_weight_epoch=epoch,
+            temperature_pde_node_weight_beta=model.config.temperature_pde_node_weight_beta,
+            temperature_pde_node_weight_max=model.config.temperature_pde_node_weight_max,
+            temperature_pde_node_weight_threshold=model.config.temperature_pde_node_weight_threshold,
+            temperature_pde_node_weight_high=model.config.temperature_pde_node_weight_high,
+            adaptive_pde_node_weight_warmup_enabled=model.config.adaptive_pde_node_weight_warmup_enabled,
+            adaptive_pde_node_weight_warmup_epochs=model.config.adaptive_pde_node_weight_warmup_epochs,
         )
         losses.append(loss)
 

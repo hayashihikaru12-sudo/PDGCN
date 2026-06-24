@@ -34,7 +34,14 @@ class PDGCNConfig:
     thermal_loss_base_temperature_star: float = 0.0
     residual_time_scheme: str = "explicit"
     adaptive_pde_node_weight_enabled: bool = True
+    adaptive_pde_node_weight_scheme: str = "heat_flux"
     adaptive_pde_node_weight_min: float = 0.2
+    temperature_pde_node_weight_beta: float = 0.5
+    temperature_pde_node_weight_max: float = 8.0
+    temperature_pde_node_weight_threshold: float = 1.0
+    temperature_pde_node_weight_high: float = 4.0
+    adaptive_pde_node_weight_warmup_enabled: bool = False
+    adaptive_pde_node_weight_warmup_epochs: int = 50
 
     @property
     def encoder_node_input_size(self) -> int:
@@ -121,10 +128,54 @@ class PDGCNConfig:
                 "adaptive_pde_node_weight_enabled must be a boolean, "
                 f"got {self.adaptive_pde_node_weight_enabled!r}."
             )
+        scheme = str(self.adaptive_pde_node_weight_scheme).strip().lower().replace("-", "_")
+        valid_schemes = {
+            "none",
+            "heat_flux",
+            "temperature_continuous_clamped",
+            "temperature_hard_threshold",
+        }
+        if scheme not in valid_schemes:
+            raise ValueError(
+                "adaptive_pde_node_weight_scheme must be one of "
+                "'none', 'heat_flux', 'temperature_continuous_clamped', or "
+                f"'temperature_hard_threshold', got {self.adaptive_pde_node_weight_scheme!r}."
+            )
+        object.__setattr__(self, "adaptive_pde_node_weight_scheme", scheme)
         if not 0.0 <= float(self.adaptive_pde_node_weight_min) <= 1.0:
             raise ValueError(
                 "adaptive_pde_node_weight_min must be in [0, 1], "
                 f"got {self.adaptive_pde_node_weight_min}."
+            )
+        if float(self.temperature_pde_node_weight_beta) < 0:
+            raise ValueError(
+                "temperature_pde_node_weight_beta must be non-negative, "
+                f"got {self.temperature_pde_node_weight_beta}."
+            )
+        if float(self.temperature_pde_node_weight_max) < 1.0:
+            raise ValueError(
+                "temperature_pde_node_weight_max must be at least 1, "
+                f"got {self.temperature_pde_node_weight_max}."
+            )
+        if float(self.temperature_pde_node_weight_high) < 1.0:
+            raise ValueError(
+                "temperature_pde_node_weight_high must be at least 1, "
+                f"got {self.temperature_pde_node_weight_high}."
+            )
+        if float(self.temperature_pde_node_weight_threshold) <= 0:
+            raise ValueError(
+                "temperature_pde_node_weight_threshold must be positive, "
+                f"got {self.temperature_pde_node_weight_threshold}."
+            )
+        if not isinstance(self.adaptive_pde_node_weight_warmup_enabled, bool):
+            raise ValueError(
+                "adaptive_pde_node_weight_warmup_enabled must be a boolean, "
+                f"got {self.adaptive_pde_node_weight_warmup_enabled!r}."
+            )
+        if int(self.adaptive_pde_node_weight_warmup_epochs) <= 0:
+            raise ValueError(
+                "adaptive_pde_node_weight_warmup_epochs must be positive, "
+                f"got {self.adaptive_pde_node_weight_warmup_epochs}."
             )
         if str(self.residual_time_scheme).strip().lower().replace("-", "_") not in (
             "explicit",

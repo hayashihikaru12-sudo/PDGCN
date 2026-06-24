@@ -278,7 +278,15 @@ class TotalLossComponentTests(unittest.TestCase):
 
 
 class AdaptivePdeNodeWeightTests(unittest.TestCase):
-    def _weighted_components(self, *, q_surface_star, enabled=True, min_weight=0.2, t_next=None):
+    def _weighted_components(
+        self,
+        *,
+        q_surface_star=None,
+        enabled=True,
+        min_weight=0.2,
+        t_next=None,
+        **weight_kwargs,
+    ):
         edge_index = torch.empty((2, 0), dtype=torch.long)
         edge_attr = torch.empty((0, 7), dtype=torch.float32)
         if t_next is None:
@@ -301,6 +309,7 @@ class AdaptivePdeNodeWeightTests(unittest.TestCase):
             adaptive_pde_node_weight_enabled=enabled,
             adaptive_pde_node_weight_min=min_weight,
             return_components=True,
+            **weight_kwargs,
         )
 
     def test_adaptive_pde_loss_matches_manual_heat_flux_weighting(self):
@@ -337,6 +346,70 @@ class AdaptivePdeNodeWeightTests(unittest.TestCase):
 
         self.assertIsNone(q_surface_star.grad)
         self.assertIsNotNone(t_next.grad)
+
+    def test_temperature_continuous_clamped_pde_loss_matches_manual_weighting(self):
+        components = self._weighted_components(
+            adaptive_pde_node_weight_scheme="temperature_continuous_clamped",
+            pde_node_weight_temperature_star=torch.tensor([[0.0], [2.0], [20.0], [0.0]]),
+            temperature_pde_node_weight_beta=0.5,
+            temperature_pde_node_weight_max=8.0,
+        )
+
+        normalized = torch.tensor([2.0, 8.0]) / 10.0
+        expected = (normalized * torch.tensor([4.0, 16.0])).sum()
+        self.assertTrue(torch.allclose(components["loss_pde"], expected, atol=1e-6))
+
+    def test_temperature_hard_threshold_pde_loss_matches_manual_weighting(self):
+        components = self._weighted_components(
+            adaptive_pde_node_weight_scheme="temperature_hard_threshold",
+            pde_node_weight_temperature_star=torch.tensor([[0.0], [0.5], [2.0], [0.0]]),
+            temperature_pde_node_weight_threshold=1.0,
+            temperature_pde_node_weight_high=4.0,
+        )
+
+        normalized = torch.tensor([1.0, 4.0]) / 5.0
+        expected = (normalized * torch.tensor([4.0, 16.0])).sum()
+        self.assertTrue(torch.allclose(components["loss_pde"], expected, atol=1e-6))
+
+    def test_temperature_pde_weight_warmup_stages(self):
+        temperature_star = torch.tensor([[0.0], [2.0], [20.0], [0.0]])
+        common = {
+            "adaptive_pde_node_weight_scheme": "temperature_continuous_clamped",
+            "pde_node_weight_temperature_star": temperature_star,
+            "temperature_pde_node_weight_beta": 0.5,
+            "temperature_pde_node_weight_max": 8.0,
+            "adaptive_pde_node_weight_warmup_enabled": True,
+            "adaptive_pde_node_weight_warmup_epochs": 2,
+        }
+
+        early = self._weighted_components(pde_node_weight_epoch=0, **common)
+        ramp = self._weighted_components(pde_node_weight_epoch=3, **common)
+        full = self._weighted_components(pde_node_weight_epoch=4, **common)
+
+        expected_early = torch.tensor(10.0)
+        expected_ramp = (torch.tensor([1.5, 4.5]) / 6.0 * torch.tensor([4.0, 16.0])).sum()
+        expected_full = (torch.tensor([2.0, 8.0]) / 10.0 * torch.tensor([4.0, 16.0])).sum()
+        self.assertTrue(torch.allclose(early["loss_pde"], expected_early, atol=1e-6))
+        self.assertTrue(torch.allclose(ramp["loss_pde"], expected_ramp, atol=1e-6))
+        self.assertTrue(torch.allclose(full["loss_pde"], expected_full, atol=1e-6))
+
+    def test_temperature_pde_weights_do_not_backpropagate_to_weight_signal(self):
+        temperature_star = torch.tensor([[0.0], [2.0], [20.0], [0.0]], requires_grad=True)
+        t_next = torch.tensor([[0.0], [2.0], [4.0], [0.0]], requires_grad=True)
+        components = self._weighted_components(
+            t_next=t_next,
+            adaptive_pde_node_weight_scheme="temperature_continuous_clamped",
+            pde_node_weight_temperature_star=temperature_star,
+        )
+
+        components["loss_pde"].backward()
+
+        self.assertIsNone(temperature_star.grad)
+        self.assertIsNotNone(t_next.grad)
+
+    def test_temperature_scheme_requires_temperature_signal(self):
+        with self.assertRaisesRegex(ValueError, "pde_node_weight_temperature_star"):
+            self._weighted_components(adaptive_pde_node_weight_scheme="temperature_hard_threshold")
 
     def test_beta_monitor_loss_is_zero_when_beta_is_zero(self):
         edge_index = torch.empty((2, 0), dtype=torch.long)
