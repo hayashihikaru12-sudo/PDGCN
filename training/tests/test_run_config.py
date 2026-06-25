@@ -125,6 +125,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(default_config.adaptive_pde_node_weight_min, 0.2)
         self.assertAlmostEqual(default_config.temperature_pde_node_weight_beta, 0.5)
         self.assertAlmostEqual(default_config.temperature_pde_node_weight_max, 8.0)
+        self.assertTrue(default_config.temperature_pde_node_weight_clamp_enabled)
         self.assertAlmostEqual(default_config.temperature_pde_node_weight_threshold, 1.0)
         self.assertAlmostEqual(default_config.temperature_pde_node_weight_high, 4.0)
         self.assertFalse(default_config.adaptive_pde_node_weight_warmup_enabled)
@@ -156,6 +157,8 @@ class RunConfigTests(unittest.TestCase):
             PDGCNConfig(temperature_pde_node_weight_beta=-0.1)
         with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_max"):
             PDGCNConfig(temperature_pde_node_weight_max=0.9)
+        with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_clamp_enabled"):
+            PDGCNConfig(temperature_pde_node_weight_clamp_enabled=1)
         with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_high"):
             PDGCNConfig(temperature_pde_node_weight_high=0.9)
         with self.assertRaisesRegex(ValueError, "temperature_pde_node_weight_threshold"):
@@ -215,6 +218,7 @@ class RunConfigTests(unittest.TestCase):
                     "adaptive_pde_node_weight_min": 0.35,
                     "temperature_pde_node_weight_beta": 0.75,
                     "temperature_pde_node_weight_max": 6.0,
+                    "temperature_pde_node_weight_clamp_enabled": False,
                     "temperature_pde_node_weight_threshold": 1.25,
                     "temperature_pde_node_weight_high": 5.0,
                     "adaptive_pde_node_weight_warmup_enabled": True,
@@ -256,6 +260,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertTrue(config.model["adaptive_pde_node_weight_enabled"])
         self.assertEqual(config.model["adaptive_pde_node_weight_scheme"], "temperature_continuous_clamped")
         self.assertAlmostEqual(config.model["adaptive_pde_node_weight_min"], 0.35)
+        self.assertFalse(config.model["temperature_pde_node_weight_clamp_enabled"])
         model_config = pdgcn_config_from_scale(
             config.scale.to_scale_params(),
             dt=1.0,
@@ -266,6 +271,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(model_config.adaptive_pde_node_weight_min, 0.35)
         self.assertAlmostEqual(model_config.temperature_pde_node_weight_beta, 0.75)
         self.assertAlmostEqual(model_config.temperature_pde_node_weight_max, 6.0)
+        self.assertFalse(model_config.temperature_pde_node_weight_clamp_enabled)
         self.assertAlmostEqual(model_config.temperature_pde_node_weight_threshold, 1.25)
         self.assertAlmostEqual(model_config.temperature_pde_node_weight_high, 5.0)
         self.assertTrue(model_config.adaptive_pde_node_weight_warmup_enabled)

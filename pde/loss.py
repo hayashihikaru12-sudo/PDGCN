@@ -137,6 +137,7 @@ def total_loss(
     pde_node_weight_epoch: int = 0,
     temperature_pde_node_weight_beta: float = 0.5,
     temperature_pde_node_weight_max: float = 8.0,
+    temperature_pde_node_weight_clamp_enabled: bool = True,
     temperature_pde_node_weight_threshold: float = 1.0,
     temperature_pde_node_weight_high: float = 4.0,
     adaptive_pde_node_weight_warmup_enabled: bool = False,
@@ -217,6 +218,7 @@ def total_loss(
             min_weight=adaptive_pde_node_weight_min,
             temperature_beta=temperature_pde_node_weight_beta,
             temperature_max=temperature_pde_node_weight_max,
+            temperature_clamp_enabled=temperature_pde_node_weight_clamp_enabled,
             temperature_threshold=temperature_pde_node_weight_threshold,
             temperature_high=temperature_pde_node_weight_high,
             warmup_enabled=adaptive_pde_node_weight_warmup_enabled,
@@ -283,6 +285,7 @@ def _compute_pde_loss(
     min_weight: float,
     temperature_beta: float,
     temperature_max: float,
+    temperature_clamp_enabled: bool,
     temperature_threshold: float,
     temperature_high: float,
     warmup_enabled: bool,
@@ -308,6 +311,7 @@ def _compute_pde_loss(
             residual_2d,
             beta=float(temperature_beta),
             max_weight=float(temperature_max),
+            clamp_enabled=bool(temperature_clamp_enabled),
         )
         weights = _apply_temperature_weight_warmup(
             weights,
@@ -352,10 +356,20 @@ def _heat_flux_pde_weights(q_surface_star, residual_2d, *, min_weight: float, ep
     return float(min_weight) + (1.0 - float(min_weight)) * q_abs / max_abs.add(float(eps))
 
 
-def _temperature_continuous_clamped_weights(temperature_star, residual_2d, *, beta: float, max_weight: float):
+def _temperature_continuous_clamped_weights(
+    temperature_star,
+    residual_2d,
+    *,
+    beta: float,
+    max_weight: float,
+    clamp_enabled: bool,
+):
     temperature_2d = _temperature_weight_signal(temperature_star, residual_2d)
     weights = 1.0 + float(beta) * torch.relu(temperature_2d)
-    return weights.clamp(min=1.0, max=float(max_weight))
+    weights = weights.clamp_min(1.0)
+    if bool(clamp_enabled):
+        weights = weights.clamp(max=float(max_weight))
+    return weights
 
 
 def _temperature_hard_threshold_weights(temperature_star, residual_2d, *, threshold: float, high_weight: float):

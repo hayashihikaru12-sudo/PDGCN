@@ -38,6 +38,7 @@ class PDGCNConfig:
     adaptive_pde_node_weight_min: float = 0.2
     temperature_pde_node_weight_beta: float = 0.5
     temperature_pde_node_weight_max: float = 8.0
+    temperature_pde_node_weight_clamp_enabled: bool = True
     temperature_pde_node_weight_threshold: float = 1.0
     temperature_pde_node_weight_high: float = 4.0
     adaptive_pde_node_weight_warmup_enabled: bool = False
@@ -156,6 +157,11 @@ class PDGCNConfig:
             raise ValueError(
                 "temperature_pde_node_weight_max must be at least 1, "
                 f"got {self.temperature_pde_node_weight_max}."
+            )
+        if not isinstance(self.temperature_pde_node_weight_clamp_enabled, bool):
+            raise ValueError(
+                "temperature_pde_node_weight_clamp_enabled must be a boolean, "
+                f"got {self.temperature_pde_node_weight_clamp_enabled!r}."
             )
         if float(self.temperature_pde_node_weight_high) < 1.0:
             raise ValueError(

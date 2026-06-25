@@ -359,6 +359,19 @@ class AdaptivePdeNodeWeightTests(unittest.TestCase):
         expected = (normalized * torch.tensor([4.0, 16.0])).sum()
         self.assertTrue(torch.allclose(components["loss_pde"], expected, atol=1e-6))
 
+    def test_temperature_continuous_clamped_can_disable_upper_clamp(self):
+        components = self._weighted_components(
+            adaptive_pde_node_weight_scheme="temperature_continuous_clamped",
+            pde_node_weight_temperature_star=torch.tensor([[0.0], [2.0], [20.0], [0.0]]),
+            temperature_pde_node_weight_beta=0.5,
+            temperature_pde_node_weight_max=8.0,
+            temperature_pde_node_weight_clamp_enabled=False,
+        )
+
+        normalized = torch.tensor([2.0, 11.0]) / 13.0
+        expected = (normalized * torch.tensor([4.0, 16.0])).sum()
+        self.assertTrue(torch.allclose(components["loss_pde"], expected, atol=1e-6))
+
     def test_temperature_hard_threshold_pde_loss_matches_manual_weighting(self):
         components = self._weighted_components(
             adaptive_pde_node_weight_scheme="temperature_hard_threshold",

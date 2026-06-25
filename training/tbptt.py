@@ -125,6 +125,7 @@ def train_tbptt_window(model, window: Sequence, initial_temperature_star, *, epo
             pde_node_weight_epoch=epoch,
             temperature_pde_node_weight_beta=model.config.temperature_pde_node_weight_beta,
             temperature_pde_node_weight_max=model.config.temperature_pde_node_weight_max,
+            temperature_pde_node_weight_clamp_enabled=model.config.temperature_pde_node_weight_clamp_enabled,
             temperature_pde_node_weight_threshold=model.config.temperature_pde_node_weight_threshold,
             temperature_pde_node_weight_high=model.config.temperature_pde_node_weight_high,
             adaptive_pde_node_weight_warmup_enabled=model.config.adaptive_pde_node_weight_warmup_enabled,

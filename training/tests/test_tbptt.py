@@ -117,6 +117,7 @@ class TBPTTTests(unittest.TestCase):
         self.assertTrue(kwargs["adaptive_pde_node_weight_enabled"])
         self.assertEqual(kwargs["adaptive_pde_node_weight_scheme"], "heat_flux")
         self.assertAlmostEqual(kwargs["adaptive_pde_node_weight_min"], 0.2)
+        self.assertTrue(kwargs["temperature_pde_node_weight_clamp_enabled"])
 
 
 if __name__ == "__main__":

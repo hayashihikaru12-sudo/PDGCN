@@ -230,6 +230,7 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 | `adaptive_pde_node_weight_min` | number | `"heat_flux"` 方案中零热流节点的最低 PDE 权重，范围 `[0, 1]`，默认 `0.2`。 |
 | `temperature_pde_node_weight_beta` | number | 方案 B 连续截断的温度权重斜率，默认 `0.5`。 |
 | `temperature_pde_node_weight_max` | number | 方案 B 连续截断的权重上限，默认 `8.0`。 |
+| `temperature_pde_node_weight_clamp_enabled` | boolean | 方案 B 是否启用 `temperature_pde_node_weight_max` 上限截断；默认 `true` 保持旧行为，设为 `false` 时权重不再按上限截断。 |
 | `temperature_pde_node_weight_threshold` | number | 方案 C 硬阈值的无量纲温度阈值，默认 `1.0`。 |
 | `temperature_pde_node_weight_high` | number | 方案 C 硬阈值中热区节点权重，默认 `4.0`。 |
 | `adaptive_pde_node_weight_warmup_enabled` | boolean | 是否对 B/C 温度权重启用 epoch 级 warmup；默认 `false`。 |
@@ -268,6 +269,11 @@ residual_transport =
 
 ```text
 w = clamp(1 + beta * max(0, T_source_applied*), 1, W_max)
+```
+
+若 `temperature_pde_node_weight_clamp_enabled = false`，方案 B 改为：
+```text
+w = max(1 + beta * max(0, T_source_applied*), 1)
 ```
 
 `"temperature_hard_threshold"` 使用方案 C：
