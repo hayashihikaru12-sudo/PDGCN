@@ -110,6 +110,44 @@ class SupervisionRunConfig:
 
 
 @dataclass(frozen=True)
+class PeakSupervisionRunConfig:
+    enabled: bool = False
+    temperature_dataset: str = "fem/temperature"
+    valid_mask_dataset: Optional[str] = "fem/valid_mask"
+    lambda_peak: float = 0.01
+    topk: int = 30
+    warmup_epochs: int = 30
+    rollout_window: Optional[int] = None
+
+    def __post_init__(self):
+        if not isinstance(self.enabled, bool):
+            raise ValueError(f"peak_supervision.enabled must be a boolean, got {self.enabled!r}.")
+        if not isinstance(self.temperature_dataset, str) or not self.temperature_dataset.strip():
+            raise ValueError("peak_supervision.temperature_dataset must be a non-empty string.")
+        if self.valid_mask_dataset is not None and (
+            not isinstance(self.valid_mask_dataset, str) or not self.valid_mask_dataset.strip()
+        ):
+            raise ValueError("peak_supervision.valid_mask_dataset must be null or a non-empty string.")
+        if float(self.lambda_peak) < 0:
+            raise ValueError(
+                "peak_supervision.lambda_peak must be non-negative, "
+                f"got {self.lambda_peak}."
+            )
+        if int(self.topk) <= 0:
+            raise ValueError(f"peak_supervision.topk must be positive, got {self.topk}.")
+        if int(self.warmup_epochs) < 0:
+            raise ValueError(
+                "peak_supervision.warmup_epochs must be non-negative, "
+                f"got {self.warmup_epochs}."
+            )
+        if self.rollout_window is not None and int(self.rollout_window) <= 0:
+            raise ValueError(
+                "peak_supervision.rollout_window must be null or a positive integer, "
+                f"got {self.rollout_window}."
+            )
+
+
+@dataclass(frozen=True)
 class ScaleRunConfig:
     L0: float
     v0: float
@@ -170,6 +208,7 @@ class RunConfig:
     training: TrainConfig
     monitoring: MonitoringRunConfig = field(default_factory=MonitoringRunConfig)
     supervision: SupervisionRunConfig = field(default_factory=SupervisionRunConfig)
+    peak_supervision: PeakSupervisionRunConfig = field(default_factory=PeakSupervisionRunConfig)
     inference: Optional[InferenceRunConfig] = None
     outputs: Optional[OutputRunConfig] = None
     datasets: Tuple[DatasetRunConfig, ...] = ()
@@ -228,6 +267,8 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
     model = _require_mapping(payload.get("model", {}), context="model")
     monitoring = _build_monitoring_run_config(payload.get("monitoring"))
     supervision = _build_supervision_run_config(payload.get("supervision"))
+    peak_supervision = _build_peak_supervision_run_config(payload.get("peak_supervision"))
+    _validate_supervision_modes(supervision, peak_supervision)
     inference = _build_inference_run_config(payload.get("inference"))
     training_kwargs = _filter_dataclass_kwargs(
         TrainConfig,
@@ -241,6 +282,7 @@ def _load_legacy_run_config(payload: Dict[str, Any]) -> RunConfig:
         training=TrainConfig(**training_kwargs),
         monitoring=monitoring,
         supervision=supervision,
+        peak_supervision=peak_supervision,
         inference=inference,
         datasets=(
             DatasetRunConfig(
@@ -262,6 +304,8 @@ def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
     outputs = _build_dataclass(OutputRunConfig, payload.get("outputs"), context="outputs")
     monitoring = _build_monitoring_run_config(payload.get("monitoring"))
     supervision = _build_supervision_run_config(payload.get("supervision"))
+    peak_supervision = _build_peak_supervision_run_config(payload.get("peak_supervision"))
+    _validate_supervision_modes(supervision, peak_supervision)
     inference = _build_inference_run_config(payload.get("inference"))
     dataset_payloads = payload.get("datasets")
     if not isinstance(dataset_payloads, list) or not dataset_payloads:
@@ -294,6 +338,7 @@ def _load_classified_run_config(payload: Dict[str, Any]) -> RunConfig:
         training=TrainConfig(**training_kwargs),
         monitoring=monitoring,
         supervision=supervision,
+        peak_supervision=peak_supervision,
         inference=inference,
         outputs=outputs,
         datasets=datasets,
@@ -317,6 +362,7 @@ def run_config_to_dict(config: RunConfig) -> Dict[str, Any]:
             },
             "monitoring": asdict(config.monitoring),
             "supervision": asdict(config.supervision),
+            "peak_supervision": asdict(config.peak_supervision),
             "inference": asdict(config.inference) if config.inference is not None else None,
         }
     return {
@@ -326,6 +372,7 @@ def run_config_to_dict(config: RunConfig) -> Dict[str, Any]:
         "training": asdict(config.training),
         "monitoring": asdict(config.monitoring),
         "supervision": asdict(config.supervision),
+        "peak_supervision": asdict(config.peak_supervision),
         "inference": asdict(config.inference) if config.inference is not None else None,
     }
 
@@ -397,6 +444,22 @@ def _build_supervision_run_config(value) -> SupervisionRunConfig:
     mapping = _require_mapping(value, context="supervision")
     kwargs = _filter_dataclass_kwargs(SupervisionRunConfig, mapping, context="supervision")
     return SupervisionRunConfig(**kwargs)
+
+
+def _build_peak_supervision_run_config(value) -> PeakSupervisionRunConfig:
+    if value is None:
+        return PeakSupervisionRunConfig()
+    mapping = _require_mapping(value, context="peak_supervision")
+    kwargs = _filter_dataclass_kwargs(PeakSupervisionRunConfig, mapping, context="peak_supervision")
+    return PeakSupervisionRunConfig(**kwargs)
+
+
+def _validate_supervision_modes(
+    supervision: SupervisionRunConfig,
+    peak_supervision: PeakSupervisionRunConfig,
+):
+    if supervision.enabled and peak_supervision.enabled:
+        raise ValueError("supervision and peak_supervision cannot both be enabled.")
 
 
 def _build_inference_run_config(value) -> Optional[InferenceRunConfig]:

@@ -18,7 +18,7 @@ from training import (
 )
 from training.config import TrainConfig
 from training.graph_utils import clone_graph_with_temperature, graph_explicit_source_delta
-from training.run_config import SupervisionRunConfig
+from training.run_config import PeakSupervisionRunConfig, SupervisionRunConfig
 
 
 class TrainableDeltaModel(nn.Module):
@@ -525,6 +525,87 @@ class StaticTopologyTests(unittest.TestCase):
         self.assertGreater(history[0]["loss_rollout_temperature"], 0.0)
         self.assertGreater(history[0]["loss_supervised"], history[0]["loss_rollout_temperature"])
         self.assertIn("rollout_fem_temperature_rmse", history[0])
+
+    def test_static_train_peak_supervision_uses_rollout_peak_loss(self):
+        h5_path = self.root / "input_peak_supervision.h5"
+        cache_dir = self.root / "cache_peak_supervision"
+        make_h5(h5_path, num_frames=3)
+        add_fem_temperature(h5_path, num_frames=3)
+        build_static_cache(h5_path, cache_dir, self.scale, overwrite=True)
+        reader = HDF5FrameReader(
+            h5_path,
+            expected_num_nodes=4,
+            scale_params=self.scale,
+            require_fem_temperature=True,
+            pin_memory=False,
+        )
+        model = RecordingDeltaModel()
+        try:
+            static_state = StaticGraphState.from_cache(cache_dir, device="cpu")
+            builder = GpuFeatureBuilder(static_state, self.scale)
+            history = train_static_topology(
+                model,
+                reader,
+                static_state,
+                builder,
+                TrainConfig(lr=0.01, epochs=1, tbptt_window=2, warmup_steps=3, device="cpu"),
+                peak_supervision_config=PeakSupervisionRunConfig(
+                    enabled=True,
+                    lambda_peak=2.0,
+                    topk=1,
+                    warmup_epochs=0,
+                    rollout_window=2,
+                ),
+            )
+        finally:
+            reader.close()
+
+        self.assertEqual(len(model.forward_temperatures), 2)
+        expected_first_input = torch.tensor([[0.0], [0.2], [0.0], [0.4]])
+        expected_second_rollout_input = torch.tensor([[0.0], [0.3], [0.0], [0.5]])
+        fem_second_input = torch.tensor([[0.0], [0.35], [0.0], [0.55]])
+        self.assertTrue(torch.allclose(model.forward_temperatures[0], expected_first_input, atol=1e-6))
+        self.assertTrue(torch.allclose(model.forward_temperatures[1], expected_second_rollout_input, atol=1e-6))
+        self.assertFalse(torch.allclose(model.forward_temperatures[1], fem_second_input, atol=1e-6))
+        self.assertAlmostEqual(history[0]["loss_peak_temperature_rise"], 0.00625, places=6)
+        self.assertAlmostEqual(history[0]["loss_supervised"], 0.0125, places=6)
+        self.assertAlmostEqual(history[0]["peak_temperature_rise_abs_error"], 0.75, places=6)
+        self.assertAlmostEqual(history[0]["lambda_peak_temperature_rise"], 2.0, places=6)
+        self.assertAlmostEqual(history[0]["loss_temperature"], 0.0, places=6)
+
+    def test_static_train_peak_supervision_clamps_topk_to_valid_nodes(self):
+        add_fem_temperature(self.h5_path)
+        build_static_cache(self.h5_path, self.cache_dir, self.scale, overwrite=True)
+        reader = HDF5FrameReader(
+            self.h5_path,
+            expected_num_nodes=4,
+            scale_params=self.scale,
+            require_fem_temperature=True,
+            pin_memory=False,
+        )
+        model = RecordingDeltaModel()
+        try:
+            static_state = StaticGraphState.from_cache(self.cache_dir, device="cpu")
+            builder = GpuFeatureBuilder(static_state, self.scale)
+            history = train_static_topology(
+                model,
+                reader,
+                static_state,
+                builder,
+                TrainConfig(lr=0.01, epochs=1, tbptt_window=1, warmup_steps=3, device="cpu"),
+                peak_supervision_config=PeakSupervisionRunConfig(
+                    enabled=True,
+                    lambda_peak=1.0,
+                    topk=10,
+                    warmup_epochs=0,
+                ),
+            )
+        finally:
+            reader.close()
+
+        self.assertEqual(len(history), 1)
+        self.assertTrue(np.isfinite(history[0]["loss_peak_temperature_rise"]))
+        self.assertIn("peak_temperature_rise_pred", history[0])
 
     def test_static_train_calls_epoch_callback(self):
         """验证固定拓扑训练每个 epoch 结束后会触发 loss 回调。"""

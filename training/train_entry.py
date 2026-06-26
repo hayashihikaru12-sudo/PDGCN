@@ -101,9 +101,17 @@ def run_training_from_config(config_path):
             expected_num_nodes=static_state.num_nodes,
             scale_params=scale_params,
             scan_velocity=run_config.data.scan_velocity,
-            require_fem_temperature=run_config.supervision.enabled,
-            fem_temperature_dataset=run_config.supervision.temperature_dataset,
-            fem_valid_mask_dataset=run_config.supervision.valid_mask_dataset,
+            require_fem_temperature=run_config.supervision.enabled or run_config.peak_supervision.enabled,
+            fem_temperature_dataset=(
+                run_config.peak_supervision.temperature_dataset
+                if run_config.peak_supervision.enabled
+                else run_config.supervision.temperature_dataset
+            ),
+            fem_valid_mask_dataset=(
+                run_config.peak_supervision.valid_mask_dataset
+                if run_config.peak_supervision.enabled
+                else run_config.supervision.valid_mask_dataset
+            ),
         )
         for h5_path in h5_paths
     ]
@@ -164,6 +172,7 @@ def run_training_from_config(config_path):
             monitor_frame_index=monitor_frame_index,
             start_epoch=start_epoch,
             supervision_config=run_config.supervision,
+            peak_supervision_config=run_config.peak_supervision,
             lr_scheduler_state=lr_scheduler_state_in,
             _lr_scheduler_state_out=lr_scheduler_state_holder,
         )

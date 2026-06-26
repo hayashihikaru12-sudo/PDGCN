@@ -24,7 +24,8 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe inference\infer_entry.py --config confi
 | 参数 | 类型 | 说明 |
 | --- | --- | --- |
 | `monitoring` | object | 训练过程监控配置，控制是否记录 loss、温度场快照和 VTK 可视化数据。 |
-| `supervision` | object | 可选 FEM 温度监督配置，默认关闭。 |
+| `supervision` | object | 可选节点级 FEM 温度监督配置，默认关闭。 |
+| `peak_supervision` | object | 可选峰值温升 FEM 监督配置，默认关闭；与 `supervision` 互斥。 |
 | `outputs` | object | 训练产物输出路径，包括 checkpoint 和 history JSON。 |
 | `datasets` | array | 训练数据集列表。当前训练入口一次只支持使用第一个数据集，但一个数据集目录内可以包含多个 `.h5`/`.hdf5` 切片文件。 |
 | `hyperparameters` | object | 模型结构、物理损失和训练超参数。 |
@@ -78,6 +79,47 @@ T_fem* = (T_fem - T_amb) / delta_T0
 ```
 
 FEM 温度不会进入额外节点特征通道。PDGCN 默认节点输入仍为 `[x*, y*, z*, fx, fy, fz, T*]`；若模型配置启用热源节点特征，FEM 温度只替换其中的 `T*` 列。
+
+## `peak_supervision`
+
+示例：
+
+```json
+"peak_supervision": {
+  "enabled": false,
+  "temperature_dataset": "fem/temperature",
+  "valid_mask_dataset": "fem/valid_mask",
+  "lambda_peak": 0.001,
+  "topk": 30,
+  "warmup_epochs": 30,
+  "rollout_window": null
+}
+```
+
+| 参数 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `enabled` | boolean | `false` | 是否启用峰值温升监督。启用时会读取 FEM 温度，但只使用峰值统计，不计算节点级 MSE。 |
+| `temperature_dataset` | string | `fem/temperature` | FEM 温度字段路径，形状必须为 `[T, N, 1]`，并与 `dynamic/Q` 对齐。 |
+| `valid_mask_dataset` | string 或 `null` | `fem/valid_mask` | 可选有效节点 mask。缺失或设为 `null` 时使用全 1 mask。 |
+| `lambda_peak` | number | `0.001` | 峰值温升监督损失权重，必须非负。 |
+| `topk` | integer | `30` | 使用温度最高的 `topk` 个有效节点均值近似峰值，必须为正整数。 |
+| `warmup_epochs` | integer | `30` | 峰值监督权重从 0 线性升至 `lambda_peak` 的 epoch 数；设为 `0` 时不 warmup。 |
+| `rollout_window` | integer 或 `null` | `null` | 峰值监督 rollout 窗口长度；为 `null` 时使用 `training.tbptt_window`。 |
+
+`peak_supervision` 与 `supervision` 不能同时启用。峰值监督使用 FEM 起点帧初始化每个窗口，窗口内按模型预测自回归推进。损失在无量纲温度上计算：
+
+```text
+loss_peak_temperature_rise = (TopKMean(T_pred_next*) - TopKMean(T_fem_next*))^2
+loss_total = loss_physics + lambda_peak(epoch) * loss_peak_temperature_rise
+```
+
+其中：
+
+```text
+lambda_peak(epoch) = lambda_peak * min(1, epoch / warmup_epochs)
+```
+
+启用后 history 和 monitor 会记录 `loss_peak_temperature_rise`、`peak_temperature_rise_pred`、`peak_temperature_rise_fem`、`peak_temperature_rise_error`、`peak_temperature_rise_abs_error`、`peak_temperature_rise_rmse` 和 `lambda_peak_temperature_rise`。
 
 ## `outputs`
 
@@ -242,12 +284,20 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 loss_total = loss_pde + lambda_outflow * loss_outflow + gradient_regularization * loss_smooth
 ```
 
-若启用 FEM 监督，则总损失变为：
+若启用节点级 FEM 监督，则总损失变为：
 
 ```text
 loss_physics = loss_pde + lambda_outflow * loss_outflow + gradient_regularization * loss_smooth
 loss_temperature = mean_masked((T_pred_next* - T_fem_next*)^2)
 loss_total = loss_physics + lambda_temperature * loss_temperature
+```
+
+若启用峰值温升监督，则总损失变为：
+
+```text
+loss_physics = loss_pde + lambda_outflow * loss_outflow + gradient_regularization * loss_smooth
+loss_peak_temperature_rise = (TopKMean(T_pred_next*) - TopKMean(T_fem_next*))^2
+loss_total = loss_physics + lambda_peak(epoch) * loss_peak_temperature_rise
 ```
 
 `loss_smooth` 为内部边上的一阶图梯度平方均值：

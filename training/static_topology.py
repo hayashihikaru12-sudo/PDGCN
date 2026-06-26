@@ -240,6 +240,7 @@ def train_static_topology(
     monitor_frame_index: Optional[int] = None,
     start_epoch: int = 0,
     supervision_config=None,
+    peak_supervision_config=None,
     lr_scheduler_state: Optional[dict] = None,
     _lr_scheduler_state_out: Optional[list] = None,
 ):
@@ -271,6 +272,7 @@ def train_static_topology(
         monitor_frame_index=monitor_frame_index,
         start_epoch=start_epoch,
         supervision_config=supervision_config,
+        peak_supervision_config=peak_supervision_config,
         lr_scheduler_state=lr_scheduler_state,
         _lr_scheduler_state_out=_lr_scheduler_state_out,
     )
@@ -289,6 +291,7 @@ def train_static_topology_sequences(
     monitor_frame_index: Optional[int] = None,
     start_epoch: int = 0,
     supervision_config=None,
+    peak_supervision_config=None,
     lr_scheduler_state: Optional[dict] = None,
     _lr_scheduler_state_out: Optional[list] = None,
 ):
@@ -302,7 +305,10 @@ def train_static_topology_sequences(
     if optimizer is None:
         optimizer = torch.optim.Adam(model.parameters(), lr=float(config.lr))
     supervision_enabled = _supervision_enabled(supervision_config)
-    if supervision_enabled:
+    peak_supervision_enabled = _peak_supervision_enabled(peak_supervision_config)
+    if supervision_enabled and peak_supervision_enabled:
+        raise ValueError("supervision and peak_supervision cannot both be enabled.")
+    if supervision_enabled or peak_supervision_enabled:
         _validate_supervised_readers(frame_readers)
 
     history = []
@@ -332,6 +338,7 @@ def train_static_topology_sequences(
                 epoch=epoch,
                 monitor_frame_index=monitor_frame_index,
                 supervision_config=supervision_config,
+                peak_supervision_config=peak_supervision_config,
             )
             window_records.extend(sequence_records)
             file_window_counts.append(len(sequence_records))
@@ -360,6 +367,13 @@ def train_static_topology_sequences(
             "loss_total": _mean_records(window_records, "loss_total"),
             "loss_physics": _mean_records(window_records, "loss_physics"),
             "loss_supervised": _mean_records(window_records, "loss_supervised"),
+            "loss_peak_temperature_rise": _mean_records(window_records, "loss_peak_temperature_rise"),
+            "peak_temperature_rise_pred": _mean_records(window_records, "peak_temperature_rise_pred"),
+            "peak_temperature_rise_fem": _mean_records(window_records, "peak_temperature_rise_fem"),
+            "peak_temperature_rise_error": _mean_records(window_records, "peak_temperature_rise_error"),
+            "peak_temperature_rise_abs_error": _mean_records(window_records, "peak_temperature_rise_abs_error"),
+            "peak_temperature_rise_rmse": _mean_records(window_records, "peak_temperature_rise_rmse"),
+            "lambda_peak_temperature_rise": _mean_records(window_records, "lambda_peak_temperature_rise"),
             "loss_temperature": _mean_records(window_records, "loss_temperature"),
             "loss_teacher_forcing_temperature": _mean_records(
                 window_records, "loss_teacher_forcing_temperature"
@@ -416,6 +430,7 @@ def _train_one_static_sequence_epoch(
     epoch: int = 0,
     monitor_frame_index: Optional[int] = None,
     supervision_config=None,
+    peak_supervision_config=None,
 ):
     if _supervision_enabled(supervision_config):
         return _train_one_static_sequence_epoch_supervised(
@@ -426,6 +441,18 @@ def _train_one_static_sequence_epoch(
             config,
             optimizer,
             supervision_config,
+            epoch=epoch,
+            monitor_frame_index=monitor_frame_index,
+        )
+    if _peak_supervision_enabled(peak_supervision_config):
+        return _train_one_static_sequence_epoch_peak_supervised(
+            model,
+            frame_reader,
+            static_state,
+            feature_builder,
+            config,
+            optimizer,
+            peak_supervision_config,
             epoch=epoch,
             monitor_frame_index=monitor_frame_index,
         )
@@ -649,6 +676,95 @@ def _train_one_static_sequence_epoch_supervised(
     return window_records, selected_snapshot
 
 
+def _train_one_static_sequence_epoch_peak_supervised(
+    model,
+    frame_reader: HDF5FrameReader,
+    static_state: StaticGraphState,
+    feature_builder: GpuFeatureBuilder,
+    config: TrainConfig,
+    optimizer: torch.optim.Optimizer,
+    peak_supervision_config,
+    *,
+    epoch: int = 0,
+    monitor_frame_index: Optional[int] = None,
+):
+    if frame_reader.num_frames < 2:
+        raise ValueError("Peak supervised training requires at least two FEM temperature frames.")
+
+    window_size = _peak_supervision_window_size(config, peak_supervision_config)
+    window_records = []
+    selected_snapshot = None
+    num_transitions = frame_reader.num_frames - 1
+    for start in range(0, num_transitions, window_size):
+        _synchronize_if_cuda(static_state.device)
+        window_start_time = time.perf_counter()
+        end = min(start + window_size, num_transitions)
+        optimizer.zero_grad()
+        loss_terms = []
+        component_records = []
+        window_temperature = None
+        window_snapshot = None
+        rollout_temperature = _read_fem_temperature_star(frame_reader, start, feature_builder)
+
+        for frame_idx in range(start, end):
+            fem_next = _read_fem_temperature_star(frame_reader, frame_idx + 1, feature_builder)
+            fem_mask_next = _read_fem_valid_mask(frame_reader, frame_idx + 1, feature_builder)
+            graph, _, next_temperature, components = _run_static_training_step(
+                model,
+                frame_reader,
+                static_state,
+                feature_builder,
+                frame_idx,
+                rollout_temperature,
+                epoch=epoch,
+            )
+            peak_components = _compute_peak_supervision_components(
+                next_temperature,
+                fem_next,
+                fem_mask_next,
+                feature_builder.scale_params,
+                lambda_peak=float(peak_supervision_config.lambda_peak),
+                topk=int(peak_supervision_config.topk),
+                warmup_epochs=int(peak_supervision_config.warmup_epochs),
+                epoch=epoch,
+            )
+            _apply_peak_supervision(components, peak_components)
+            components["loss_total"] = components["loss_physics"] + components["loss_supervised"]
+            loss_terms.append(components["loss_total"])
+            component_records.append(_detach_loss_record(components))
+            if _should_capture_frame(frame_idx + 1, monitor_frame_index, frame_reader.num_frames):
+                window_snapshot = _build_monitor_snapshot(
+                    graph,
+                    components["residual"],
+                    next_temperature,
+                    feature_builder.scale_params,
+                    frame_idx=frame_idx + 1,
+                    fem_temperature_star=fem_next,
+                    pred_temperature_star=next_temperature,
+                )
+            rollout_temperature = next_temperature
+            window_temperature = next_temperature
+
+        loss = torch.stack(loss_terms).mean()
+        loss.backward()
+        if config.grad_clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
+        optimizer.step()
+        _synchronize_if_cuda(static_state.device)
+        window_time_seconds = max(0.0, time.perf_counter() - window_start_time)
+
+        window_record = _aggregate_component_records(component_records)
+        if window_temperature is not None:
+            window_record.update(_temperature_stats(window_temperature, feature_builder.scale_params))
+        window_record["loss_total"] = float(loss.detach().cpu())
+        window_record["batch_time_seconds"] = window_time_seconds
+        window_record["window_time_seconds"] = window_time_seconds
+        window_records.append(window_record)
+        if window_snapshot is not None:
+            selected_snapshot = window_snapshot
+    return window_records, selected_snapshot
+
+
 def _run_static_training_step(
     model,
     frame_reader: HDF5FrameReader,
@@ -714,6 +830,17 @@ def _apply_rollout_supervision(components, supervision_components):
     components["rollout_fem_temperature_max_error"] = supervision_components["fem_temperature_max_error"]
 
 
+def _apply_peak_supervision(components, peak_components):
+    components["loss_supervised"] = components["loss_supervised"] + peak_components["loss_supervised"]
+    components["loss_peak_temperature_rise"] = peak_components["loss_peak_temperature_rise"]
+    components["peak_temperature_rise_pred"] = peak_components["peak_temperature_rise_pred"]
+    components["peak_temperature_rise_fem"] = peak_components["peak_temperature_rise_fem"]
+    components["peak_temperature_rise_error"] = peak_components["peak_temperature_rise_error"]
+    components["peak_temperature_rise_abs_error"] = peak_components["peak_temperature_rise_abs_error"]
+    components["peak_temperature_rise_rmse"] = peak_components["peak_temperature_rise_rmse"]
+    components["lambda_peak_temperature_rise"] = peak_components["lambda_peak_temperature_rise"]
+
+
 def _supervision_mode(supervision_config) -> str:
     return str(getattr(supervision_config, "mode", "teacher_forcing")).strip().lower()
 
@@ -721,6 +848,12 @@ def _supervision_mode(supervision_config) -> str:
 def _supervision_window_size(config: TrainConfig, supervision_config, mode: str) -> int:
     if mode in {"rollout", "mixed"} and getattr(supervision_config, "rollout_window", None) is not None:
         return int(supervision_config.rollout_window)
+    return int(config.tbptt_window)
+
+
+def _peak_supervision_window_size(config: TrainConfig, peak_supervision_config) -> int:
+    if getattr(peak_supervision_config, "rollout_window", None) is not None:
+        return int(peak_supervision_config.rollout_window)
     return int(config.tbptt_window)
 
 
@@ -844,6 +977,13 @@ def _compute_loss_components(
     )
     components["loss_physics"] = components["loss_total"]
     components["loss_supervised"] = components["loss_total"].new_zeros(())
+    components["loss_peak_temperature_rise"] = components["loss_total"].new_zeros(())
+    components["peak_temperature_rise_pred"] = components["loss_total"].new_zeros(())
+    components["peak_temperature_rise_fem"] = components["loss_total"].new_zeros(())
+    components["peak_temperature_rise_error"] = components["loss_total"].new_zeros(())
+    components["peak_temperature_rise_abs_error"] = components["loss_total"].new_zeros(())
+    components["peak_temperature_rise_rmse"] = components["loss_total"].new_zeros(())
+    components["lambda_peak_temperature_rise"] = components["loss_total"].new_zeros(())
     components["loss_temperature"] = components["loss_total"].new_zeros(())
     components["loss_teacher_forcing_temperature"] = components["loss_total"].new_zeros(())
     components["loss_rollout_temperature"] = components["loss_total"].new_zeros(())
@@ -854,6 +994,71 @@ def _compute_loss_components(
     components["rollout_fem_temperature_mae"] = components["loss_total"].new_zeros(())
     components["rollout_fem_temperature_max_error"] = components["loss_total"].new_zeros(())
     return components
+
+
+def _compute_peak_supervision_components(
+    predicted_temperature_star,
+    fem_temperature_star,
+    valid_mask,
+    scale_params: ScaleParams,
+    *,
+    lambda_peak: float,
+    topk: int,
+    warmup_epochs: int,
+    epoch: int,
+):
+    mask = valid_mask.to(device=predicted_temperature_star.device, dtype=torch.bool).reshape_as(
+        predicted_temperature_star
+    )
+    target = fem_temperature_star.to(
+        device=predicted_temperature_star.device,
+        dtype=predicted_temperature_star.dtype,
+    ).reshape_as(predicted_temperature_star)
+    peak_pred_star = _masked_topk_mean(predicted_temperature_star, mask, topk=int(topk))
+    peak_fem_star = _masked_topk_mean(target, mask, topk=int(topk))
+    error_star = peak_pred_star - peak_fem_star
+    loss_peak = error_star.square()
+    lambda_effective = _peak_supervision_lambda(
+        lambda_peak=float(lambda_peak),
+        warmup_epochs=int(warmup_epochs),
+        epoch=int(epoch),
+        reference=loss_peak,
+    )
+    loss_supervised = lambda_effective * loss_peak
+    error_temperature = error_star * float(scale_params.delta_T0)
+    peak_pred_temperature_rise = peak_pred_star * float(scale_params.delta_T0)
+    peak_fem_temperature_rise = peak_fem_star * float(scale_params.delta_T0)
+    abs_error_temperature = error_temperature.abs()
+    return {
+        "loss_total": loss_supervised,
+        "loss_supervised": loss_supervised,
+        "loss_peak_temperature_rise": loss_peak,
+        "peak_temperature_rise_pred": peak_pred_temperature_rise,
+        "peak_temperature_rise_fem": peak_fem_temperature_rise,
+        "peak_temperature_rise_error": error_temperature,
+        "peak_temperature_rise_abs_error": abs_error_temperature,
+        "peak_temperature_rise_rmse": abs_error_temperature,
+        "lambda_peak_temperature_rise": lambda_effective,
+    }
+
+
+def _masked_topk_mean(temperature_star, mask, *, topk: int):
+    values = temperature_star.reshape(-1)
+    valid = mask.reshape(-1)
+    valid_count = int(valid.sum().detach().cpu())
+    if valid_count <= 0:
+        return values.new_zeros(())
+    k = min(int(topk), valid_count)
+    valid_values = values[valid]
+    return torch.topk(valid_values, k=k, largest=True).values.mean()
+
+
+def _peak_supervision_lambda(*, lambda_peak: float, warmup_epochs: int, epoch: int, reference):
+    if int(warmup_epochs) <= 0:
+        scale = 1.0
+    else:
+        scale = min(1.0, max(0.0, float(epoch) / float(warmup_epochs)))
+    return reference.new_tensor(float(lambda_peak) * scale)
 
 
 def _compute_supervision_components(
@@ -875,7 +1080,7 @@ def _compute_supervision_components(
     denominator = mask.sum().clamp_min(float(scale_params.eps))
     loss_temperature = (mask * error_star.square()).sum() / denominator
 
-    error_temperature = temperature_from_dimensionless(error_star, scale_params) - float(scale_params.T_amb)
+    error_temperature = error_star * float(scale_params.delta_T0)
     abs_error_temperature = error_temperature.abs() * mask
     mse_temperature = (mask * error_temperature.square()).sum() / denominator
     mae_temperature = abs_error_temperature.sum() / denominator
@@ -896,6 +1101,13 @@ def _detach_loss_record(components):
         "loss_total": float(components["loss_total"].detach().cpu()),
         "loss_physics": float(components["loss_physics"].detach().cpu()),
         "loss_supervised": float(components["loss_supervised"].detach().cpu()),
+        "loss_peak_temperature_rise": float(components["loss_peak_temperature_rise"].detach().cpu()),
+        "peak_temperature_rise_pred": float(components["peak_temperature_rise_pred"].detach().cpu()),
+        "peak_temperature_rise_fem": float(components["peak_temperature_rise_fem"].detach().cpu()),
+        "peak_temperature_rise_error": float(components["peak_temperature_rise_error"].detach().cpu()),
+        "peak_temperature_rise_abs_error": float(components["peak_temperature_rise_abs_error"].detach().cpu()),
+        "peak_temperature_rise_rmse": float(components["peak_temperature_rise_rmse"].detach().cpu()),
+        "lambda_peak_temperature_rise": float(components["lambda_peak_temperature_rise"].detach().cpu()),
         "loss_temperature": float(components["loss_temperature"].detach().cpu()),
         "loss_teacher_forcing_temperature": float(
             components["loss_teacher_forcing_temperature"].detach().cpu()
@@ -921,6 +1133,13 @@ def _aggregate_component_records(records):
         "loss_total": _mean_records(records, "loss_total"),
         "loss_physics": _mean_records(records, "loss_physics"),
         "loss_supervised": _mean_records(records, "loss_supervised"),
+        "loss_peak_temperature_rise": _mean_records(records, "loss_peak_temperature_rise"),
+        "peak_temperature_rise_pred": _mean_records(records, "peak_temperature_rise_pred"),
+        "peak_temperature_rise_fem": _mean_records(records, "peak_temperature_rise_fem"),
+        "peak_temperature_rise_error": _mean_records(records, "peak_temperature_rise_error"),
+        "peak_temperature_rise_abs_error": _mean_records(records, "peak_temperature_rise_abs_error"),
+        "peak_temperature_rise_rmse": _mean_records(records, "peak_temperature_rise_rmse"),
+        "lambda_peak_temperature_rise": _mean_records(records, "lambda_peak_temperature_rise"),
         "loss_temperature": _mean_records(records, "loss_temperature"),
         "loss_teacher_forcing_temperature": _mean_records(records, "loss_teacher_forcing_temperature"),
         "loss_rollout_temperature": _mean_records(records, "loss_rollout_temperature"),
@@ -996,6 +1215,10 @@ def _read_fem_valid_mask(frame_reader: HDF5FrameReader, frame_idx: int, feature_
 
 def _supervision_enabled(supervision_config) -> bool:
     return bool(supervision_config is not None and getattr(supervision_config, "enabled", False))
+
+
+def _peak_supervision_enabled(peak_supervision_config) -> bool:
+    return bool(peak_supervision_config is not None and getattr(peak_supervision_config, "enabled", False))
 
 
 def _validate_supervised_readers(frame_readers):
