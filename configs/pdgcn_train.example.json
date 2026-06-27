@@ -25,7 +25,7 @@
   "datasets": [
     {
       "name": "case_benchmark_continuous_peak",
-      "h5_dir": "../runs/pdgcn_continuous_peak/valid_h5",
+      "h5_dir": "../../autodl-tmp/case_benchmark",
       "cache_dir": "../runs/pdgcn_continuous_peak/cache/case_benchmark",
       "scale": {
         "L0": 0.051764991760253906,
