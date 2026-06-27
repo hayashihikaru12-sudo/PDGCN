@@ -106,7 +106,7 @@ FEM 温度不会进入额外节点特征通道。PDGCN 默认节点输入仍为 
 | `warmup_epochs` | integer | `30` | 峰值监督权重从 0 线性升至 `lambda_peak` 的 epoch 数；设为 `0` 时不 warmup。 |
 | `rollout_window` | integer 或 `null` | `null` | 峰值监督 rollout 窗口长度；为 `null` 时使用 `training.tbptt_window`。 |
 
-`peak_supervision` 与 `supervision` 不能同时启用。峰值监督使用 FEM 起点帧初始化每个窗口，窗口内按模型预测自回归推进。损失在无量纲温度上计算：
+`peak_supervision` 与 `supervision` 不能同时启用。峰值监督使用 FEM 第 0 帧初始化每个 HDF5 序列，之后跨 TBPTT 窗口持续携带模型预测温度状态；窗口边界只截断反传计算图，不再把温度重置为 FEM。损失在无量纲温度上计算：
 
 ```text
 loss_peak_temperature_rise = (TopKMean(T_pred_next*) - TopKMean(T_fem_next*))^2
@@ -119,7 +119,7 @@ loss_total = loss_physics + lambda_peak(epoch) * loss_peak_temperature_rise
 lambda_peak(epoch) = lambda_peak * min(1, epoch / warmup_epochs)
 ```
 
-启用后 history 和 monitor 会记录 `loss_peak_temperature_rise`、`peak_temperature_rise_pred`、`peak_temperature_rise_fem`、`peak_temperature_rise_error`、`peak_temperature_rise_abs_error`、`peak_temperature_rise_rmse` 和 `lambda_peak_temperature_rise`。
+启用后 history 和 monitor 会记录 `loss_peak_temperature_rise`、`peak_temperature_rise_pred`、`peak_temperature_rise_fem`、`peak_temperature_rise_error`、`peak_temperature_rise_abs_error`、`peak_temperature_rise_rmse` 和 `lambda_peak_temperature_rise`。此外会按完整 HDF5 case 记录 `case_peak_temperature_*`、`case_peak_temperature_rise_*` 和 `case_peak_topk_temperature_rise_*`，用于监控完整自回归路径上的峰值偏差。
 
 ## `outputs`
 

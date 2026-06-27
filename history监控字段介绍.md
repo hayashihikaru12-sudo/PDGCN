@@ -79,7 +79,36 @@ $$L_{\text{total}} = L_{\text{physics}} + \lambda_T \cdot L_{\text{temperature}}
 
 > **注意**：在 `teacher_forcing` 模式下，`fem_temperature_*` 记录 teacher forcing 路径的单步误差，`rollout_fem_temperature_*` 为 0。在 `rollout` 模式下，`fem_temperature_*` 与 `rollout_fem_temperature_*` 通常相同。在 `mixed` 模式下，`fem_temperature_*` 取 teacher forcing 路径，`rollout_fem_temperature_*` 取 rollout 路径。
 
-### 6. 温度统计量
+### 6. 峰值温升监督与完整 case-level 峰值指标
+
+当 `peak_supervision.enabled = true` 时，训练会使用 FEM 第 0 帧初始化每个 HDF5 序列，并在后续 TBPTT 窗口间持续携带模型预测温度状态；窗口边界只截断反传计算图，不再把温度重置为 FEM。
+
+| 字段 | 类型 | 含义 |
+|------|------|------|
+| `loss_peak_temperature_rise` | float | 当前监督步/窗口的 top-k 峰值温升 MSE，计算于无量纲温度空间。 |
+| `peak_temperature_rise_pred` | float | 当前监督步/窗口预测 top-k 峰值温升，已还原为真实温差。 |
+| `peak_temperature_rise_fem` | float | 当前监督步/窗口 FEM top-k 峰值温升，已还原为真实温差。 |
+| `peak_temperature_rise_error` | float | `peak_temperature_rise_pred - peak_temperature_rise_fem`。 |
+| `peak_temperature_rise_abs_error` | float | 当前监督步/窗口 top-k 峰值温升绝对误差。 |
+| `peak_temperature_rise_rmse` | float | 当前监督步/窗口 top-k 峰值温升 RMSE；单步标量场景下等于绝对误差。 |
+| `lambda_peak_temperature_rise` | float | 当前 epoch 生效的峰值监督权重，包含 warmup 影响。 |
+| `case_peak_temperature_pred` | float | 每个 HDF5 case 完整自回归路径上的预测 raw 峰值温度；epoch 记录为各 case 平均值。 |
+| `case_peak_temperature_fem` | float | 同一完整 case 上 FEM raw 峰值温度；epoch 记录为各 case 平均值。 |
+| `case_peak_temperature_error` | float | 完整 case raw 峰值温度 bias，即 `pred - fem`；epoch 记录为各 case 平均 bias。 |
+| `case_peak_temperature_abs_error` | float | 完整 case raw 峰值温度 MAE；epoch 记录为各 case 平均绝对误差。 |
+| `case_peak_temperature_rmse` | float | 完整 case raw 峰值温度 RMSE，按各 case bias 的平方均值计算。 |
+| `case_peak_temperature_rise_pred` | float | 完整 case 预测 raw 峰值相对环境温度的温升。 |
+| `case_peak_temperature_rise_fem` | float | 完整 case FEM raw 峰值相对环境温度的温升。 |
+| `case_peak_temperature_rise_error` | float | 完整 case raw 峰值温升 bias。 |
+| `case_peak_temperature_rise_abs_error` | float | 完整 case raw 峰值温升 MAE。 |
+| `case_peak_temperature_rise_rmse` | float | 完整 case raw 峰值温升 RMSE。 |
+| `case_peak_topk_temperature_rise_pred` | float | 完整 case 中逐帧 top-k 峰值温升的最大预测值。 |
+| `case_peak_topk_temperature_rise_fem` | float | 完整 case 中逐帧 top-k 峰值温升的最大 FEM 值。 |
+| `case_peak_topk_temperature_rise_error` | float | 完整 case top-k 峰值温升 bias。 |
+| `case_peak_topk_temperature_rise_abs_error` | float | 完整 case top-k 峰值温升 MAE。 |
+| `case_peak_topk_temperature_rise_rmse` | float | 完整 case top-k 峰值温升 RMSE。 |
+
+### 7. 温度统计量
 
 记录当前 epoch 所有预测节点温度（还原为真实温度 K）的统计特征，用于监控温度场的整体分布和数值稳定性。
 
@@ -92,14 +121,14 @@ $$L_{\text{total}} = L_{\text{physics}} + \lambda_T \cdot L_{\text{temperature}}
 
 > **警告**：若 `temperature_max` 持续快速增长或 `temperature_min` 出现极端负值，通常表明训练发散，需检查学习率、梯度裁剪或 PDE 权重。
 
-### 7. 可学习物理参数
+### 8. 可学习物理参数
 
 | 字段 | 类型 | 含义 |
 |------|------|------|
 | `gamma_upwind` | float | PD-GCN 各 **EdgeBlock** 中可学习迎风权重参数 $\gamma_{\text{upwind}}$ 的均值。$\gamma_{\text{upwind}}$ 控制对流项中迎风方向与各向同性扩散的比例，范围通常靠近初始值（如 0.8）。 |
 | `gamma_upwind_std` | float | $\gamma_{\text{upwind}}$ 在各 EdgeBlock 间的标准差。标准差小表示各消息传递层的迎风权重趋于一致；标准差大则表示不同层学到了差异化的对流-扩散混合策略。 |
 
-### 8. 窗口级损失分布
+### 9. 窗口级损失分布
 
 | 字段 | 类型 | 含义 |
 |------|------|------|
@@ -108,7 +137,7 @@ $$L_{\text{total}} = L_{\text{physics}} + \lambda_T \cdot L_{\text{temperature}}
 
 例如，若 `file_window_counts = [18, 36, 36]`，则 `window_losses` 前 18 个值来自第一个 HDF5 文件的窗口，接着 36 个来自第二个，以此类推。
 
-### 9. 提前停止标记（仅最后一个 epoch）
+### 10. 提前停止标记（仅最后一个 epoch）
 
 | 字段 | 类型 | 含义 |
 |------|------|------|
@@ -125,8 +154,9 @@ $$L_{\text{total}} = L_{\text{physics}} + \lambda_T \cdot L_{\text{temperature}}
 2. **诊断发散**：若 `temperature_max` 急剧上升或出现 `NaN`，训练可能发散。检查 `loss_pde` 是否异常增大，必要时降低学习率或增大 `gradient_regularization`。
 3. **评估监督效果**：对比 `loss_physics` 和 `loss_supervised` 的大小关系，确保 $\lambda_T$ 权重设置合理。观察 `fem_temperature_rmse` 和 `fem_temperature_max_error` 的下降趋势。
 4. **分析 rollout 质量**：比较 `loss_teacher_forcing_temperature` 和 `loss_rollout_temperature`，后者通常更大。两者差距反映模型在自回归路径上的误差累积程度。
-5. **窗口分析**：`window_losses` 若呈明显上升趋势（靠后窗口损失更大），表明 TBPTT 窗口长度可能需要调整或模型需要更强的长时间稳定性约束。
-6. **跨实验对比**：`metadata` 中包含完整的运行配置，可直接对比不同实验的超参数设置。
+5. **峰值监督分析**：同时观察 `peak_temperature_rise_*` 和 `case_peak_temperature_rise_*`。前者反映训练监督步的局部峰值误差，后者反映完整 case 自回归路径的峰值误差；若两者差距大，说明长程 rollout 存在误差累积。
+6. **窗口分析**：`window_losses` 若呈明显上升趋势（靠后窗口损失更大），表明 TBPTT 窗口长度可能需要调整或模型需要更强的长时间稳定性约束。
+7. **跨实验对比**：`metadata` 中包含完整的运行配置，可直接对比不同实验的超参数设置。
 
 ---
 

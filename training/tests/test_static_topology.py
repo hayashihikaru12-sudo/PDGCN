@@ -63,6 +63,21 @@ class RecordingDeltaModel(TrainableDeltaModel):
         return super().forward(graph)
 
 
+class ConstantRecordingDeltaModel(nn.Module):
+    def __init__(self, delta=0.1, config=None):
+        super().__init__()
+        self.config = config or PDGCNConfig(lambda_outflow=0.0, inverse_pe=0.0, source_coefficient=0.0, pi_q=0.0)
+        self.delta = float(delta)
+        self.dummy = nn.Parameter(torch.tensor(0.0))
+        self.forward_temperatures = []
+
+    def forward(self, graph):
+        if torch.is_grad_enabled():
+            self.forward_temperatures.append(graph.x[:, 6:7].detach().cpu().clone())
+        delta = self.dummy * 0.0 + self.delta
+        return delta.expand(graph.x.shape[0], 1)
+
+
 def make_h5(path: Path, *, num_frames: int = 2):
     """创建固定拓扑测试 HDF5 文件。
 
@@ -572,6 +587,61 @@ class StaticTopologyTests(unittest.TestCase):
         self.assertAlmostEqual(history[0]["peak_temperature_rise_abs_error"], 0.75, places=6)
         self.assertAlmostEqual(history[0]["lambda_peak_temperature_rise"], 2.0, places=6)
         self.assertAlmostEqual(history[0]["loss_temperature"], 0.0, places=6)
+
+    def test_static_train_peak_supervision_carries_state_between_windows(self):
+        h5_path = self.root / "input_peak_supervision_continuous.h5"
+        cache_dir = self.root / "cache_peak_supervision_continuous"
+        make_h5(h5_path, num_frames=4)
+        add_fem_temperature(h5_path, num_frames=4)
+        build_static_cache(h5_path, cache_dir, self.scale, overwrite=True)
+        reader = HDF5FrameReader(
+            h5_path,
+            expected_num_nodes=4,
+            scale_params=self.scale,
+            require_fem_temperature=True,
+            pin_memory=False,
+        )
+        model = ConstantRecordingDeltaModel(delta=0.1)
+        try:
+            static_state = StaticGraphState.from_cache(cache_dir, device="cpu")
+            builder = GpuFeatureBuilder(static_state, self.scale)
+            history = train_static_topology(
+                model,
+                reader,
+                static_state,
+                builder,
+                TrainConfig(lr=0.01, epochs=1, tbptt_window=1, warmup_steps=0, device="cpu"),
+                peak_supervision_config=PeakSupervisionRunConfig(
+                    enabled=True,
+                    lambda_peak=1.0,
+                    topk=1,
+                    warmup_epochs=0,
+                    rollout_window=1,
+                ),
+            )
+        finally:
+            reader.close()
+
+        self.assertEqual(len(model.forward_temperatures), 3)
+        expected_inputs = [
+            torch.tensor([[0.0], [0.2], [0.0], [0.4]]),
+            torch.tensor([[0.0], [0.3], [0.0], [0.5]]),
+            torch.tensor([[0.0], [0.4], [0.0], [0.6]]),
+        ]
+        fem_window_starts = [
+            torch.tensor([[0.0], [0.35], [0.0], [0.55]]),
+            torch.tensor([[0.0], [0.5], [0.0], [0.7]]),
+        ]
+        for actual, expected in zip(model.forward_temperatures, expected_inputs):
+            self.assertTrue(torch.allclose(actual, expected, atol=1e-6))
+        self.assertFalse(torch.allclose(model.forward_temperatures[1], fem_window_starts[0], atol=1e-6))
+        self.assertFalse(torch.allclose(model.forward_temperatures[2], fem_window_starts[1], atol=1e-6))
+        self.assertAlmostEqual(history[0]["case_peak_temperature_pred"], 307.0, places=6)
+        self.assertAlmostEqual(history[0]["case_peak_temperature_fem"], 308.5, places=6)
+        self.assertAlmostEqual(history[0]["case_peak_temperature_error"], -1.5, places=6)
+        self.assertAlmostEqual(history[0]["case_peak_temperature_rise_pred"], 7.0, places=6)
+        self.assertAlmostEqual(history[0]["case_peak_temperature_rise_fem"], 8.5, places=6)
+        self.assertAlmostEqual(history[0]["case_peak_topk_temperature_rise_error"], -1.5, places=6)
 
     def test_static_train_peak_supervision_clamps_topk_to_valid_nodes(self):
         add_fem_temperature(self.h5_path)

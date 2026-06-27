@@ -374,6 +374,39 @@ def train_static_topology_sequences(
             "peak_temperature_rise_abs_error": _mean_records(window_records, "peak_temperature_rise_abs_error"),
             "peak_temperature_rise_rmse": _mean_records(window_records, "peak_temperature_rise_rmse"),
             "lambda_peak_temperature_rise": _mean_records(window_records, "lambda_peak_temperature_rise"),
+            "case_peak_temperature_pred": _mean_records(window_records, "case_peak_temperature_pred"),
+            "case_peak_temperature_fem": _mean_records(window_records, "case_peak_temperature_fem"),
+            "case_peak_temperature_error": _mean_records(window_records, "case_peak_temperature_error"),
+            "case_peak_temperature_abs_error": _mean_records(window_records, "case_peak_temperature_abs_error"),
+            "case_peak_temperature_rmse": _rmse_records(window_records, "case_peak_temperature_error"),
+            "case_peak_temperature_rise_pred": _mean_records(window_records, "case_peak_temperature_rise_pred"),
+            "case_peak_temperature_rise_fem": _mean_records(window_records, "case_peak_temperature_rise_fem"),
+            "case_peak_temperature_rise_error": _mean_records(window_records, "case_peak_temperature_rise_error"),
+            "case_peak_temperature_rise_abs_error": _mean_records(
+                window_records,
+                "case_peak_temperature_rise_abs_error",
+            ),
+            "case_peak_temperature_rise_rmse": _rmse_records(window_records, "case_peak_temperature_rise_error"),
+            "case_peak_topk_temperature_rise_pred": _mean_records(
+                window_records,
+                "case_peak_topk_temperature_rise_pred",
+            ),
+            "case_peak_topk_temperature_rise_fem": _mean_records(
+                window_records,
+                "case_peak_topk_temperature_rise_fem",
+            ),
+            "case_peak_topk_temperature_rise_error": _mean_records(
+                window_records,
+                "case_peak_topk_temperature_rise_error",
+            ),
+            "case_peak_topk_temperature_rise_abs_error": _mean_records(
+                window_records,
+                "case_peak_topk_temperature_rise_abs_error",
+            ),
+            "case_peak_topk_temperature_rise_rmse": _rmse_records(
+                window_records,
+                "case_peak_topk_temperature_rise_error",
+            ),
             "loss_temperature": _mean_records(window_records, "loss_temperature"),
             "loss_teacher_forcing_temperature": _mean_records(
                 window_records, "loss_teacher_forcing_temperature"
@@ -695,6 +728,8 @@ def _train_one_static_sequence_epoch_peak_supervised(
     window_records = []
     selected_snapshot = None
     num_transitions = frame_reader.num_frames - 1
+    rollout_temperature = _read_fem_temperature_star(frame_reader, 0, feature_builder).detach()
+    case_peak_tracker = _init_case_peak_tracker()
     for start in range(0, num_transitions, window_size):
         _synchronize_if_cuda(static_state.device)
         window_start_time = time.perf_counter()
@@ -704,8 +739,6 @@ def _train_one_static_sequence_epoch_peak_supervised(
         component_records = []
         window_temperature = None
         window_snapshot = None
-        rollout_temperature = _read_fem_temperature_star(frame_reader, start, feature_builder)
-
         for frame_idx in range(start, end):
             fem_next = _read_fem_temperature_star(frame_reader, frame_idx + 1, feature_builder)
             fem_mask_next = _read_fem_valid_mask(frame_reader, frame_idx + 1, feature_builder)
@@ -729,6 +762,14 @@ def _train_one_static_sequence_epoch_peak_supervised(
                 epoch=epoch,
             )
             _apply_peak_supervision(components, peak_components)
+            _update_case_peak_tracker(
+                case_peak_tracker,
+                next_temperature,
+                fem_next,
+                fem_mask_next,
+                feature_builder.scale_params,
+                topk=int(peak_supervision_config.topk),
+            )
             components["loss_total"] = components["loss_physics"] + components["loss_supervised"]
             loss_terms.append(components["loss_total"])
             component_records.append(_detach_loss_record(components))
@@ -762,6 +803,10 @@ def _train_one_static_sequence_epoch_peak_supervised(
         window_records.append(window_record)
         if window_snapshot is not None:
             selected_snapshot = window_snapshot
+        if window_temperature is not None:
+            rollout_temperature = window_temperature.detach()
+    if window_records:
+        window_records[-1].update(_finalize_case_peak_tracker(case_peak_tracker, feature_builder.scale_params))
     return window_records, selected_snapshot
 
 
@@ -1042,6 +1087,104 @@ def _compute_peak_supervision_components(
     }
 
 
+def _init_case_peak_tracker():
+    return {
+        "peak_temperature_pred": None,
+        "peak_temperature_fem": None,
+        "peak_topk_temperature_rise_pred": None,
+        "peak_topk_temperature_rise_fem": None,
+    }
+
+
+def _update_case_peak_tracker(
+    tracker,
+    predicted_temperature_star,
+    fem_temperature_star,
+    valid_mask,
+    scale_params: ScaleParams,
+    *,
+    topk: int,
+):
+    mask = valid_mask.to(device=predicted_temperature_star.device, dtype=torch.bool).reshape_as(
+        predicted_temperature_star
+    )
+    if int(mask.sum().detach().cpu()) <= 0:
+        return
+
+    pred = predicted_temperature_star.detach()
+    fem = fem_temperature_star.detach().to(device=pred.device, dtype=pred.dtype).reshape_as(pred)
+    pred_peak_star = _masked_max(pred, mask)
+    fem_peak_star = _masked_max(fem, mask)
+    pred_topk_star = _masked_topk_mean(pred, mask, topk=int(topk))
+    fem_topk_star = _masked_topk_mean(fem, mask, topk=int(topk))
+
+    delta_t0 = float(scale_params.delta_T0)
+    t_amb = float(scale_params.T_amb)
+    _update_tracker_max(
+        tracker,
+        "peak_temperature_pred",
+        float((pred_peak_star * delta_t0 + t_amb).detach().cpu()),
+    )
+    _update_tracker_max(
+        tracker,
+        "peak_temperature_fem",
+        float((fem_peak_star * delta_t0 + t_amb).detach().cpu()),
+    )
+    _update_tracker_max(
+        tracker,
+        "peak_topk_temperature_rise_pred",
+        float((pred_topk_star * delta_t0).detach().cpu()),
+    )
+    _update_tracker_max(
+        tracker,
+        "peak_topk_temperature_rise_fem",
+        float((fem_topk_star * delta_t0).detach().cpu()),
+    )
+
+
+def _finalize_case_peak_tracker(tracker, scale_params: ScaleParams):
+    pred_temperature = float(tracker["peak_temperature_pred"] or 0.0)
+    fem_temperature = float(tracker["peak_temperature_fem"] or 0.0)
+    temperature_error = pred_temperature - fem_temperature
+    pred_temperature_rise = pred_temperature - float(scale_params.T_amb)
+    fem_temperature_rise = fem_temperature - float(scale_params.T_amb)
+    temperature_rise_error = pred_temperature_rise - fem_temperature_rise
+    pred_topk_rise = float(tracker["peak_topk_temperature_rise_pred"] or 0.0)
+    fem_topk_rise = float(tracker["peak_topk_temperature_rise_fem"] or 0.0)
+    topk_rise_error = pred_topk_rise - fem_topk_rise
+    return {
+        "case_peak_temperature_pred": pred_temperature,
+        "case_peak_temperature_fem": fem_temperature,
+        "case_peak_temperature_error": temperature_error,
+        "case_peak_temperature_abs_error": abs(temperature_error),
+        "case_peak_temperature_rmse": abs(temperature_error),
+        "case_peak_temperature_rise_pred": pred_temperature_rise,
+        "case_peak_temperature_rise_fem": fem_temperature_rise,
+        "case_peak_temperature_rise_error": temperature_rise_error,
+        "case_peak_temperature_rise_abs_error": abs(temperature_rise_error),
+        "case_peak_temperature_rise_rmse": abs(temperature_rise_error),
+        "case_peak_topk_temperature_rise_pred": pred_topk_rise,
+        "case_peak_topk_temperature_rise_fem": fem_topk_rise,
+        "case_peak_topk_temperature_rise_error": topk_rise_error,
+        "case_peak_topk_temperature_rise_abs_error": abs(topk_rise_error),
+        "case_peak_topk_temperature_rise_rmse": abs(topk_rise_error),
+    }
+
+
+def _update_tracker_max(tracker, key: str, value: float):
+    if tracker[key] is None or float(value) > float(tracker[key]):
+        tracker[key] = float(value)
+
+
+def _masked_max(temperature_star, mask):
+    values = temperature_star.reshape(-1)
+    valid = mask.reshape(-1)
+    valid_values = values[valid]
+    if valid_values.numel() == 0:
+        return values.new_zeros(())
+    return valid_values.max()
+
+
 def _masked_topk_mean(temperature_star, mask, *, topk: int):
     values = temperature_star.reshape(-1)
     valid = mask.reshape(-1)
@@ -1242,6 +1385,13 @@ def _mean_records(records, key: str) -> float:
 def _mean_values(values) -> float:
     values = [float(value) for value in values]
     return sum(values) / max(len(values), 1)
+
+
+def _rmse_records(records, key: str) -> float:
+    values = [float(record[key]) for record in records if key in record]
+    if not values:
+        return 0.0
+    return (sum(value * value for value in values) / len(values)) ** 0.5
 
 
 def _max_records(records, key: str) -> float:
