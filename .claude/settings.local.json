@@ -34,7 +34,8 @@
       "Bash(\"D:/ProgramData/CondaEnv/PIGNN/python.exe\" pde/tests/test_loss.py)",
       "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" pde/tests/test_residual.py)",
       "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" pde/tests/test_loss.py)",
-      "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -c \"from pde.tests.test_residual import test_compute_pde_residual_matches_hand_calculation, test_compute_pde_residual_supports_tbptt_window_shape; test_compute_pde_residual_matches_hand_calculation\\(\\); test_compute_pde_residual_supports_tbptt_window_shape\\(\\); print\\('test_residual OK'\\)\")"
+      "Bash(PYTHONPATH=. \"D:/ProgramData/CondaEnv/PIGNN/python.exe\" -c \"from pde.tests.test_residual import test_compute_pde_residual_matches_hand_calculation, test_compute_pde_residual_supports_tbptt_window_shape; test_compute_pde_residual_matches_hand_calculation\\(\\); test_compute_pde_residual_supports_tbptt_window_shape\\(\\); print\\('test_residual OK'\\)\")",
+      "Bash(git checkout *)"
     ]
   }
 }

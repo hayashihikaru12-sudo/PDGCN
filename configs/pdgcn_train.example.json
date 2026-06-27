@@ -55,7 +55,7 @@
       "k_ratio": 0.12,
       "lambda_pde": 1.0,
       "lambda_outflow": 1.0,
-      "gradient_regularization": 0.00002,
+      "gradient_regularization": 0.0,
       "residual_time_scheme": "backward",
       "adaptive_pde_node_weight_enabled": true,
       "adaptive_pde_node_weight_scheme": "temperature_continuous_clamped",
