@@ -1,5 +1,7 @@
 {
-  "monitoring": { "enabled": false },
+  "monitoring": {
+    "enabled": false
+  },
   "supervision": {
     "enabled": false,
     "temperature_dataset": "fem/temperature",
@@ -28,7 +30,7 @@
       "h5_dir": "../../autodl-tmp/case_benchmark",
       "cache_dir": "../runs/pdgcn_continuous_peak/cache/case_benchmark",
       "scale": {
-        "L0": 0.051764991760253906,
+        "L0": 0.051764991760253905,
         "v0": 0.045,
         "T_amb": 120,
         "delta_T0": 230,
@@ -69,20 +71,20 @@
       "adaptive_pde_node_weight_warmup_epochs": 50
     },
     "training": {
-      "lr": 0.00002,
-      "lr_scheduler": "none",
-      "min_lr": 0.0000001,
-      "lr_warmup_epochs": 0,
+      "lr": 0.0001,
+      "lr_scheduler": "warmup_cosine",
+      "min_lr": 1e-07,
+      "lr_warmup_epochs": 30,
       "lr_patience": 10,
       "lr_factor": 0.5,
-      "epochs": 180,
+      "epochs": 500,
       "tbptt_window": 5,
       "warmup_steps": 0,
       "grad_clip_norm": 1.0,
-      "resume_from_checkpoint": true,
-      "resume_checkpoint_path": "../runs/pdgcn/checkpoint.pt",
+      "resume_from_checkpoint": false,
+      "resume_checkpoint_path": null,
       "resume_optimizer_state": false,
-      "loss_threshold": null,
+      "loss_threshold": 0.005,
       "device": null
     }
   }
