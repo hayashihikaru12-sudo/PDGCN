@@ -51,9 +51,61 @@ def test_compute_pde_residual_matches_hand_calculation():
         k_ratio=0.1,
     )
 
-    expected = torch.tensor([[0.5], [2.075], [1.5]])
+    expected = torch.tensor([[0.5], [3.075], [-0.5]])
     assert residual.shape == T_next.shape
     assert torch.allclose(residual, expected, atol=1e-6)
+
+
+def test_conservative_upwind_convection_has_zero_global_sum():
+    """验证无扩散时守恒上风对流项在全局节点上不产生净热量。"""
+
+    edge_index = torch.tensor([[0, 1, 2], [1, 2, 0]], dtype=torch.long)
+    edge_attr = _edge_attr(
+        distance=[1.0, 2.0, 1.5],
+        cos_theta=[1.0, -0.5, 0.25],
+        cos_phi_sq=[1.0, 1.0, 1.0],
+    )
+    T_current = torch.tensor([[0.5], [2.0], [4.0]])
+
+    residual = compute_pde_residual(
+        T_next=T_current,
+        T_current=T_current,
+        v_scan_star=3.0,
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        inverse_pe=0.0,
+        k_ratio=0.1,
+    )
+
+    assert torch.allclose(residual.sum(), torch.tensor(0.0), atol=1e-6)
+
+
+def test_conservative_upwind_convection_cools_hotspot_outflow():
+    """验证热点位于流出端时，对流残差符号会驱动热点降温。"""
+
+    edge_index = torch.tensor([[0, 1], [1, 2]], dtype=torch.long)
+    edge_attr = _edge_attr(
+        distance=[1.0, 1.0],
+        cos_theta=[1.0, 1.0],
+        cos_phi_sq=[1.0, 1.0],
+    )
+    T_current = torch.tensor([[0.0], [10.0], [0.0]])
+
+    residual = compute_pde_residual(
+        T_next=T_current,
+        T_current=T_current,
+        v_scan_star=1.0,
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        inverse_pe=0.0,
+        k_ratio=0.1,
+    )
+
+    assert residual[1].item() > 0.0
+    assert residual[2].item() < 0.0
+    assert torch.allclose(residual.sum(), torch.tensor(0.0), atol=1e-6)
 
 
 def test_compute_pde_residual_supports_tbptt_window_shape():
@@ -135,5 +187,5 @@ def test_compute_pde_residual_can_use_backward_time_scheme():
         residual_time_scheme="backward",
     )
 
-    expected = torch.tensor([[0.5], [3.15], [1.5]])
+    expected = torch.tensor([[1.5], [6.15], [-4.5]])
     assert torch.allclose(residual, expected, atol=1e-6)

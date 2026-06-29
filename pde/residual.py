@@ -23,6 +23,8 @@ def compute_pde_residual(
     """计算每个节点的无源曲面内输运 PDE 残差。
 
     边特征布局为 [dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]。
+    对流项采用守恒 FVM 上风边通量，按流出端 ``+F``、流入端
+    ``-F`` 双端写入节点残差。
     输入可以是单步张量（[N]、[N, 1]），也可以是 TBPTT 窗口张量
     （[K, N]、[K, N, 1]）。返回残差的形状会与 ``T_next`` 保持一致。
 
@@ -69,24 +71,49 @@ def compute_pde_residual(
     distance = edge_attr[:, 3].clamp_min(eps)
     cos_theta = edge_attr[:, 4]
     cos_phi_sq = edge_attr[:, 6]
-    upwind_weight = torch.relu(cos_theta)
     k_edge = cos_phi_sq + float(k_ratio) * (1.0 - cos_phi_sq)
 
     T_i = T_eval_2d[:, receiver]
     T_j = T_eval_2d[:, sender]
 
     v_scan = _as_time_scalar(v_scan_star, T_next_2d.shape[0], device=device, dtype=dtype)
-    convection_edge = v_scan * upwind_weight.reshape(1, -1) * (T_i - T_j) / distance.reshape(1, -1)
+    convection = _conservative_upwind_convection(
+        T_eval_2d,
+        v_scan,
+        sender,
+        receiver,
+        distance,
+        cos_theta,
+    )
     diffusion_edge = k_edge.reshape(1, -1) * (T_j - T_i) / distance.square().reshape(1, -1)
 
-    convection = torch.zeros_like(T_next_2d)
     diffusion = torch.zeros_like(T_next_2d)
-    convection.index_add_(1, receiver, convection_edge)
     diffusion.index_add_(1, receiver, diffusion_edge)
 
     transient = (T_next_2d - T_current_2d) / _as_scalar_tensor(dt_star, device=device, dtype=dtype).clamp_min(eps)
     residual = transient + convection - float(inverse_pe) * diffusion
     return _restore_layout(residual, layout)
+
+
+def _conservative_upwind_convection(T_eval_2d, v_scan, sender, receiver, distance, cos_theta):
+    """用双端边通量计算守恒上风对流离散项。
+
+    ``cos_theta > 0`` 表示通量沿 ``sender -> receiver`` 方向流动，此时
+    sender 节点为上游；反之 receiver 节点为上游。残差采用
+    ``transient + divergence = 0`` 的符号约定，因此通量流出端加
+    ``+F``，流入端加 ``-F``，每条边的贡献严格相互抵消。
+    """
+
+    cos = cos_theta.reshape(1, -1)
+    T_sender = T_eval_2d[:, sender]
+    T_receiver = T_eval_2d[:, receiver]
+    T_upwind = torch.where(cos >= 0.0, T_sender, T_receiver)
+    flux = v_scan * cos * T_upwind / distance.reshape(1, -1)
+
+    convection = torch.zeros_like(T_eval_2d)
+    convection.index_add_(1, sender, flux)
+    convection.index_add_(1, receiver, -flux)
+    return convection
 
 
 def _as_time_node(value, *, name: str) -> Tuple[torch.Tensor, str]:

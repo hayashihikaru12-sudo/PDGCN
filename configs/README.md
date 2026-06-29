@@ -315,6 +315,8 @@ residual_transport =
   - inverse_pe * diffusion
 ```
 
+其中 `convection` 采用守恒 FVM 上风边通量。对边 `sender -> receiver`，若 `cos_theta > 0`，通量沿 sender 到 receiver 流动并使用 sender 温度；若 `cos_theta < 0`，通量反向流动并使用 receiver 温度。每条边的通量按流出端 `+F`、流入端 `-F` 分配到两端节点，因此纯对流项全局求和为 0。
+
 当 `adaptive_pde_node_weight_enabled = true` 时，`loss_pde` 会在内部节点上按 `adaptive_pde_node_weight_scheme` 使用归一化节点权重统计 residual MSE；`loss_outflow`、`loss_smooth` 和 FEM 监督损失不受影响。`"heat_flux"` 使用 `q_surface_star`，`"temperature_continuous_clamped"` 使用方案 B：
 
 ```text
