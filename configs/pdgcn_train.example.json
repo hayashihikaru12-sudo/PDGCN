@@ -1,18 +1,16 @@
 {
-  "monitoring": {
-    "enabled": false
-  },
+  "monitoring": { "enabled": false },
   "supervision": {
     "enabled": false,
     "temperature_dataset": "fem/temperature",
     "valid_mask_dataset": "fem/valid_mask",
     "lambda_temperature": 0.3,
-    "lambda_rollout_temperature": 0.3,
+    "lambda_rollout_temperature": 1.0,
     "rollout_window": null,
     "mode": "rollout"
   },
   "peak_supervision": {
-    "enabled": true,
+    "enabled": false,
     "temperature_dataset": "fem/temperature",
     "valid_mask_dataset": "fem/valid_mask",
     "lambda_peak": 0.1,
@@ -21,20 +19,20 @@
     "rollout_window": 20
   },
   "outputs": {
-    "checkpoint_path": "../runs/pdgcn_continuous_peak/checkpoint.pt",
-    "history_path": "../runs/pdgcn_continuous_peak/history.json"
+    "checkpoint_path": "../runs/pdgcn/checkpoint.pt",
+    "history_path": "../runs/pdgcn/history.json"
   },
   "datasets": [
     {
-      "name": "case_benchmark_continuous_peak",
-      "h5_dir": "../../autodl-tmp/case_benchmark",
-      "cache_dir": "../runs/pdgcn_continuous_peak/cache/case_benchmark",
+      "name": "case_benchfast",
+      "h5_dir": "../../autodl-tmp/case_benchfast",
+      "cache_dir": "../runs/pdgcn/cache/case_benchfast",
       "scale": {
-        "L0": 0.051764991760253905,
-        "v0": 0.045,
+        "L0": 0.05335247993469239,
+        "v0": 0.05,
         "T_amb": 120,
-        "delta_T0": 230,
-        "Q0": 1900000.0,
+        "delta_T0": 900,
+        "Q0": 2000000.0,
         "K0": 5.9,
         "rho": 1575,
         "Cp": 1600.0,
@@ -58,7 +56,7 @@
       "lambda_pde": 1.0,
       "lambda_outflow": 1.0,
       "gradient_regularization": 0.0,
-      "residual_time_scheme": "explicit",
+      "residual_time_scheme": "backward",
       "adaptive_pde_node_weight_enabled": true,
       "adaptive_pde_node_weight_scheme": "temperature_continuous_clamped",
       "adaptive_pde_node_weight_min": 0.2,
@@ -77,14 +75,14 @@
       "lr_warmup_epochs": 30,
       "lr_patience": 10,
       "lr_factor": 0.5,
-      "epochs": 500,
+      "epochs": 600,
       "tbptt_window": 5,
       "warmup_steps": 0,
       "grad_clip_norm": 1.0,
       "resume_from_checkpoint": false,
       "resume_checkpoint_path": null,
       "resume_optimizer_state": false,
-      "loss_threshold": 0.005,
+      "loss_threshold": null,
       "device": null
     }
   }

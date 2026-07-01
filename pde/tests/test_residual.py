@@ -51,46 +51,17 @@ def test_compute_pde_residual_matches_hand_calculation():
         k_ratio=0.1,
     )
 
-    expected = torch.tensor([[0.5], [3.075], [-0.5]])
+    expected = torch.tensor([[0.5], [2.7416668], [1.5]])
     assert residual.shape == T_next.shape
     assert torch.allclose(residual, expected, atol=1e-6)
 
 
-def test_conservative_upwind_convection_has_zero_global_sum():
-    """验证无扩散时守恒上风对流项在全局节点上不产生净热量。"""
+def test_signed_directional_convection_is_receiver_aggregated():
+    """验证带符号对流项只按接收节点聚合，不强制全局守恒。"""
 
-    edge_index = torch.tensor([[0, 1, 2], [1, 2, 0]], dtype=torch.long)
-    edge_attr = _edge_attr(
-        distance=[1.0, 2.0, 1.5],
-        cos_theta=[1.0, -0.5, 0.25],
-        cos_phi_sq=[1.0, 1.0, 1.0],
-    )
-    T_current = torch.tensor([[0.5], [2.0], [4.0]])
-
-    residual = compute_pde_residual(
-        T_next=T_current,
-        T_current=T_current,
-        v_scan_star=3.0,
-        dt_star=1.0,
-        edge_index=edge_index,
-        edge_attr=edge_attr,
-        inverse_pe=0.0,
-        k_ratio=0.1,
-    )
-
-    assert torch.allclose(residual.sum(), torch.tensor(0.0), atol=1e-6)
-
-
-def test_conservative_upwind_convection_cools_hotspot_outflow():
-    """验证热点位于流出端时，对流残差符号会驱动热点降温。"""
-
-    edge_index = torch.tensor([[0, 1], [1, 2]], dtype=torch.long)
-    edge_attr = _edge_attr(
-        distance=[1.0, 1.0],
-        cos_theta=[1.0, 1.0],
-        cos_phi_sq=[1.0, 1.0],
-    )
-    T_current = torch.tensor([[0.0], [10.0], [0.0]])
+    edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+    edge_attr = _edge_attr(distance=[1.0], cos_theta=[1.0], cos_phi_sq=[1.0])
+    T_current = torch.tensor([[0.0], [2.0]])
 
     residual = compute_pde_residual(
         T_next=T_current,
@@ -103,9 +74,61 @@ def test_conservative_upwind_convection_cools_hotspot_outflow():
         k_ratio=0.1,
     )
 
-    assert residual[1].item() > 0.0
-    assert residual[2].item() < 0.0
-    assert torch.allclose(residual.sum(), torch.tensor(0.0), atol=1e-6)
+    expected = torch.tensor([[0.0], [2.0]])
+    assert torch.allclose(residual, expected, atol=1e-6)
+    assert not torch.allclose(residual.sum(), torch.tensor(0.0), atol=1e-6)
+
+
+def test_signed_directional_convection_keeps_negative_projection():
+    """验证反方向邻居保留带符号贡献而不是被截断。"""
+
+    edge_index = torch.tensor([[0, 2], [1, 1]], dtype=torch.long)
+    edge_attr = _edge_attr(
+        distance=[1.0, 1.0],
+        cos_theta=[1.0, -1.0],
+        cos_phi_sq=[1.0, 1.0],
+    )
+    T_current = torch.tensor([[0.0], [1.0], [2.0]])
+
+    residual = compute_pde_residual(
+        T_next=T_current,
+        T_current=T_current,
+        v_scan_star=1.0,
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        inverse_pe=0.0,
+        k_ratio=0.1,
+    )
+
+    expected = torch.tensor([[0.0], [1.0], [0.0]])
+    assert torch.allclose(residual, expected, atol=1e-6)
+
+
+def test_signed_directional_convection_uses_inverse_distance_weights():
+    """验证邻居权重按距离倒数在接收节点内归一化。"""
+
+    edge_index = torch.tensor([[0, 1], [2, 2]], dtype=torch.long)
+    edge_attr = _edge_attr(
+        distance=[1.0, 3.0],
+        cos_theta=[1.0, 1.0],
+        cos_phi_sq=[1.0, 1.0],
+    )
+    T_current = torch.tensor([[0.0], [3.0], [6.0]])
+
+    residual = compute_pde_residual(
+        T_next=T_current,
+        T_current=T_current,
+        v_scan_star=1.0,
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        inverse_pe=0.0,
+        k_ratio=0.1,
+    )
+
+    expected = torch.tensor([[0.0], [0.0], [4.75]])
+    assert torch.allclose(residual, expected, atol=1e-6)
 
 
 def test_compute_pde_residual_supports_tbptt_window_shape():
@@ -187,5 +210,5 @@ def test_compute_pde_residual_can_use_backward_time_scheme():
         residual_time_scheme="backward",
     )
 
-    expected = torch.tensor([[1.5], [6.15], [-4.5]])
+    expected = torch.tensor([[0.5], [4.483333], [1.5]])
     assert torch.allclose(residual, expected, atol=1e-6)

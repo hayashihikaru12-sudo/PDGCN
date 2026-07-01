@@ -13,7 +13,7 @@
 
 ## 物理建模约定
 
-边特征布局遵循 `data` 模块生成的 `[dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]`。其中 `cos_theta` 用于扫描方向相关的守恒 FVM 上风对流通量：正值表示通量沿 `sender -> receiver`，sender 对流残差加 `+F`、receiver 加 `-F`；负值表示反向流动。`cos_phi_sq` 和 `k_ratio` 用于构造沿纤维方向的各向异性导热权重。
+边特征布局遵循 `data` 模块生成的 `[dx, dy, dz, d, cos_theta, cos_phi, cos_phi_sq]`。其中 `cos_theta` 表示接收节点切向扫描方向与 `sender -> receiver` 边方向的夹角余弦，用于带符号边方向对流项；残差按接收节点聚合距离倒数归一化后的邻居贡献，不使用 `ReLU(cos_theta)` 截断反方向邻居。`cos_phi_sq` 和 `k_ratio` 用于构造沿纤维方向的各向异性导热权重。
 
 `upwind` 和 `side` 节点会被钳制到 Dirichlet 温度，默认无量纲值为 `0.0`。`downwind` 节点用于出流边界 Neumann 软约束。PDE 残差支持单步张量和 TBPTT 窗口张量，返回形状会与输入温度保持一致；残差中不再包含热源项或单层等效热汇项。
 

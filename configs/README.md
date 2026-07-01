@@ -315,7 +315,14 @@ residual_transport =
   - inverse_pe * diffusion
 ```
 
-其中 `convection` 采用守恒 FVM 上风边通量。对边 `sender -> receiver`，若 `cos_theta > 0`，通量沿 sender 到 receiver 流动并使用 sender 温度；若 `cos_theta < 0`，通量反向流动并使用 receiver 温度。每条边的通量按流出端 `+F`、流入端 `-F` 分配到两端节点，因此纯对流项全局求和为 0。
+其中 `convection` 采用带符号边方向贡献方法。对边 `sender=j -> receiver=i`，`cos_theta` 为接收节点切向速度方向与 `sender -> receiver` 边方向的点积，接收节点内使用距离倒数权重归一化：
+
+```text
+alpha_ij = (d_ij*)^-1 / sum_k (d_ik*)^-1
+convection_i += alpha_ij * v_scan* * cos_theta_ij * (T_i* - T_j*) / d_ij*
+```
+
+该写法保留正负方向贡献，不使用 `ReLU(cos_theta)` 截断反方向邻居，也不再强制纯对流项全局求和为 0。
 
 当 `adaptive_pde_node_weight_enabled = true` 时，`loss_pde` 会在内部节点上按 `adaptive_pde_node_weight_scheme` 使用归一化节点权重统计 residual MSE；`loss_outflow`、`loss_smooth` 和 FEM 监督损失不受影响。`"heat_flux"` 使用 `q_surface_star`，`"temperature_continuous_clamped"` 使用方案 B：
 
