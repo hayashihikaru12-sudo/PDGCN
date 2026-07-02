@@ -1006,6 +1006,7 @@ def _compute_loss_components(
         gradient_regularization=model.config.gradient_regularization,
         dirichlet_temperature_star=model.config.dirichlet_temperature_star,
         residual_time_scheme=model.config.residual_time_scheme,
+        convection_scale=model.config.convection_scale,
         adaptive_pde_node_weight_enabled=model.config.adaptive_pde_node_weight_enabled,
         adaptive_pde_node_weight_scheme=model.config.adaptive_pde_node_weight_scheme,
         adaptive_pde_node_weight_min=model.config.adaptive_pde_node_weight_min,

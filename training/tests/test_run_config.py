@@ -103,6 +103,7 @@ class RunConfigTests(unittest.TestCase):
                 "thermal_loss_beta": 0.25,
                 "thermal_loss_base_temperature_star": 0.0,
                 "residual_time_scheme": "backward",
+                "convection_scale": 1.5,
             },
         )
 
@@ -115,6 +116,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(config.thermal_loss_beta, 0.25)
         self.assertAlmostEqual(config.thermal_loss_base_temperature_star, 0.0)
         self.assertEqual(config.residual_time_scheme, "backward")
+        self.assertAlmostEqual(config.convection_scale, 1.5)
 
     def test_pdgcn_config_derives_node_input_size_from_heat_source_feature_flags(self):
         default_config = PDGCNConfig()
@@ -130,6 +132,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertAlmostEqual(default_config.temperature_pde_node_weight_high, 4.0)
         self.assertFalse(default_config.adaptive_pde_node_weight_warmup_enabled)
         self.assertEqual(default_config.adaptive_pde_node_weight_warmup_epochs, 50)
+        self.assertAlmostEqual(default_config.convection_scale, 2.0)
 
         config = PDGCNConfig(
             include_q_in_features=True,
@@ -169,6 +172,8 @@ class RunConfigTests(unittest.TestCase):
             PDGCNConfig(adaptive_pde_node_weight_warmup_enabled=1)
         with self.assertRaisesRegex(ValueError, "adaptive_pde_node_weight_warmup_epochs"):
             PDGCNConfig(adaptive_pde_node_weight_warmup_epochs=0)
+        with self.assertRaisesRegex(ValueError, "convection_scale"):
+            PDGCNConfig(convection_scale=-0.1)
 
     def test_pdgcn_config_from_scale_requires_physics_inputs_and_dt(self):
         scale = ScaleParams(L0=2.0, v0=4.0, T_amb=300.0, delta_T0=10.0, Q0=5.0)
@@ -213,6 +218,7 @@ class RunConfigTests(unittest.TestCase):
                     "gradient_regularization": 0.001,
                     "thermal_loss_beta": 0.25,
                     "residual_time_scheme": "backward",
+                    "convection_scale": 1.75,
                     "adaptive_pde_node_weight_enabled": True,
                     "adaptive_pde_node_weight_scheme": "temperature_continuous_clamped",
                     "adaptive_pde_node_weight_min": 0.35,
@@ -257,6 +263,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(config.model["hidden_size"], 8)
         self.assertEqual(config.model["lambda_outflow"], 0.0)
         self.assertEqual(config.model["residual_time_scheme"], "backward")
+        self.assertAlmostEqual(config.model["convection_scale"], 1.75)
         self.assertTrue(config.model["adaptive_pde_node_weight_enabled"])
         self.assertEqual(config.model["adaptive_pde_node_weight_scheme"], "temperature_continuous_clamped")
         self.assertAlmostEqual(config.model["adaptive_pde_node_weight_min"], 0.35)
@@ -274,6 +281,7 @@ class RunConfigTests(unittest.TestCase):
         self.assertFalse(model_config.temperature_pde_node_weight_clamp_enabled)
         self.assertAlmostEqual(model_config.temperature_pde_node_weight_threshold, 1.25)
         self.assertAlmostEqual(model_config.temperature_pde_node_weight_high, 5.0)
+        self.assertAlmostEqual(model_config.convection_scale, 1.75)
         self.assertTrue(model_config.adaptive_pde_node_weight_warmup_enabled)
         self.assertEqual(model_config.adaptive_pde_node_weight_warmup_epochs, 25)
         self.assertEqual(config.training.device, "cpu")

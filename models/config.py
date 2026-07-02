@@ -33,6 +33,7 @@ class PDGCNConfig:
     thermal_loss_beta: float = 0.0
     thermal_loss_base_temperature_star: float = 0.0
     residual_time_scheme: str = "explicit"
+    convection_scale: float = 2.0
     adaptive_pde_node_weight_enabled: bool = True
     adaptive_pde_node_weight_scheme: str = "heat_flux"
     adaptive_pde_node_weight_min: float = 0.2
@@ -122,6 +123,8 @@ class PDGCNConfig:
             raise ValueError(
                 f"gradient_regularization must be non-negative, got {self.gradient_regularization}."
             )
+        if float(self.convection_scale) < 0:
+            raise ValueError(f"convection_scale must be non-negative, got {self.convection_scale}.")
         if float(self.thermal_loss_beta) < 0:
             raise ValueError(f"thermal_loss_beta must be non-negative, got {self.thermal_loss_beta}.")
         if not isinstance(self.adaptive_pde_node_weight_enabled, bool):

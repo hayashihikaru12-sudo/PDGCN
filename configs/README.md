@@ -257,7 +257,8 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
   "k_ratio": 0.05,
   "lambda_outflow": 1.0,
   "gradient_regularization": 0.001,
-  "residual_time_scheme": "explicit"
+  "residual_time_scheme": "explicit",
+  "convection_scale": 2.0
 }
 ```
 
@@ -267,6 +268,7 @@ source_coefficient = Q0 * L0 / (rho * Cp * v0 * heat_source_effective_thickness 
 | `lambda_outflow` | number | 出流边界 Neumann 软约束损失权重。越大越强调 downwind 边界法向温度梯度接近零。 |
 | `gradient_regularization` | number | 图梯度平滑损失权重，作用于边界钳制后的预测温度 `T_next_bc*`，抑制相邻内部节点的高频温度振荡。推荐从 `1e-4` 到 `1e-2` 调参；过大可能抹平热峰。 |
 | `residual_time_scheme` | string | PDE 空间项的时间离散方式。可选 `"explicit"` 或 `"backward"`。 |
+| `convection_scale` | number | 对流项缩放补偿因子，默认 `2.0`，用于补偿带符号边方向对流项在典型三角网格上的投影缩放。 |
 | `adaptive_pde_node_weight_enabled` | boolean | 是否启用 PDE residual 内部节点动态权重；默认 `true`。 |
 | `adaptive_pde_node_weight_scheme` | string | 动态权重方案。可选 `"heat_flux"`、`"temperature_continuous_clamped"`、`"temperature_hard_threshold"` 或 `"none"`；默认 `"heat_flux"`，保持旧版行为。 |
 | `adaptive_pde_node_weight_min` | number | `"heat_flux"` 方案中零热流节点的最低 PDE 权重，范围 `[0, 1]`，默认 `0.2`。 |
@@ -319,7 +321,7 @@ residual_transport =
 
 ```text
 alpha_ij = (d_ij*)^-1 / sum_k (d_ik*)^-1
-convection_i += alpha_ij * v_scan* * cos_theta_ij * (T_i* - T_j*) / d_ij*
+convection_i += convection_scale * alpha_ij * v_scan* * cos_theta_ij * (T_i* - T_j*) / d_ij*
 ```
 
 该写法保留正负方向贡献，不使用 `ReLU(cos_theta)` 截断反方向邻居，也不再强制纯对流项全局求和为 0。

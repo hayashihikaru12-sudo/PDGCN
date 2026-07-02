@@ -20,6 +20,7 @@ PHYSICS_LOSS_FIELDS = {
     "thermal_loss_beta",
     "thermal_loss_base_temperature_star",
     "residual_time_scheme",
+    "convection_scale",
     "adaptive_pde_node_weight_enabled",
     "adaptive_pde_node_weight_scheme",
     "adaptive_pde_node_weight_min",

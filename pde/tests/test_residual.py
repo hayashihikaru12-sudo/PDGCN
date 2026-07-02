@@ -49,6 +49,7 @@ def test_compute_pde_residual_matches_hand_calculation():
         edge_attr=edge_attr,
         inverse_pe=0.5,
         k_ratio=0.1,
+        convection_scale=1.0,
     )
 
     expected = torch.tensor([[0.5], [2.7416668], [1.5]])
@@ -72,11 +73,34 @@ def test_signed_directional_convection_is_receiver_aggregated():
         edge_attr=edge_attr,
         inverse_pe=0.0,
         k_ratio=0.1,
+        convection_scale=1.0,
     )
 
     expected = torch.tensor([[0.0], [2.0]])
     assert torch.allclose(residual, expected, atol=1e-6)
     assert not torch.allclose(residual.sum(), torch.tensor(0.0), atol=1e-6)
+
+
+def test_signed_directional_convection_defaults_to_scale_compensation():
+    """验证默认对流缩放补偿因子会放大带符号边方向贡献。"""
+
+    edge_index = torch.tensor([[0], [1]], dtype=torch.long)
+    edge_attr = _edge_attr(distance=[1.0], cos_theta=[1.0], cos_phi_sq=[1.0])
+    T_current = torch.tensor([[0.0], [2.0]])
+
+    residual = compute_pde_residual(
+        T_next=T_current,
+        T_current=T_current,
+        v_scan_star=1.0,
+        dt_star=1.0,
+        edge_index=edge_index,
+        edge_attr=edge_attr,
+        inverse_pe=0.0,
+        k_ratio=0.1,
+    )
+
+    expected = torch.tensor([[0.0], [4.0]])
+    assert torch.allclose(residual, expected, atol=1e-6)
 
 
 def test_signed_directional_convection_keeps_negative_projection():
@@ -99,6 +123,7 @@ def test_signed_directional_convection_keeps_negative_projection():
         edge_attr=edge_attr,
         inverse_pe=0.0,
         k_ratio=0.1,
+        convection_scale=1.0,
     )
 
     expected = torch.tensor([[0.0], [1.0], [0.0]])
@@ -125,6 +150,7 @@ def test_signed_directional_convection_uses_inverse_distance_weights():
         edge_attr=edge_attr,
         inverse_pe=0.0,
         k_ratio=0.1,
+        convection_scale=1.0,
     )
 
     expected = torch.tensor([[0.0], [0.0], [4.75]])
@@ -155,6 +181,7 @@ def test_compute_pde_residual_supports_tbptt_window_shape():
         edge_attr=edge_attr,
         inverse_pe=1.0,
         k_ratio=0.05,
+        convection_scale=1.0,
     )
 
     assert residual.shape == T_next.shape
@@ -180,6 +207,7 @@ def test_compute_pde_residual_is_source_free_transport_only():
         k_ratio=0.05,
         thermal_loss_beta=0.5,
         thermal_loss_base_temperature_star=0.5,
+        convection_scale=1.0,
     )
 
     expected = torch.tensor([[1.0], [3.0]])
@@ -208,6 +236,7 @@ def test_compute_pde_residual_can_use_backward_time_scheme():
         inverse_pe=0.5,
         k_ratio=0.1,
         residual_time_scheme="backward",
+        convection_scale=1.0,
     )
 
     expected = torch.tensor([[0.5], [4.483333], [1.5]])

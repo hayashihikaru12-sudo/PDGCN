@@ -18,6 +18,7 @@ def compute_pde_residual(
     thermal_loss_beta: float = 0.0,
     thermal_loss_base_temperature_star=0.0,
     residual_time_scheme: str = "explicit",
+    convection_scale: float = 2.0,
     eps: float = 1e-12,
 ):
     """计算每个节点的无源曲面内输运 PDE 残差。
@@ -84,6 +85,7 @@ def compute_pde_residual(
         receiver,
         distance,
         cos_theta,
+        convection_scale=convection_scale,
         eps=eps,
     )
     diffusion_edge = k_edge.reshape(1, -1) * (T_j - T_i) / distance.square().reshape(1, -1)
@@ -96,7 +98,17 @@ def compute_pde_residual(
     return _restore_layout(residual, layout)
 
 
-def _signed_directional_convection(T_eval_2d, v_scan, sender, receiver, distance, cos_theta, *, eps: float):
+def _signed_directional_convection(
+    T_eval_2d,
+    v_scan,
+    sender,
+    receiver,
+    distance,
+    cos_theta,
+    *,
+    convection_scale: float,
+    eps: float,
+):
     """按接收节点聚合带符号边方向对流贡献。
 
     当前边特征中的 ``cos_theta`` 使用接收节点切向速度方向与
@@ -126,7 +138,7 @@ def _signed_directional_convection(T_eval_2d, v_scan, sender, receiver, distance
 
     convection = torch.zeros_like(T_eval_2d)
     convection.index_add_(1, receiver, edge_contribution)
-    return convection
+    return convection * float(convection_scale)
 
 
 def _as_time_node(value, *, name: str) -> Tuple[torch.Tensor, str]:
