@@ -21,6 +21,7 @@ from visualization import write_surface_vtu
 
 from .config import SingleLayerInferenceRunConfig
 from .io import (
+    _create_string_dataset,
     _resolve_path,
     _should_write_cloud_step,
     load_model_from_checkpoint,
@@ -326,6 +327,7 @@ def _run_single_layer_inference_for_h5(
                 scale_params=scale_params,
                 warmup_steps=warmup_steps,
                 prediction_group_path=prediction_group_path,
+                dt=float(timing.get("dt", 1.0)),
             )
 
         render_summary = {
@@ -347,6 +349,11 @@ def _run_single_layer_inference_for_h5(
                 write_fem_vtu=bool(write_fem_vtu),
             )
         total_seconds = float(timing_summary["inference_seconds"]) + float(render_summary["render_seconds"])
+        _update_single_layer_timing(
+            temp_output,
+            prediction_group_path=prediction_group_path,
+            timing_summary={**timing_summary, **render_summary, "total_seconds": total_seconds},
+        )
         temp_output.replace(selected_output)
     except Exception:
         if temp_output.exists():
@@ -440,6 +447,7 @@ def write_single_layer_hdf5(
     scale_params: ScaleParams,
     warmup_steps: int,
     prediction_group_path: str = DEFAULT_PREDICTION_GROUP_PATH,
+    dt: float = 1.0,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -464,6 +472,8 @@ def write_single_layer_hdf5(
             shape=(int(steps), int(static_state.num_nodes), 1),
             dtype="float32",
         )
+        time_values = np.arange(int(steps), dtype=np.float64) * float(dt)
+        output_group.create_dataset("time", data=time_values)
 
         start_total = time.perf_counter()
 
@@ -491,8 +501,90 @@ def write_single_layer_hdf5(
             timing_summary["average_inference_seconds"] = float(np.mean(step_inference_seconds))
             timing_summary["max_inference_seconds"] = float(np.max(step_inference_seconds))
             timing_summary["min_inference_seconds"] = float(np.min(step_inference_seconds))
+        _write_single_layer_timing(
+            output_group,
+            time_values=time_values,
+            step_inference_seconds=step_inference_seconds,
+            render_seconds=0.0,
+            rendered_steps=[],
+            total_seconds=timing_summary["total_seconds"],
+        )
 
     return timing_summary
+
+
+def _update_single_layer_timing(prediction_h5, *, prediction_group_path: str, timing_summary):
+    with h5py.File(prediction_h5, "r+") as output_file:
+        group = _resolve_single_layer_prediction_group(
+            output_file,
+            prediction_group_path=prediction_group_path,
+        )
+        time_values = np.asarray(group["time"], dtype=np.float64)
+        solve_seconds = np.asarray(group["timing/solve_seconds"], dtype=np.float64)
+        _write_single_layer_timing(
+            group,
+            time_values=time_values,
+            step_inference_seconds=solve_seconds,
+            render_seconds=float(timing_summary.get("render_seconds", 0.0)),
+            rendered_steps=timing_summary.get("rendered_steps", []),
+            total_seconds=float(timing_summary.get("total_seconds", 0.0)),
+        )
+
+
+def _write_single_layer_timing(
+    output_group,
+    *,
+    time_values,
+    step_inference_seconds,
+    render_seconds: float,
+    rendered_steps,
+    total_seconds: float,
+):
+    if "timing" in output_group:
+        del output_group["timing"]
+    timing_group = output_group.create_group("timing")
+    step_count = max(0, len(time_values) - 1)
+    step_indices = np.arange(1, step_count + 1, dtype=np.int64)
+    solve_seconds = _single_layer_transition_seconds(step_inference_seconds, step_count)
+    vtu_seconds = np.zeros((step_count,), dtype=np.float64)
+    rendered_transitions = [int(step) for step in rendered_steps if int(step) > 0 and int(step) <= step_count]
+    if rendered_transitions:
+        per_step = float(render_seconds) / float(len(rendered_transitions))
+        for step in rendered_transitions:
+            vtu_seconds[step - 1] = per_step
+    step_seconds = solve_seconds + vtu_seconds
+    timing_group.create_dataset("step", data=step_indices)
+    timing_group.create_dataset("frame_from", data=np.arange(0, step_count, dtype=np.int64))
+    timing_group.create_dataset("frame_to", data=step_indices)
+    timing_group.create_dataset("time_s", data=np.asarray(time_values[1:], dtype=np.float64))
+    timing_group.create_dataset("solve_seconds", data=solve_seconds)
+    timing_group.create_dataset("vtu_write_seconds", data=vtu_seconds)
+    timing_group.create_dataset("step_seconds", data=step_seconds)
+    timing_group.create_dataset("average_solve_seconds", data=float(np.mean(solve_seconds)) if step_count else 0.0)
+    timing_group.create_dataset("average_step_seconds", data=float(np.mean(step_seconds)) if step_count else 0.0)
+    timing_group.create_dataset("compute_seconds", data=float(np.sum(solve_seconds)))
+    timing_group.create_dataset("step_total_seconds", data=float(np.sum(step_seconds)))
+    timing_group.create_dataset("vtu_total_write_seconds", data=float(np.sum(vtu_seconds)))
+    timing_group.create_dataset("total_seconds", data=float(total_seconds))
+    _create_string_dataset(timing_group, "time_unit", "s")
+    _create_string_dataset(
+        timing_group,
+        "description",
+        "PDGCN single-layer wall-clock timings measured with time.perf_counter; step_seconds includes VTU write when enabled.",
+    )
+
+
+def _single_layer_transition_seconds(values, step_count: int):
+    values = np.asarray(list(values), dtype=np.float64)
+    if step_count <= 0:
+        return np.zeros((0,), dtype=np.float64)
+    if values.size >= step_count + 1:
+        return values[1 : step_count + 1].astype(np.float64, copy=False)
+    if values.size == step_count:
+        return values.astype(np.float64, copy=False)
+    padded = np.zeros((step_count,), dtype=np.float64)
+    padded[: values.size] = values
+    return padded
 
 
 @torch.no_grad()

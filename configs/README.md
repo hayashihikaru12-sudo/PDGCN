@@ -412,6 +412,11 @@ w = W_high if T_source_applied* > threshold else 1
     "output_path": "../runs/pdgcn/multilayer_prediction.h5",
     "dataset_index": 0,
     "h5_path": null,
+    "h5_dir": "../case_fastsmall",
+    "output_dir": "../runs/pdgcn/multilayer_batch",
+    "output_prefix": "pre_",
+    "batch_mode": false,
+    "prediction_group_path": "prediction/pdgcn_multilayer",
     "steps": null,
     "warmup_steps": null,
     "bottom_temperature_star": 0.0,
@@ -421,6 +426,20 @@ w = W_high if T_source_applied* > threshold else 1
     "write_vtk": false,
     "use_pdgcn_inplane": true,
     "pdgcn_inplane_top_layer_only": false,
+    "use_alternating_order_average": false,
+    "fdm_k_ratio_scale": 0.42,
+    "fdm_layer_interface_scales": [0.7, 0.7, 2.0, 2.5, 2.5, 2.0, 2.0, 2.0, 1.0],
+    "fdm_top_surface_loss_gamma_dt": 0.014,
+    "fdm_top_surface_loss_velocity_exponent": 3.4,
+    "fdm_top_surface_loss_reference_velocity_star": 1.0,
+    "fin_cooling_enabled": true,
+    "fin_cooling_mode": "r_char",
+    "fin_cooling_r_char_star": 0.034,
+    "fin_cooling_gamma_star": null,
+    "fin_cooling_beta_h": 3.0,
+    "fin_cooling_skip_top_layers": 0,
+    "fin_cooling_layer_profile": "uniform",
+    "fin_cooling_layer_profile_strength": 0.0,
     "cloud_interval": 20,
     "layer_batch_size": null,
     "delta_smoothing_alpha": 0.2,
@@ -441,15 +460,32 @@ w = W_high if T_source_applied* > threshold else 1
 | `output_path` | string | 多层推理输出 HDF5 路径。 |
 | `dataset_index` | integer | 使用 `datasets[]` 中的第几个数据集，示例为 `0`。 |
 | `h5_path` | string 或 `null` | 可选输入 HDF5 文件。为 `null` 时使用所选数据集目录中自然升序的第一个文件。 |
+| `h5_dir` | string 或 `null` | 批量模式输入目录；为 `null` 时使用所选训练数据集目录。 |
+| `output_dir` | string 或 `null` | 批量模式输出目录。 |
+| `output_prefix` | string | 批量输出文件名前缀，默认 `pre_`。 |
+| `batch_mode` | boolean | 是否启用多层批处理。启用后遍历 `h5_dir` 下直属 `.h5`/`.hdf5` 文件。 |
+| `prediction_group_path` | string | 多层预测结果组路径，默认 `prediction/pdgcn_multilayer`。 |
 | `steps` | integer 或 `null` | 推理步数。为 `null` 时使用输入 HDF5 的全部帧。 |
 | `warmup_steps` | integer 或 `null` | 推理前 warmup 步数。为 `null` 时沿用训练配置中的 `warmup_steps`。 |
 | `bottom_temperature_star` | number | 底层恒温边界的无量纲温度。`0.0` 对应真实温度 `T_amb`。 |
 | `allow_unstable_fdm` | boolean | 兼容旧显式 FDM 配置的保留字段。当前厚度方向使用 Backward Euler 隐式 FDM，不再依赖该字段跳过稳定性检查。 |
 | `layer_fiber_angles_deg` | number array 或 `null` | 每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。为 `null` 时所有层使用 `0.0`。 |
 | `normal_offset_sign` | integer | 法向偏移方向，只能为 `-1` 或 `1`。默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。 |
-| `write_vtk` | boolean | 兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。 |
+| `write_vtk` | boolean | 是否在多层推理后立即生成 VTK；为 `false` 时只写 HDF5。 |
 | `use_pdgcn_inplane` | boolean | 是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。 |
 | `pdgcn_inplane_top_layer_only` | boolean | 当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。 |
+| `use_alternating_order_average` | boolean | 是否启用方案 B：同一步分别计算“面内 PD-GCN → 厚度 FDM”和“厚度 FDM → 面内 PD-GCN”两条路径并取算术平均。默认 `false`，保持旧顺序分裂行为。 |
+| `fdm_k_ratio_scale` | number | 推理阶段厚度 FDM 使用的 `k_ratio` 缩放系数，默认代码值为 `1.0`。当前多层示例采用 `0.42`，只作用于推理厚度 FDM，不修改 checkpoint 中的模型参数。 |
+| `fdm_layer_interface_scales` | number 或 number array | 层间界面导热倍率，标量或长度为 `num_layers - 1` 的数组；第 `i` 项对应 layer `i` 到 layer `i+1` 的界面。 |
+| `fdm_top_surface_loss_gamma_dt` | number | 厚度步后的顶层表面对流损失分裂项，阻尼 `layer=0` 相对底温的温升；默认 `0.0` 保持旧行为。 |
+| `fdm_top_surface_loss_velocity_exponent` | number | 顶层表面损失的速度缩放指数。大于 `0` 时按 `(fdm_top_surface_loss_reference_velocity_star / v_scan*)^exponent` 缩放 `fdm_top_surface_loss_gamma_dt`；当前多层示例采用 `3.4`。 |
+| `fdm_top_surface_loss_reference_velocity_star` | number | 顶层表面损失速度缩放的参考无量纲速度，必须为正；当前多层示例采用 `1.0`。 |
+| `fin_cooling_enabled` | boolean | 是否启用瞬态散热片等效横向冷却项。为 `false` 时厚度步退化为原 Backward Euler FDM。 |
+| `fin_cooling_mode` | string | 等效横向冷却强度来源，支持 `r_char`、`beta_h` 和 `direct`。当前示例使用 `r_char`。 |
+| `fin_cooling_r_char_star` | number 或 `null` | `r_char` 模式下的无量纲横向特征尺度，按 `gamma_star = inverse_pe / r_char_star^2` 计算冷却强度。 |
+| `fin_cooling_gamma_star` | number、number array 或 `null` | `direct` 模式下直接给定的无量纲冷却强度，可为标量或 active layer 数组。 |
+| `fin_cooling_beta_h` | number | `beta_h` 模式下的散热片剖面弯曲度；在 `r_char` 模式下主要用于缺省 `r_char_star` 时的兼容推导。 |
+| `fin_cooling_skip_top_layers` | integer | 保留瞬态散热片模型时必须为 `0`，即所有 active layers 都施加等效横向冷却项；非零值会在配置解析时报错。 |
 | `cloud_interval` | integer | 合并三维云图输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
 | `layer_batch_size` | integer 或 `null` | 每次模型前向处理的层数；为 `null` 时 CUDA 自动使用较小层批量以降低显存。 |
 | `delta_smoothing_alpha` | number | 推理端网络增量图低通强度，范围 `[0, 1]`。默认 `0.2`；设为 `0` 可关闭平滑。 |
@@ -457,14 +493,39 @@ w = W_high if T_source_applied* > threshold else 1
 | `cloud_max_nodes_per_layer` | integer 或 `null` | 兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。 |
 | `vtk_output_dir` | string 或 `null` | VTK 输出目录。为 `null` 时使用 `<output_path stem>_vtk/`。 |
 
+多层输出 HDF5 会先复制输入 HDF5，再在副本中重建 `prediction/pdgcn_multilayer`。输入文件中已有的 `fem/`、根级 `multilayer/` 和 `mesh/` 不会被校验或覆盖。预测组内主要字段为：
+
+```text
+prediction/pdgcn_multilayer/temperature                 [time, layer, node, 1]
+prediction/pdgcn_multilayer/temperature_star            [time, layer, node, 1]
+prediction/pdgcn_multilayer/top_temperature             [time, node, 1]
+prediction/pdgcn_multilayer/time                        [time]
+prediction/pdgcn_multilayer/timing/*
+prediction/pdgcn_multilayer/multilayer/coordinates      [time, layer, node, 3]，单位 m
+prediction/pdgcn_multilayer/multilayer/num_layers
+prediction/pdgcn_multilayer/multilayer/layer_spacing_m
+prediction/pdgcn_multilayer/multilayer/layer_fiber_angles_deg
+prediction/pdgcn_multilayer/multilayer/normal_offset_sign
+prediction/pdgcn_multilayer/multilayer/bottom_temperature
+```
+
 多层推理中厚度方向 FDM 系数为：
 
 ```text
-C_n = dt_star * inverse_pe * k_ratio / layer_spacing_star^2
+effective_k_ratio = model_k_ratio * fdm_k_ratio_scale
+C_n = dt_star * inverse_pe * effective_k_ratio / layer_spacing_star^2
 layer_spacing_star = layer_spacing / L0
+gamma_star = inverse_pe / fin_cooling_r_char_star^2          # fin_cooling_mode = "r_char"
+gamma_star * dt_star = (fin_cooling_beta_h / (num_layers - 1))^2 * C_n  # fin_cooling_mode = "beta_h"
 ```
 
-当前厚度方向采用 Backward Euler 隐式 FDM，`C_n` 仍记录到推理 metadata 中作为诊断指标，但不再作为显式格式的稳定性报错阈值。
+当前厚度方向采用 Backward Euler 隐式 FDM，并默认启用瞬态散热片等效横向冷却项：
+
+```text
+A_fin = I - C_n D + gamma_star * dt_star * I
+```
+
+`C_n`、`model_k_ratio`、`fdm_k_ratio_scale`、`fdm_effective_k_ratio`、`fdm_layer_interface_scales`、`fdm_top_surface_loss_gamma_dt`、`fdm_top_surface_loss_velocity_exponent`、`fdm_top_surface_loss_reference_velocity_star`、`fin_cooling_mode`、`fin_cooling_r_char_star`、`fin_cooling_beta_h`、`fin_cooling_skip_top_layers`、`gamma_star` 和 `gamma_star * dt_star` 会记录到推理 metadata 中作为诊断指标。`allow_unstable_fdm` 不再作为显式格式的稳定性报错阈值。
 
 多层推理的温度更新为：
 
@@ -475,7 +536,16 @@ T_inplane = T_src + delta_T_inplane
 T_next = implicit_fdm_step(T_inplane)
 ```
 
-其中 `delta_T_source` 只由显式表面热源模块作用于顶层；若启用热源节点特征，多层图中也只有顶层保留 `q*` 和 `ΔT_Q*`，非顶层这两列置零。`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
+若 `use_alternating_order_average=true`，则同一步改为：
+
+```text
+T_A = implicit_fdm_step(T_src + delta_T_inplane(T_src))
+T_B = implicit_fdm_step(T_src)
+T_B = T_B + delta_T_inplane(T_B)
+T_next = 0.5 * (T_A + T_B)
+```
+
+其中 `delta_T_source` 只由显式表面热源模块作用于顶层，并作为两条路径共同起点；若启用热源节点特征，多层图中也只有顶层保留 `q*` 和 `ΔT_Q*`，非顶层这两列置零。`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再叠加到对应路径温度上；该平滑只作用于网络增量，不直接平滑最终温度。
 
 ## 调参注意事项
 

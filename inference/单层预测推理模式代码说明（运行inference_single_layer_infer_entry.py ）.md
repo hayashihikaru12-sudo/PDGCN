@@ -16,7 +16,7 @@
 prediction/pdgcn_single_layer
 ```
 
-当前 HDF5 落盘只保存自回归 rollout 的真实温度数据集。配置项 `mode` 和命令行 `--mode` 保留为兼容字段，但不再扩展 HDF5 输出 schema，也不会额外写入 teacher-forcing、误差、metrics 或 metadata 字段。
+当前 HDF5 落盘保存自回归 rollout 的真实温度数据集，并在同一预测组中记录物理时间轴和推理/渲染耗时。配置项 `mode` 和命令行 `--mode` 保留为兼容字段，但不再额外写入 teacher-forcing、误差或 metrics 字段。
 
 命令行仍可通过 `--mode` 覆盖配置：
 
@@ -71,17 +71,19 @@ T*_next = apply_dirichlet( apply_dirichlet(T*_in + ΔT*_source) + PDGCN(graph) )
 
 ## 四、HDF5 输出数据集
 
-单层推理只在输出 HDF5 副本中新增一个预测数据集：
+单层推理在输出 HDF5 副本中新增预测组：
 
 ```text
-prediction/pdgcn_single_layer/temperature
+prediction/pdgcn_single_layer
 ```
 
 | 数据集 | 形状 | 含义 |
 |--------|------|------|
 | `temperature` | `[steps, N, 1]` | 逐帧写入的 PD-GCN 预测真实温度 |
+| `time` | `[steps]` | 逐帧物理时间，单位秒 |
+| `timing/*` | 逐步数组或标量 | 推理、渲染和总耗时统计 |
 
-该组织方式参考 FEM 数据的 `fem/temperature`：第一维是时间帧，第二维是节点，第三维保留单通道温度值。输出文件仍保留源 HDF5 中的 `dynamic`、`fem`、attrs 等原始内容；推理入口不再写入 `temperature_star`、`frame_index`、FEM 对齐副本、误差场、`teacher_forcing` 子组、`metrics` 子组或 `metadata`。
+该组织方式参考 FEM 数据的 `fem/temperature`：第一维是时间帧，第二维是节点，第三维保留单通道温度值。输出文件仍保留源 HDF5 中的 `dynamic`、`fem`、attrs 等原始内容；推理入口不再写入 `temperature_star`、`frame_index`、FEM 对齐副本、误差场、`teacher_forcing` 子组或 `metrics` 子组。
 
 ---
 

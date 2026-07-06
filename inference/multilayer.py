@@ -37,6 +37,14 @@ def rollout_multilayer_fdm(
     delta_smoothing_steps: int = 1,
     use_pdgcn_inplane: bool = True,
     pdgcn_inplane_top_layer_only: bool = False,
+    use_alternating_order_average: bool = False,
+    fdm_k_ratio_scale: float = 1.0,
+    fdm_layer_interface_scales=None,
+    fdm_top_surface_loss_gamma_dt: float = 0.0,
+    fdm_top_surface_loss_velocity_exponent: float = 0.0,
+    fdm_top_surface_loss_reference_velocity_star: float = 1.0,
+    fin_cooling_gamma_star=None,
+    fin_cooling_skip_top_layers: int = 0,
     timing_recorder=None,
 ):
     """Run multilayer PD-GCN inference coupled with implicit 1D FDM in thickness."""
@@ -56,10 +64,33 @@ def rollout_multilayer_fdm(
         raise ValueError(f"normal_offset_sign must be -1 or 1, got {normal_offset_sign}.")
     if not 0.0 <= float(delta_smoothing_alpha) <= 1.0:
         raise ValueError(f"delta_smoothing_alpha must be in [0, 1], got {delta_smoothing_alpha}.")
+    if float(fdm_k_ratio_scale) <= 0:
+        raise ValueError(f"fdm_k_ratio_scale must be positive, got {fdm_k_ratio_scale}.")
+    if float(fdm_top_surface_loss_gamma_dt) < 0:
+        raise ValueError(
+            "fdm_top_surface_loss_gamma_dt must be non-negative, "
+            f"got {fdm_top_surface_loss_gamma_dt}."
+        )
+    if float(fdm_top_surface_loss_velocity_exponent) < 0:
+        raise ValueError(
+            "fdm_top_surface_loss_velocity_exponent must be non-negative, "
+            f"got {fdm_top_surface_loss_velocity_exponent}."
+        )
+    if float(fdm_top_surface_loss_reference_velocity_star) <= 0:
+        raise ValueError(
+            "fdm_top_surface_loss_reference_velocity_star must be positive, "
+            f"got {fdm_top_surface_loss_reference_velocity_star}."
+        )
     delta_smoothing_steps = _as_non_negative_integer(
         delta_smoothing_steps,
         "delta_smoothing_steps",
     )
+    fin_cooling_skip_top_layers = _as_non_negative_integer(
+        fin_cooling_skip_top_layers,
+        "fin_cooling_skip_top_layers",
+    )
+    if fin_cooling_gamma_star is not None and fin_cooling_skip_top_layers != 0:
+        raise ValueError("fin_cooling_skip_top_layers must be 0 when fin_cooling_gamma_star is set.")
 
     initial_setup_start = time.perf_counter()
     model_device = next(model.parameters()).device
@@ -90,70 +121,102 @@ def rollout_multilayer_fdm(
                 graph_boundary_nodes(graph),
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
-            if bool(use_pdgcn_inplane):
-                if bool(pdgcn_inplane_top_layer_only):
-                    delta_net = torch.zeros_like(source_temperature)
-                    delta_top = _forward_model_by_layer_batches(
-                        model,
-                        graph,
-                        source_temperature[0:1],
-                        source_delta[0:1],
-                        effective_layer_batch_size=1,
-                        layer_spacing_star=layer_spacing_star,
-                        layer_fiber_angles_deg=layer_fiber_angles_deg,
-                        normal_offset_sign=int(normal_offset_sign),
-                    )
-                    delta_net[0:1] = _smooth_delta_by_graph(
-                        delta_top,
-                        graph.edge_index,
-                        graph_boundary_nodes(graph),
-                        alpha=float(delta_smoothing_alpha),
-                        steps=delta_smoothing_steps,
-                    )
-                else:
-                    delta_net = _forward_model_by_layer_batches(
-                        model,
-                        graph,
-                        source_temperature,
-                        source_delta,
-                        effective_layer_batch_size=effective_layer_batch_size,
-                        layer_spacing_star=layer_spacing_star,
-                        layer_fiber_angles_deg=layer_fiber_angles_deg,
-                        normal_offset_sign=int(normal_offset_sign),
-                    )
-                    delta_net = _smooth_delta_by_graph(
-                        delta_net,
-                        graph.edge_index,
-                        graph_boundary_nodes(graph),
-                        alpha=float(delta_smoothing_alpha),
-                        steps=delta_smoothing_steps,
-                    )
+            boundary_nodes = graph_boundary_nodes(graph)
+            top_surface_loss_gamma_dt = _scaled_top_surface_loss_gamma_dt(
+                float(fdm_top_surface_loss_gamma_dt),
+                graph,
+                velocity_exponent=float(fdm_top_surface_loss_velocity_exponent),
+                reference_velocity_star=float(fdm_top_surface_loss_reference_velocity_star),
+            )
+            if bool(use_alternating_order_average):
+                inplane_first = _apply_inplane_step(
+                    model,
+                    graph,
+                    source_temperature,
+                    source_delta,
+                    effective_layer_batch_size=effective_layer_batch_size,
+                    layer_spacing_star=layer_spacing_star,
+                    layer_fiber_angles_deg=layer_fiber_angles_deg,
+                    normal_offset_sign=int(normal_offset_sign),
+                    delta_smoothing_alpha=float(delta_smoothing_alpha),
+                    delta_smoothing_steps=delta_smoothing_steps,
+                    use_pdgcn_inplane=bool(use_pdgcn_inplane),
+                    pdgcn_inplane_top_layer_only=bool(pdgcn_inplane_top_layer_only),
+                    boundary_nodes=boundary_nodes,
+                )
+                inplane_then_thickness = _apply_thickness_step(
+                    model,
+                    inplane_first,
+                    layer_spacing_star=layer_spacing_star,
+                    bottom_temperature_star=bottom_temperature_star,
+                    fdm_k_ratio_scale=float(fdm_k_ratio_scale),
+                    fdm_layer_interface_scales=fdm_layer_interface_scales,
+                    fdm_top_surface_loss_gamma_dt=top_surface_loss_gamma_dt,
+                    fin_cooling_gamma_star=fin_cooling_gamma_star,
+                    fin_cooling_skip_top_layers=fin_cooling_skip_top_layers,
+                    boundary_nodes=boundary_nodes,
+                )
+                thickness_first = _apply_thickness_step(
+                    model,
+                    source_temperature,
+                    layer_spacing_star=layer_spacing_star,
+                    bottom_temperature_star=bottom_temperature_star,
+                    fdm_k_ratio_scale=float(fdm_k_ratio_scale),
+                    fdm_layer_interface_scales=fdm_layer_interface_scales,
+                    fdm_top_surface_loss_gamma_dt=top_surface_loss_gamma_dt,
+                    fin_cooling_gamma_star=fin_cooling_gamma_star,
+                    fin_cooling_skip_top_layers=fin_cooling_skip_top_layers,
+                    boundary_nodes=boundary_nodes,
+                )
+                thickness_then_inplane = _apply_inplane_step(
+                    model,
+                    graph,
+                    thickness_first,
+                    source_delta,
+                    effective_layer_batch_size=effective_layer_batch_size,
+                    layer_spacing_star=layer_spacing_star,
+                    layer_fiber_angles_deg=layer_fiber_angles_deg,
+                    normal_offset_sign=int(normal_offset_sign),
+                    delta_smoothing_alpha=float(delta_smoothing_alpha),
+                    delta_smoothing_steps=delta_smoothing_steps,
+                    use_pdgcn_inplane=bool(use_pdgcn_inplane),
+                    pdgcn_inplane_top_layer_only=bool(pdgcn_inplane_top_layer_only),
+                    boundary_nodes=boundary_nodes,
+                )
+                next_temperature = _apply_boundary_and_bottom(
+                    0.5 * (inplane_then_thickness + thickness_then_inplane),
+                    model,
+                    bottom_temperature_star=bottom_temperature_star,
+                    boundary_nodes=boundary_nodes,
+                )
             else:
-                delta_net = torch.zeros_like(source_temperature)
-            inplane_temperature = apply_dirichlet_boundary(
-                source_temperature + delta_net,
-                graph_boundary_nodes(graph),
-                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
-            )
-
-            next_temperature = compute_layer_implicit_fdm_step(
-                inplane_temperature,
-                dt_star=getattr(model.config, "dt_star", 1.0),
-                inverse_pe=getattr(model.config, "inverse_pe", 1.0),
-                k_ratio=getattr(model.config, "k_ratio", 0.0),
-                layer_spacing_star=layer_spacing_star,
-                bottom_temperature_star=bottom_temperature_star,
-            )
-            next_temperature = apply_dirichlet_boundary(
-                next_temperature,
-                graph_boundary_nodes(graph),
-                value=getattr(model.config, "dirichlet_temperature_star", 0.0),
-            )
-            next_temperature[-1, :, :] = torch.as_tensor(
-                bottom_temperature_star,
-                device=next_temperature.device,
-                dtype=next_temperature.dtype,
-            )
+                inplane_temperature = _apply_inplane_step(
+                    model,
+                    graph,
+                    source_temperature,
+                    source_delta,
+                    effective_layer_batch_size=effective_layer_batch_size,
+                    layer_spacing_star=layer_spacing_star,
+                    layer_fiber_angles_deg=layer_fiber_angles_deg,
+                    normal_offset_sign=int(normal_offset_sign),
+                    delta_smoothing_alpha=float(delta_smoothing_alpha),
+                    delta_smoothing_steps=delta_smoothing_steps,
+                    use_pdgcn_inplane=bool(use_pdgcn_inplane),
+                    pdgcn_inplane_top_layer_only=bool(pdgcn_inplane_top_layer_only),
+                    boundary_nodes=boundary_nodes,
+                )
+                next_temperature = _apply_thickness_step(
+                    model,
+                    inplane_temperature,
+                    layer_spacing_star=layer_spacing_star,
+                    bottom_temperature_star=bottom_temperature_star,
+                    fdm_k_ratio_scale=float(fdm_k_ratio_scale),
+                    fdm_layer_interface_scales=fdm_layer_interface_scales,
+                    fdm_top_surface_loss_gamma_dt=top_surface_loss_gamma_dt,
+                    fin_cooling_gamma_star=fin_cooling_gamma_star,
+                    fin_cooling_skip_top_layers=fin_cooling_skip_top_layers,
+                    boundary_nodes=boundary_nodes,
+                )
 
             output = (
                 next_temperature
@@ -161,7 +224,7 @@ def rollout_multilayer_fdm(
                 else temperature_from_dimensionless(next_temperature, scale_params)
             )
             if writer is not None:
-                render_seconds = _call_writer(writer, step, output.detach().cpu(), None)
+                render_seconds = _call_writer(writer, step, output.detach().cpu(), graph)
             else:
                 render_seconds = 0.0
             if return_all:
@@ -179,6 +242,186 @@ def rollout_multilayer_fdm(
     if return_all:
         return torch.stack(outputs, dim=0)
     return None
+
+
+def _apply_inplane_step(
+    model,
+    graph,
+    temperature,
+    source_delta,
+    *,
+    effective_layer_batch_size: int,
+    layer_spacing_star: float,
+    layer_fiber_angles_deg,
+    normal_offset_sign: int,
+    delta_smoothing_alpha: float,
+    delta_smoothing_steps: int,
+    use_pdgcn_inplane: bool,
+    pdgcn_inplane_top_layer_only: bool,
+    boundary_nodes,
+):
+    if bool(use_pdgcn_inplane):
+        delta_net = _compute_inplane_delta(
+            model,
+            graph,
+            temperature,
+            source_delta,
+            effective_layer_batch_size=effective_layer_batch_size,
+            layer_spacing_star=layer_spacing_star,
+            layer_fiber_angles_deg=layer_fiber_angles_deg,
+            normal_offset_sign=int(normal_offset_sign),
+            delta_smoothing_alpha=float(delta_smoothing_alpha),
+            delta_smoothing_steps=delta_smoothing_steps,
+            pdgcn_inplane_top_layer_only=bool(pdgcn_inplane_top_layer_only),
+            boundary_nodes=boundary_nodes,
+        )
+    else:
+        delta_net = torch.zeros_like(temperature)
+    return apply_dirichlet_boundary(
+        temperature + delta_net,
+        boundary_nodes,
+        value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+    )
+
+
+def _compute_inplane_delta(
+    model,
+    graph,
+    temperature,
+    source_delta,
+    *,
+    effective_layer_batch_size: int,
+    layer_spacing_star: float,
+    layer_fiber_angles_deg,
+    normal_offset_sign: int,
+    delta_smoothing_alpha: float,
+    delta_smoothing_steps: int,
+    pdgcn_inplane_top_layer_only: bool,
+    boundary_nodes,
+):
+    if bool(pdgcn_inplane_top_layer_only):
+        delta_net = torch.zeros_like(temperature)
+        delta_top = _forward_model_by_layer_batches(
+            model,
+            graph,
+            temperature[0:1],
+            source_delta[0:1],
+            effective_layer_batch_size=1,
+            layer_spacing_star=layer_spacing_star,
+            layer_fiber_angles_deg=layer_fiber_angles_deg,
+            normal_offset_sign=int(normal_offset_sign),
+        )
+        delta_net[0:1] = _smooth_delta_by_graph(
+            delta_top,
+            graph.edge_index,
+            boundary_nodes,
+            alpha=float(delta_smoothing_alpha),
+            steps=delta_smoothing_steps,
+        )
+        return delta_net
+
+    delta_net = _forward_model_by_layer_batches(
+        model,
+        graph,
+        temperature,
+        source_delta,
+        effective_layer_batch_size=effective_layer_batch_size,
+        layer_spacing_star=layer_spacing_star,
+        layer_fiber_angles_deg=layer_fiber_angles_deg,
+        normal_offset_sign=int(normal_offset_sign),
+    )
+    return _smooth_delta_by_graph(
+        delta_net,
+        graph.edge_index,
+        boundary_nodes,
+        alpha=float(delta_smoothing_alpha),
+        steps=delta_smoothing_steps,
+    )
+
+
+def _apply_thickness_step(
+    model,
+    temperature,
+    *,
+    layer_spacing_star: float,
+    bottom_temperature_star: float,
+    fdm_k_ratio_scale: float = 1.0,
+    fdm_layer_interface_scales=None,
+    fdm_top_surface_loss_gamma_dt: float = 0.0,
+    fin_cooling_gamma_star=None,
+    fin_cooling_skip_top_layers: int = 0,
+    boundary_nodes,
+):
+    next_temperature = compute_layer_implicit_fdm_step(
+        temperature,
+        dt_star=getattr(model.config, "dt_star", 1.0),
+        inverse_pe=getattr(model.config, "inverse_pe", 1.0),
+        k_ratio=getattr(model.config, "k_ratio", 0.0) * float(fdm_k_ratio_scale),
+        layer_spacing_star=layer_spacing_star,
+        bottom_temperature_star=bottom_temperature_star,
+        fin_cooling_gamma_star=fin_cooling_gamma_star,
+        fin_cooling_skip_top_layers=fin_cooling_skip_top_layers,
+        layer_interface_scales=fdm_layer_interface_scales,
+    )
+    next_temperature = _apply_top_surface_loss(
+        next_temperature,
+        bottom_temperature_star=bottom_temperature_star,
+        gamma_dt=float(fdm_top_surface_loss_gamma_dt),
+    )
+    return _apply_boundary_and_bottom(
+        next_temperature,
+        model,
+        bottom_temperature_star=bottom_temperature_star,
+        boundary_nodes=boundary_nodes,
+    )
+
+
+def _apply_top_surface_loss(temperature, *, bottom_temperature_star: float, gamma_dt: float):
+    if float(gamma_dt) <= 0:
+        return temperature
+    output = temperature.clone()
+    bottom = torch.as_tensor(
+        bottom_temperature_star,
+        device=output.device,
+        dtype=output.dtype,
+    )
+    output[0] = bottom + (output[0] - bottom) / (1.0 + float(gamma_dt))
+    return output
+
+
+def _scaled_top_surface_loss_gamma_dt(
+    gamma_dt: float,
+    graph,
+    *,
+    velocity_exponent: float,
+    reference_velocity_star: float,
+):
+    gamma_dt = float(gamma_dt)
+    velocity_exponent = float(velocity_exponent)
+    if gamma_dt <= 0.0 or velocity_exponent <= 0.0:
+        return gamma_dt
+    velocity_star = getattr(graph, "global_attr", None)
+    if velocity_star is None:
+        return gamma_dt
+    velocity_value = float(torch.as_tensor(velocity_star).reshape(-1)[0].detach().cpu())
+    if velocity_value <= 0.0:
+        return gamma_dt
+    multiplier = (float(reference_velocity_star) / velocity_value) ** velocity_exponent
+    return gamma_dt * max(0.0, float(multiplier))
+
+
+def _apply_boundary_and_bottom(temperature, model, *, bottom_temperature_star: float, boundary_nodes):
+    temperature = apply_dirichlet_boundary(
+        temperature,
+        boundary_nodes,
+        value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+    )
+    temperature[-1, :, :] = torch.as_tensor(
+        bottom_temperature_star,
+        device=temperature.device,
+        dtype=temperature.dtype,
+    )
+    return temperature
 
 
 def _resolve_layer_batch_size(layer_batch_size, num_layers: int, device):

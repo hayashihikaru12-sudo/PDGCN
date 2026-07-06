@@ -24,9 +24,9 @@
   },
   "datasets": [
     {
-      "name": "case_benchfast",
-      "h5_dir": "../../autodl-tmp/case_benchfast",
-      "cache_dir": "../runs/pdgcn/cache/case_benchfast",
+      "name": "case_fastsmall",
+      "h5_dir": "../../autodl-tmp/case_fastsmall",
+      "cache_dir": "../runs/pdgcn/cache/case_fastsmall",
       "scale": {
         "L0": 0.05335247993469239,
         "v0": 0.05,

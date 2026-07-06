@@ -6,7 +6,13 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from inference.io import _remap_edge_index, _sample_node_indices, render_multilayer_clouds_from_hdf5
+from data import ScaleParams
+from inference.io import (
+    _remap_edge_index,
+    _resolve_fin_cooling_parameters,
+    _sample_node_indices,
+    render_multilayer_clouds_from_hdf5,
+)
 
 
 class InferenceIOTests(unittest.TestCase):
@@ -80,6 +86,234 @@ class InferenceIOTests(unittest.TestCase):
                 cloud_interval=1,
                 vtk_output_dir=self.root / "vtk",
                 max_nodes_per_layer=3,
+            )
+
+    def test_fin_cooling_gamma_dt_scales_with_beta_h_squared(self):
+        resolved = _resolve_fin_cooling_parameters(
+            fdm_coefficient=9.0,  # C_n = (M/βH)² · γ_dt  → arbitrary
+            dt_star=1.0,
+            num_layers=10,
+            enabled=True,
+            beta_h=3.0,
+        )
+        self.assertTrue(resolved["enabled"])
+        # M = 9, gamma_dt = (3/9)² * 9 = 1.0
+        self.assertAlmostEqual(resolved["gamma_dt"], 1.0)
+        self.assertAlmostEqual(resolved["gamma_star"], 1.0)
+
+        resolved2 = _resolve_fin_cooling_parameters(
+            fdm_coefficient=9.0,
+            dt_star=1.0,
+            num_layers=10,
+            enabled=True,
+            beta_h=6.0,
+        )
+        # (6/9)² = 4× larger than βH=3
+        self.assertAlmostEqual(resolved2["gamma_dt"], 4.0)
+
+    def test_fin_cooling_gamma_dt_scales_with_active_layers(self):
+        resolved = _resolve_fin_cooling_parameters(
+            fdm_coefficient=4.0,
+            dt_star=1.0,
+            num_layers=5,  # M = 4
+            enabled=True,
+            beta_h=2.0,
+        )
+        # (2/4)² * 4 = 0.25 * 4 = 1.0
+        self.assertAlmostEqual(resolved["gamma_dt"], 1.0)
+
+    def test_fin_cooling_gamma_dt_proportional_to_fdm_coefficient(self):
+        resolved = _resolve_fin_cooling_parameters(
+            fdm_coefficient=18.0,
+            dt_star=1.0,
+            num_layers=10,
+            enabled=True,
+            beta_h=3.0,
+        )
+        # (3/9)² * 18 = 1/9 * 18 = 2.0
+        self.assertAlmostEqual(resolved["gamma_dt"], 2.0)
+
+    def test_fin_cooling_r_char_mode_is_independent_of_fdm_coefficient(self):
+        resolved = _resolve_fin_cooling_parameters(
+            fdm_coefficient=18.0,
+            dt_star=0.5,
+            inverse_pe=0.02,
+            num_layers=10,
+            enabled=True,
+            mode="r_char",
+            r_char_star=0.1,
+            beta_h=3.0,
+        )
+
+        self.assertEqual(resolved["mode"], "r_char")
+        self.assertAlmostEqual(resolved["gamma_star"], 2.0)
+        self.assertAlmostEqual(resolved["gamma_dt"], 1.0)
+        self.assertAlmostEqual(resolved["equivalent_beta_h"], 9.0 * np.sqrt(1.0 / 18.0))
+
+    def test_fin_cooling_r_char_mode_can_derive_compatible_length_scale(self):
+        resolved = _resolve_fin_cooling_parameters(
+            fdm_coefficient=1.0,
+            dt_star=1.0,
+            inverse_pe=1.0,
+            layer_spacing_star=1.0,
+            k_ratio=1.0,
+            num_layers=10,
+            enabled=True,
+            mode="r_char",
+            r_char_star=None,
+            beta_h=3.0,
+        )
+
+        self.assertAlmostEqual(resolved["r_char_star"], 3.0)
+        self.assertAlmostEqual(resolved["gamma_star"], 1.0 / 9.0)
+        self.assertAlmostEqual(resolved["gamma_dt"], 1.0 / 9.0)
+        self.assertAlmostEqual(resolved["equivalent_beta_h"], 3.0)
+
+    def test_fin_cooling_direct_mode_accepts_layerwise_profile(self):
+        resolved = _resolve_fin_cooling_parameters(
+            fdm_coefficient=1.0,
+            dt_star=2.0,
+            num_layers=5,
+            enabled=True,
+            mode="direct",
+            direct_gamma_star=[1.0, 1.0, 1.0, 1.0],
+            beta_h=3.0,
+            skip_top_layers=0,
+            layer_profile="linear",
+            layer_profile_strength=1.0,
+        )
+
+        self.assertEqual(resolved["mode"], "direct")
+        self.assertEqual(resolved["gamma_star"], [1.25, 1.5, 1.75, 2.0])
+        self.assertEqual(resolved["gamma_dt"], [2.5, 3.0, 3.5, 4.0])
+
+    def test_fin_cooling_can_be_disabled(self):
+        resolved = _resolve_fin_cooling_parameters(
+            fdm_coefficient=1.0,
+            dt_star=1.0,
+            num_layers=10,
+            enabled=False,
+            beta_h=3.0,
+        )
+        self.assertFalse(resolved["enabled"])
+        self.assertIsNone(resolved["gamma_star"])
+        self.assertIsNone(resolved["gamma_dt"])
+        self.assertEqual(resolved["mode"], "beta_h")
+        self.assertAlmostEqual(resolved["beta_h"], 3.0)
+        self.assertEqual(resolved["skip_top_layers"], 0)
+
+    def test_fin_cooling_rejects_nonzero_skip_top_layers_when_enabled(self):
+        with self.assertRaisesRegex(ValueError, "fin_cooling_skip_top_layers"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=10,
+                enabled=True,
+                beta_h=3.0,
+                skip_top_layers=4,
+            )
+
+    def test_disabled_fin_cooling_accepts_legacy_skip_top_layers(self):
+        resolved = _resolve_fin_cooling_parameters(
+            fdm_coefficient=1.0,
+            dt_star=1.0,
+            num_layers=10,
+            enabled=False,
+            beta_h=3.0,
+            skip_top_layers=4,
+        )
+
+        self.assertEqual(resolved["skip_top_layers"], 4)
+
+    def test_fin_cooling_rejects_invalid_skip_top_layers(self):
+        for value in (-1, 1.5, True):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "fin_cooling_skip_top_layers"):
+                    _resolve_fin_cooling_parameters(
+                        fdm_coefficient=1.0,
+                        dt_star=1.0,
+                        num_layers=10,
+                        enabled=True,
+                        beta_h=3.0,
+                        skip_top_layers=value,
+                    )
+
+    def test_fin_cooling_rejects_invalid_beta_h(self):
+        with self.assertRaisesRegex(ValueError, "fin_cooling_beta_h"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=10,
+                enabled=True,
+                beta_h=0.0,
+            )
+        with self.assertRaisesRegex(ValueError, "fin_cooling_beta_h"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=10,
+                enabled=True,
+                beta_h=-1.0,
+            )
+
+    def test_fin_cooling_rejects_invalid_new_mode_parameters(self):
+        with self.assertRaisesRegex(ValueError, "fin_cooling_mode"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=10,
+                enabled=True,
+                mode="old",
+                beta_h=3.0,
+            )
+        with self.assertRaisesRegex(ValueError, "fin_cooling_r_char_star"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=10,
+                enabled=True,
+                mode="r_char",
+                r_char_star=0.0,
+                beta_h=3.0,
+            )
+        with self.assertRaisesRegex(ValueError, "fin_cooling_gamma_star"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=10,
+                enabled=True,
+                mode="direct",
+                beta_h=3.0,
+            )
+        with self.assertRaisesRegex(ValueError, "active layer count"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=10,
+                enabled=True,
+                mode="direct",
+                direct_gamma_star=[1.0, 2.0],
+                beta_h=3.0,
+            )
+        with self.assertRaisesRegex(ValueError, "fin_cooling_layer_profile"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=10,
+                enabled=True,
+                mode="r_char",
+                beta_h=3.0,
+                layer_profile="steep",
+            )
+
+    def test_fin_cooling_rejects_single_layer(self):
+        with self.assertRaisesRegex(ValueError, "num_layers"):
+            _resolve_fin_cooling_parameters(
+                fdm_coefficient=1.0,
+                dt_star=1.0,
+                num_layers=1,
+                enabled=True,
+                beta_h=3.0,
             )
 
     def _write_source_h5(self, path):

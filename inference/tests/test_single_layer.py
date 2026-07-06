@@ -149,9 +149,12 @@ class SingleLayerInferenceTests(unittest.TestCase):
             self.assertIn("dynamic", h5_file)
             self.assertIn("fem", h5_file)
             group = h5_file["prediction/pdgcn_single_layer"]
-            self.assertEqual(sorted(group.keys()), ["temperature"])
+            self.assertEqual(sorted(group.keys()), ["temperature", "time", "timing"])
             self.assertEqual(tuple(group["temperature"].shape), (2, 4, 1))
             self.assertEqual(group["temperature"].dtype, np.dtype("float32"))
+            self.assertEqual(tuple(group["time"].shape), (2,))
+            self.assertIn("solve_seconds", group["timing"])
+            self.assertIn("total_seconds", group["timing"])
         vtu_dir = output_path.with_name(f"{output_path.stem}_vtu")
         tag = "Q0p666667_V2"
         first_vtu = vtu_dir / f"INF_temperature_step_{tag}_000000.vtu"
@@ -263,7 +266,7 @@ class SingleLayerInferenceTests(unittest.TestCase):
         with h5py.File(output_dir / "pre_case1.h5", "r") as h5_file:
             self.assertIn("dynamic", h5_file)
             group = h5_file["prediction/pdgcn_single_layer"]
-            self.assertEqual(sorted(group.keys()), ["temperature"])
+            self.assertEqual(sorted(group.keys()), ["temperature", "time", "timing"])
             self.assertEqual(tuple(group["temperature"].shape), (2, 4, 1))
 
     def test_single_layer_entry_respects_config_batch_mode_without_cli_flag(self):

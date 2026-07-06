@@ -691,7 +691,7 @@ class RunConfigTests(unittest.TestCase):
         model_config = PDGCNConfig(
             hidden_size=8,
             message_passing_num=1,
-            inverse_pe=0.0,
+            inverse_pe=1.0,
             source_coefficient=0.0,
             pi_q=0.0,
             k_ratio=0.05,
@@ -746,9 +746,11 @@ class RunConfigTests(unittest.TestCase):
                 "output_path": str(output_path.resolve()),
                 "steps": 2,
                 "warmup_steps": 0,
+                "write_vtk": False,
                 "cloud_interval": 1,
                 "delta_smoothing_alpha": 0.3,
                 "delta_smoothing_steps": 2,
+                "use_alternating_order_average": True,
             },
         }
         training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
@@ -758,14 +760,32 @@ class RunConfigTests(unittest.TestCase):
 
         self.assertEqual(result["output_path"], str(output_path.resolve()))
         with h5py.File(output_path, "r") as h5_file:
-            self.assertEqual(tuple(h5_file["temperature"].shape), (2, 3, 4, 1))
-            self.assertEqual(tuple(h5_file["temperature_star"].shape), (2, 3, 4, 1))
-            self.assertIn("metadata", h5_file)
-            self.assertIn("metadata", h5_file.attrs)
-            metadata = json.loads(h5_file.attrs["metadata"])
+            group = h5_file["prediction/pdgcn_multilayer"]
+            self.assertEqual(tuple(group["temperature"].shape), (2, 3, 4, 1))
+            self.assertEqual(tuple(group["temperature_star"].shape), (2, 3, 4, 1))
+            self.assertEqual(tuple(group["top_temperature"].shape), (2, 4, 1))
+            self.assertEqual(tuple(group["time"].shape), (2,))
+            self.assertIn("timing/solve_seconds", group)
+            self.assertEqual(tuple(group["multilayer/coordinates"].shape), (2, 3, 4, 3))
+            self.assertEqual(int(group["multilayer/num_layers"][()]), 3)
+            self.assertIn("metadata_json", group)
+            metadata_raw = group["metadata_json"][()]
+            if isinstance(metadata_raw, bytes):
+                metadata_raw = metadata_raw.decode("utf-8")
+            metadata = json.loads(str(metadata_raw))
             self.assertEqual(metadata["cloud_interval"], 1)
             self.assertAlmostEqual(metadata["delta_smoothing_alpha"], 0.3)
             self.assertEqual(metadata["delta_smoothing_steps"], 2)
+            self.assertTrue(metadata["use_alternating_order_average"])
+            self.assertEqual(metadata["thickness_model"], "transient_fin")
+            self.assertAlmostEqual(metadata["fdm_k_ratio_scale"], 1.0)
+            self.assertTrue(metadata["fin_cooling_enabled"])
+            self.assertGreater(metadata["fin_cooling_beta_h"], 0.0)
+            self.assertEqual(metadata["fin_cooling_skip_top_layers"], 0)
+            self.assertGreater(metadata["fin_cooling_gamma_star"], 0.0)
+            self.assertGreater(metadata["fin_cooling_gamma_dt"], 0.0)
+            self.assertIn("fdm_top_surface_loss_velocity_exponent", metadata)
+            self.assertIn("fdm_top_surface_loss_reference_velocity_star", metadata)
             self.assertEqual(metadata["training_config_path"], str(training_config_path.resolve()))
             self.assertIn("inference_seconds", metadata)
             self.assertIn("average_inference_seconds", metadata)
@@ -779,6 +799,114 @@ class RunConfigTests(unittest.TestCase):
         vtk_dir = output_path.with_name(f"{output_path.stem}_vtk")
         vtk_files = sorted(vtk_dir.glob("temperature_step_*.vtk"))
         self.assertEqual(vtk_files, [])
+
+    def test_multilayer_batch_writes_input_copies_and_summarizes_failures(self):
+        h5_dir = self.root / "h5_multilayer_batch"
+        output_dir = self.root / "multilayer_batch_outputs"
+        h5_dir.mkdir()
+        good_one = h5_dir / "case1.h5"
+        good_two = h5_dir / "case2.h5"
+        bad_h5 = h5_dir / "case0_bad.h5"
+        make_h5(good_one)
+        make_h5(good_two)
+        with h5py.File(good_one, "a") as h5_file:
+            fem = h5_file.require_group("fem")
+            fem.create_dataset("temperature", data=np.zeros((2, 2, 4, 1), dtype=np.float32))
+            multilayer = h5_file.require_group("multilayer")
+            multilayer.create_dataset("num_layers", data=np.int64(99))
+        with h5py.File(bad_h5, "w") as h5_file:
+            h5_file.create_dataset("not_a_slice", data=np.array([1], dtype=np.int64))
+        checkpoint_path = self.root / "checkpoint_batch.pt"
+        model_config = PDGCNConfig(
+            hidden_size=8,
+            message_passing_num=1,
+            inverse_pe=0.0,
+            source_coefficient=0.0,
+            pi_q=0.0,
+            k_ratio=0.05,
+            dt_star=1.0,
+        )
+        model = PDGCN(model_config)
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": None,
+                "epoch": 0,
+                "metadata": {"model_config": model_config.__dict__},
+            },
+            checkpoint_path,
+        )
+        training_config_path = self.root / "train_multilayer_batch.json"
+        inference_config_path = self.root / "infer_multilayer_batch.json"
+        training_config_path.write_text(
+            json.dumps(
+                {
+                    "outputs": {"checkpoint_path": str(checkpoint_path.resolve()), "history_path": "history.json"},
+                    "datasets": [
+                        {
+                            "name": "case_batch",
+                            "h5_dir": str(h5_dir.resolve()),
+                            "cache_dir": "cache/case_batch",
+                            "scale": {
+                                "L0": 0.002,
+                                "v0": 0.002,
+                                "T_amb": 300.0,
+                                "delta_T0": 10.0,
+                                "Q0": 2.0e6,
+                                "K0": 8.0,
+                                "rho": 2.0,
+                                "Cp": 1.0,
+                                "heat_source_effective_thickness": 0.001,
+                            },
+                        }
+                    ],
+                    "hyperparameters": {
+                        "model": {"hidden_size": 8, "message_passing_num": 1},
+                        "physics_loss": {"lambda_outflow": 0.0},
+                        "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        inference_config_path.write_text(
+            json.dumps(
+                {
+                    "training_config": "train_multilayer_batch.json",
+                    "inference": {
+                        "num_layers": 3,
+                        "layer_spacing": 0.001,
+                        "batch_mode": True,
+                        "h5_dir": str(h5_dir.resolve()),
+                        "output_dir": str(output_dir.resolve()),
+                        "steps": 2,
+                        "warmup_steps": 0,
+                        "write_vtk": False,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = run_multilayer_inference_from_config(inference_config_path)
+
+        self.assertTrue(result["batch_mode"])
+        self.assertEqual(result["processed_count"], 3)
+        self.assertEqual(result["succeeded_count"], 2)
+        self.assertEqual(result["failed_count"], 1)
+        self.assertTrue((output_dir / "pre_case1.h5").exists())
+        self.assertTrue((output_dir / "pre_case2.h5").exists())
+        self.assertFalse((output_dir / "pre_case0_bad.h5").exists())
+        with h5py.File(good_one, "r") as h5_file:
+            self.assertNotIn("prediction", h5_file)
+            self.assertEqual(int(h5_file["multilayer/num_layers"][()]), 99)
+        with h5py.File(output_dir / "pre_case1.h5", "r") as h5_file:
+            self.assertIn("fem/temperature", h5_file)
+            self.assertEqual(int(h5_file["multilayer/num_layers"][()]), 99)
+            group = h5_file["prediction/pdgcn_multilayer"]
+            self.assertEqual(tuple(group["temperature"].shape), (2, 3, 4, 1))
+            self.assertEqual(tuple(group["multilayer/coordinates"].shape), (2, 3, 4, 3))
+            self.assertEqual(int(group["multilayer/num_layers"][()]), 3)
 
     def test_load_inference_run_context_accepts_legacy_unified_config(self):
         config_path = self.root / "legacy_infer.json"

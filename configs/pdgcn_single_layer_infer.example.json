@@ -4,7 +4,7 @@
     "output_path": "../runs/pdgcn/single_layer_prediction.h5",
     "dataset_index": 0,
     "h5_path": null,
-    "h5_dir": "../case_benchfast",
+    "h5_dir": "../case_fastsmall_angle",
     "output_dir": "../runs/pdgcn/single_layer_batch",
     "output_prefix": "pre_",
     "prediction_group_path": "prediction/pdgcn_single_layer",

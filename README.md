@@ -135,9 +135,9 @@ runs/pdgcn/multilayer_prediction_vtk/
 
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
-- `metadata`：JSON 字符串数据集，同时写入根属性副本；记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、`dt_star`、FDM 系数、层分块大小、VTK 输出间隔、无量纲化参数和推理/渲染耗时。
+- `metadata`：JSON 字符串数据集，同时写入根属性副本；记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、`dt_star`、FDM 系数、瞬态散热片等效冷却参数、层分块大小、VTK 输出间隔、无量纲化参数和推理/渲染耗时。
 
-层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。多层推进顺序固定为：顶层显式表面热源、所有层无源 PD-GCN 面内输运、厚度方向 1D FDM、底层恒温钳制。下层不读取热源，能量只能由厚度 FDM 从上层传入；若启用热源节点特征，下层的 `q*` 和 `ΔT_Q*` 特征会置零。下层几何沿节点曲面法向偏移，纤维方向按 `layer_fiber_angles_deg` 绕节点法向旋转。
+层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。多层推进顺序固定为：顶层显式表面热源、所有层无源 PD-GCN 面内输运、厚度方向 1D FDM、底层恒温钳制。厚度方向默认启用瞬态散热片等效横向冷却项，保留该模型时 `fin_cooling_skip_top_layers` 必须为 `0`，即所有 active layers 都施加等效冷却。当前示例配置经 50 个 multilayer FEM case 调参，采用 `fdm_k_ratio_scale=0.42`、`fdm_layer_interface_scales=[0.7, 0.7, 2.0, 2.5, 2.5, 2.0, 2.0, 2.0, 1.0]`、`fin_cooling_r_char_star=0.034`，并启用按扫描速度缩放的顶层表面损失 `fdm_top_surface_loss_gamma_dt=0.014`、`fdm_top_surface_loss_velocity_exponent=3.4`。该配置在 50 个 multilayer FEM case 上得到全局峰值最大偏差 `6.71%`、各层峰值最大偏差 `8.71%`、全局峰值拟合斜率 `1.0506`。下层不读取热源，能量只能由厚度 FDM 从上层传入；若启用热源节点特征，下层的 `q*` 和 `ΔT_Q*` 特征会置零。下层几何沿节点曲面法向偏移，纤维方向按 `layer_fiber_angles_deg` 绕节点法向旋转。
 
 `infer_entry.py` 只保存 HDF5。需要云图时，使用 `render_entry.py` 根据 HDF5 结果按 `cloud_interval` 离线输出 ParaView 可读取的 legacy `.vtk` 合并三维拓扑云图，文件名形如
 `temperature_step_000000.vtk`。每个 VTK 从真实 `edge_index` 恢复 Gmsh 三角网格面，并在相邻层之间生成 `UNSTRUCTURED_GRID` wedge 体单元，可在 ParaView 中用 `temperature` 或 `temperature_star` 着色。拓扑渲染必须使用全节点，不能按节点数降采样。

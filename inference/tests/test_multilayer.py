@@ -140,6 +140,27 @@ class MultilayerRolloutTests(unittest.TestCase):
         self.assertEqual(tuple(result.shape), (1, 3, 2, 1))
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
+    def test_rollout_can_average_alternating_inplane_and_thickness_order(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+
+        result = rollout_multilayer_fdm(
+            model,
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_alternating_order_average=True,
+        )
+
+        expected = torch.tensor(
+            [[[[2.9078093], [2.9078093]], [[1.0640011], [1.0640011]], [[0.00], [0.00]]]]
+        )
+        self.assertEqual(model.call_count, 2)
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
     def test_bottom_layer_is_constant(self):
         scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
 
@@ -197,6 +218,212 @@ class MultilayerRolloutTests(unittest.TestCase):
         self.assertEqual(model.call_count, 0)
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
+    def test_rollout_fin_cooling_damps_thickness_step(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        plain = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+        )
+        cooled = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            fin_cooling_gamma_star=1.0,
+            fin_cooling_skip_top_layers=0,
+        )
+
+        self.assertLess(float(cooled[0, 0, 0, 0]), float(plain[0, 0, 0, 0]))
+        self.assertLess(float(cooled[0, 1, 0, 0]), float(plain[0, 1, 0, 0]))
+        self.assertTrue(torch.allclose(cooled[:, -1], torch.zeros_like(cooled[:, -1])))
+
+    def test_rollout_top_surface_loss_damps_top_after_thickness_step(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        plain = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+        )
+        cooled = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            fdm_top_surface_loss_gamma_dt=1.0,
+        )
+
+        self.assertLess(float(cooled[0, 0, 0, 0]), float(plain[0, 0, 0, 0]))
+        self.assertTrue(torch.allclose(cooled[0, 1:], plain[0, 1:]))
+
+    def test_rollout_top_surface_loss_can_scale_with_velocity(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        slow_graph = make_graph()
+        slow_graph.global_attr = torch.tensor([0.5])
+        fast_graph = make_graph()
+        fast_graph.global_attr = torch.tensor([2.0])
+
+        slow = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            slow_graph,
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            fdm_top_surface_loss_gamma_dt=1.0,
+            fdm_top_surface_loss_velocity_exponent=1.0,
+            fdm_top_surface_loss_reference_velocity_star=1.0,
+        )
+        fast = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            fast_graph,
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            fdm_top_surface_loss_gamma_dt=1.0,
+            fdm_top_surface_loss_velocity_exponent=1.0,
+            fdm_top_surface_loss_reference_velocity_star=1.0,
+        )
+
+        self.assertLess(float(slow[0, 0, 0, 0]), float(fast[0, 0, 0, 0]))
+        self.assertTrue(torch.allclose(slow[0, 1:], fast[0, 1:]))
+
+    def test_alternating_order_average_keeps_fdm_only_path_when_pdgcn_disabled(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+
+        result = rollout_multilayer_fdm(
+            model,
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            use_alternating_order_average=True,
+        )
+
+        expected = torch.tensor(
+            [[[[1.9088937], [1.9088937]], [[0.0867679], [0.0867679]], [[0.00], [0.00]]]]
+        )
+        self.assertEqual(model.call_count, 0)
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
+    def test_alternating_order_average_applies_fin_cooling_when_pdgcn_disabled(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        plain = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            use_alternating_order_average=True,
+        )
+        cooled = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            use_alternating_order_average=True,
+            fin_cooling_gamma_star=1.0,
+            fin_cooling_skip_top_layers=0,
+        )
+
+        self.assertLess(float(cooled[0, 0, 0, 0]), float(plain[0, 0, 0, 0]))
+        self.assertLess(float(cooled[0, 1, 0, 0]), float(plain[0, 1, 0, 0]))
+
+    def test_rollout_fin_cooling_default_cools_all_active_layers(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        plain = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+        )
+        default_skipped = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            fin_cooling_gamma_star=1.0,
+        )
+        all_layers = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            fin_cooling_gamma_star=1.0,
+            fin_cooling_skip_top_layers=0,
+        )
+
+        self.assertTrue(torch.allclose(default_skipped, all_layers, atol=1e-6))
+        self.assertLess(float(default_skipped[0, 0, 0, 0]), float(plain[0, 0, 0, 0]))
+        self.assertLess(float(default_skipped[0, 1, 0, 0]), float(plain[0, 1, 0, 0]))
+
+    def test_rollout_fin_cooling_rejects_nonzero_skip_top_layers(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        with self.assertRaisesRegex(ValueError, "fin_cooling_skip_top_layers"):
+            rollout_multilayer_fdm(
+                ConstantDeltaModel(),
+                make_graph(),
+                1,
+                scale_params,
+                num_layers=4,
+                layer_spacing=1.0,
+                return_dimensionless=True,
+                use_pdgcn_inplane=False,
+                fin_cooling_gamma_star=1.0,
+                fin_cooling_skip_top_layers=1,
+            )
+
     def test_rollout_can_apply_pdgcn_inplane_only_to_top_layer(self):
         scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
         model = ConstantDeltaModel()
@@ -216,6 +443,28 @@ class MultilayerRolloutTests(unittest.TestCase):
             [[[[2.8633406], [2.8633406]], [[0.1301518], [0.1301518]], [[0.00], [0.00]]]]
         )
         self.assertEqual(model.call_count, 1)
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
+    def test_alternating_order_average_respects_top_layer_only_pdgcn_inplane(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        model = ConstantDeltaModel()
+
+        result = rollout_multilayer_fdm(
+            model,
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            pdgcn_inplane_top_layer_only=True,
+            use_alternating_order_average=True,
+        )
+
+        expected = torch.tensor(
+            [[[[2.8861172], [2.8861172]], [[0.1084599], [0.1084599]], [[0.00], [0.00]]]]
+        )
+        self.assertEqual(model.call_count, 2)
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
     def test_explicit_source_heats_only_top_layer_when_fdm_is_off(self):

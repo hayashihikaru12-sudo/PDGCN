@@ -2,7 +2,11 @@ import unittest
 
 import torch
 
-from inference.fdm import compute_layer_fdm_coefficient, compute_layer_fdm_delta, compute_layer_implicit_fdm_step
+from inference.fdm import (
+    compute_layer_fdm_coefficient,
+    compute_layer_fdm_delta,
+    compute_layer_implicit_fdm_step,
+)
 
 
 class InferenceFDMTests(unittest.TestCase):
@@ -56,6 +60,28 @@ class InferenceFDMTests(unittest.TestCase):
 
         self.assertGreaterEqual(float(updated.min()), 0.0)
         self.assertLess(float(updated.max()), 10.0)
+
+    def test_implicit_step_fin_cooling_damps_toward_bottom(self):
+        temperature = torch.tensor([[[2.0]], [[0.0]]])
+
+        plain = compute_layer_implicit_fdm_step(
+            temperature,
+            dt_star=1.0,
+            inverse_pe=1.0,
+            k_ratio=1.0,
+            layer_spacing_star=1.0,
+        )
+        cooled = compute_layer_implicit_fdm_step(
+            temperature,
+            dt_star=1.0,
+            inverse_pe=1.0,
+            k_ratio=1.0,
+            layer_spacing_star=1.0,
+            fin_cooling_gamma_star=1.0,
+            fin_cooling_skip_top_layers=0,
+        )
+
+        self.assertLess(float(cooled[0, 0, 0]), float(plain[0, 0, 0]))
 
 
 if __name__ == "__main__":
