@@ -2,7 +2,12 @@ import unittest
 
 import torch
 
-from inference.fdm import compute_layer_fdm_coefficient, compute_layer_fdm_delta, compute_layer_implicit_fdm_step
+from inference.fdm import (
+    compute_layer_fdm_coefficient,
+    compute_layer_fdm_delta,
+    compute_layer_implicit_fdm_step,
+    compute_layer_implicit_source_distribution,
+)
 
 
 class InferenceFDMTests(unittest.TestCase):
@@ -56,6 +61,20 @@ class InferenceFDMTests(unittest.TestCase):
 
         self.assertGreaterEqual(float(updated.min()), 0.0)
         self.assertLess(float(updated.max()), 10.0)
+
+    def test_implicit_source_distribution_is_exported(self):
+        source = torch.tensor([[[1.0]], [[0.0]], [[0.0]]])
+
+        distributed = compute_layer_implicit_source_distribution(
+            source,
+            dt_star=1.0,
+            inverse_pe=1.0,
+            k_ratio=0.1,
+            layer_spacing_star=1.0,
+        )
+
+        self.assertGreater(float(distributed[1, 0, 0]), 0.0)
+        self.assertTrue(torch.allclose(distributed[-1], torch.zeros_like(distributed[-1])))
 
 
 if __name__ == "__main__":

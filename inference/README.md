@@ -1,6 +1,6 @@
 # inference 推理模块
 
-`inference` 模块用于在训练完成后执行多层曲面热场预测。它复用训练好的单层 PDGCN checkpoint，在推理阶段把同一曲面拓扑虚拟堆叠为多层，并叠加厚度方向 1D FDM 层间传热，最终输出 HDF5 和 ParaView 可视化用 VTK。
+`inference` 模块用于在训练完成后执行多层曲面热场预测。它复用训练好的单层 PDGCN checkpoint，在推理阶段把同一曲面拓扑虚拟堆叠为多层，默认先用厚度方向 1D FDM 分配顶层热源项，再执行各层无源 PDGCN 面内输运，最终输出 HDF5 和 ParaView 可视化用 VTK。
 
 ## 推理流程
 
@@ -16,13 +16,13 @@
 6. 在每个时间步执行多层滚动：
    - 按 `layer_spacing` 沿节点曲面法向偏移下层节点坐标；
    - 按 `layer_fiber_angles_deg` 绕节点法向旋转各层纤维方向；
-   - 对顶层施加显式表面热源温升；
-   - 使用同一个无源单层 PDGCN 对每层预测面内温度增量；
+   - 对顶层施加显式表面热源温升，形成源项增量；
+   - 默认使用 1D FDM 将顶层源项沿厚度方向分配到底层以外的活动层；
+   - 使用同一个无源单层 PDGCN 基于“当前温度 + 本地源项”对每层预测面内温度增量；
    - 对网络温度增量执行可选图低通平滑，抑制自回归高频误差；
-   - 使用 1D FDM 基于面内更新后的温度计算厚度方向层间传热；
    - 对迎风/侧边节点施加 Dirichlet 边界；
    - 对底层全节点施加恒温边界。
-7. 写出多层温度序列 HDF5。VTK 云图不由推理入口生成，需使用 `render_entry.py` 从 HDF5 结果离线渲染。
+7. 写出多层温度序列 HDF5。批量模式下若 `write_vtk=true`，会同步写出 VTK 云图；单文件模式可使用 `render_entry.py` 从 HDF5 结果离线渲染。
 
 ## 使用方法
 
@@ -70,6 +70,8 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
     "write_vtk": false,
     "use_pdgcn_inplane": true,
     "pdgcn_inplane_top_layer_only": false,
+    "thickness_coupling_mode": "source_distribution",
+    "enable_internal_pseudo_source_features": true,
     "cloud_interval": 20,
     "layer_batch_size": null,
     "delta_smoothing_alpha": 0.2,
@@ -94,9 +96,11 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `allow_unstable_fdm`：兼容旧显式 FDM 配置的保留字段；当前厚度方向使用 Backward Euler 隐式 FDM，不再依赖该字段跳过稳定性检查。
 - `layer_fiber_angles_deg`：每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。
 - `normal_offset_sign`：法向偏移方向，只能为 `-1` 或 `1`；默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。
-- `write_vtk`：兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。
-- `use_pdgcn_inplane`：是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。
-- `pdgcn_inplane_top_layer_only`：当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。
+- `write_vtk`：批量模式下是否在每个 HDF5 推理完成后同步输出多层 VTK 云图；单文件模式仍只写 HDF5，可用 `render_entry.py` 离线渲染。
+- `use_pdgcn_inplane`：是否启用无源 PD-GCN 面内输运增量。设为 `false` 时默认执行“显式热源 + 源项厚度分配 only”对照推理。
+- `pdgcn_inplane_top_layer_only`：当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅接收源项厚度分配结果。
+- `thickness_coupling_mode`：厚度方向耦合方式，默认 `"source_distribution"`，即先用隐式 FDM 分配热源项，再执行 PD-GCN；`"temperature_fdm"` 为旧流程消融模式。
+- `enable_internal_pseudo_source_features`：兼容旧流程的伪热源特征开关，仅在 `thickness_coupling_mode="temperature_fdm"` 时生效。默认新流程下热源节点特征来自分配后的真实本地源。
 - `cloud_interval`：合并三维云图输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
 - `layer_batch_size`：每次模型前向处理的层数；为 `null` 时 CUDA 默认自动按较小层批量推理，降低 30 层等大规模工况显存占用。
 - `delta_smoothing_alpha`：推理端网络增量图低通强度，范围 `[0, 1]`；默认 `0.2`，设为 `0` 可关闭。
@@ -104,7 +108,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `cloud_max_nodes_per_layer`：兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。
 - `vtk_output_dir`：VTK 输出目录；为 `null` 时使用 `<output_path stem>_vtk/`。
 
-## 隐式 FDM 更新公式
+## 隐式源项分配公式
 
 层间 FDM 系数为：
 
@@ -113,25 +117,28 @@ C_n = k_ratio * dt_star * inverse_pe / layer_spacing_star^2
 layer_spacing_star = layer_spacing / L0
 ```
 
-多层温度更新为：
+默认 `source_distribution` 模式下，多层温度更新为：
 
 ```text
-T_src[0] = T_curr[0] + delta_T_source
-T_src[k>0] = T_curr[k]
+S[0] = delta_T_source
+S[k>0] = 0
+S_tilde = implicit_fdm_step(S, bottom=0)
+T_src = T_curr + S_tilde
 T_inplane = T_src + delta_T_inplane
-T_next = implicit_fdm_step(T_inplane)
+T_next = clamp_bottom(T_inplane)
 ```
 
 其中：
 
-- `delta_T_source` 来自显式表面热源模块，只作用于顶层；
-- `delta_T_inplane` 来自训练好的无源单层 PDGCN，并在 FDM 前按层内图拓扑进行可选低通平滑；
-- `implicit_fdm_step` 来自厚度方向 Backward Euler 隐式 1D FDM；
+- `delta_T_source` 来自显式表面热源模块，先作为顶层源项聚集；
+- `S_tilde` 是厚度方向 Backward Euler 隐式 1D FDM 对源项的分配结果，底层源项固定为 0；
+- `delta_T_inplane` 来自训练好的无源单层 PDGCN，并按层内图拓扑进行可选低通平滑；
+- `temperature_fdm` 模式保留旧流程：`T_src -> PD-GCN -> implicit_fdm_step(T_inplane)`，仅用于消融；
 - 默认 `layer=0` 为顶层，`layer=num_layers-1` 为底层。
 
 增量低通只更新内部节点的网络增量，迎风、侧边界和出流边界节点保持原增量；它不会直接平滑最终温度场，也不会作用于 warmup。
 
-隐式厚度步对活动层求解：
+隐式源项分配对活动层求解：
 
 ```text
 (I - C_n D) u_next = u_current

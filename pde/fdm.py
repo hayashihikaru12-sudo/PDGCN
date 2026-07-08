@@ -126,6 +126,30 @@ def compute_layer_implicit_fdm_step(
     return output
 
 
+def compute_layer_implicit_source_distribution(
+    source_delta_star,
+    *,
+    dt_star: float,
+    inverse_pe: float,
+    k_ratio: float,
+    layer_spacing_star: float,
+):
+    """Distribute an explicit top-layer heat-source increment through thickness.
+
+    This uses the same Backward Euler through-thickness operator as the
+    temperature step, but treats the bottom layer as a zero source boundary.
+    """
+
+    return compute_layer_implicit_fdm_step(
+        source_delta_star,
+        dt_star=dt_star,
+        inverse_pe=inverse_pe,
+        k_ratio=k_ratio,
+        layer_spacing_star=layer_spacing_star,
+        bottom_temperature_star=0.0,
+    )
+
+
 def _implicit_fdm_matrix(active_layers: int, *, coefficient: float, device, dtype):
     if int(active_layers) < 1:
         raise ValueError(f"active_layers must be positive, got {active_layers}.")
@@ -144,4 +168,9 @@ def _implicit_fdm_matrix(active_layers: int, *, coefficient: float, device, dtyp
     return matrix
 
 
-__all__ = ["compute_layer_fdm_coefficient", "compute_layer_fdm_delta", "compute_layer_implicit_fdm_step"]
+__all__ = [
+    "compute_layer_fdm_coefficient",
+    "compute_layer_fdm_delta",
+    "compute_layer_implicit_fdm_step",
+    "compute_layer_implicit_source_distribution",
+]

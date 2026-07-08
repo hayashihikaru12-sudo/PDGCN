@@ -32,7 +32,7 @@ def make_h5(path: Path):
     fiber = np.tile(np.array([[[1.0, 0.0, 0.0]]], dtype=np.float32), (2, 4, 1))
     normal = np.tile(np.array([[[0.0, 0.0, 1.0]]], dtype=np.float32), (2, 4, 1))
     q = np.array([[[0.0], [1.0], [0.5], [0.0]], [[0.0], [0.8], [0.4], [0.0]]], dtype=np.float32)
-    edge_index = np.array([[0, 1, 2, 0], [1, 3, 3, 2]], dtype=np.int64)
+    edge_index = np.array([[0, 1, 2, 0, 0, 1], [1, 3, 3, 2, 3, 2]], dtype=np.int64)
 
     with h5py.File(path, "w") as h5_file:
         h5_file.attrs["velocity_speed"] = 2.0
@@ -764,6 +764,10 @@ class RunConfigTests(unittest.TestCase):
             self.assertIn("metadata", h5_file.attrs)
             metadata = json.loads(h5_file.attrs["metadata"])
             self.assertEqual(metadata["cloud_interval"], 1)
+            self.assertEqual(metadata["thickness_coupling_mode"], "source_distribution")
+            self.assertEqual(metadata["thickness_solver"], "implicit_euler_source_distribution")
+            self.assertEqual(metadata["source_distribution_solver"], "implicit_euler")
+            self.assertFalse(metadata["internal_pseudo_source_features_applied"])
             self.assertAlmostEqual(metadata["delta_smoothing_alpha"], 0.3)
             self.assertEqual(metadata["delta_smoothing_steps"], 2)
             self.assertEqual(metadata["training_config_path"], str(training_config_path.resolve()))
@@ -852,6 +856,8 @@ class RunConfigTests(unittest.TestCase):
                 "steps": 2,
                 "warmup_steps": 0,
                 "cloud_interval": 1,
+                "write_vtk": True,
+                "enable_internal_pseudo_source_features": False,
             },
         }
         training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
@@ -868,10 +874,30 @@ class RunConfigTests(unittest.TestCase):
             output_path = output_dir / name
             self.assertTrue(output_path.exists())
             with h5py.File(output_path, "r") as h5_file:
-                self.assertEqual(tuple(h5_file["temperature"].shape), (2, 3, 4, 1))
-                metadata = json.loads(h5_file.attrs["metadata"])
+                self.assertIn("dynamic/xyz", h5_file)
+                self.assertIn("edge_index", h5_file)
+                self.assertIn("velocity_speed", h5_file.attrs)
+                self.assertNotIn("temperature", h5_file)
+                self.assertNotIn("temperature_star", h5_file)
+                prediction_group = h5_file["prediction/pdgcn_multilayer"]
+                self.assertEqual(tuple(prediction_group["temperature"].shape), (2, 3, 4, 1))
+                self.assertEqual(tuple(prediction_group["temperature_star"].shape), (2, 3, 4, 1))
+                metadata = json.loads(prediction_group.attrs["metadata"])
                 self.assertEqual(Path(metadata["source_h5"]).name, name.replace("pre_", ""))
                 self.assertEqual(Path(metadata["vtk_output_dir"]).parent, output_dir.resolve())
+                self.assertEqual(metadata["prediction_group_path"], "prediction/pdgcn_multilayer")
+                self.assertTrue(metadata["write_vtk"])
+                self.assertFalse(metadata["enable_internal_pseudo_source_features"])
+                self.assertEqual(metadata["thickness_coupling_mode"], "source_distribution")
+                self.assertEqual(metadata["thickness_solver"], "implicit_euler_source_distribution")
+                self.assertEqual(metadata["source_distribution_solver"], "implicit_euler")
+                self.assertFalse(metadata["internal_pseudo_source_features_applied"])
+                self.assertEqual(metadata["rendered_steps"], [0, 1])
+                self.assertGreaterEqual(metadata["render_seconds"], 0.0)
+                self.assertGreaterEqual(metadata["total_seconds"], metadata["inference_seconds"])
+            vtk_dir = output_dir / f"{Path(name).stem}_vtk"
+            self.assertTrue((vtk_dir / "temperature_step_000000.vtk").exists())
+            self.assertTrue((vtk_dir / "temperature_step_000001.vtk").exists())
 
     def test_load_inference_run_context_accepts_legacy_unified_config(self):
         config_path = self.root / "legacy_infer.json"

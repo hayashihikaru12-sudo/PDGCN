@@ -45,6 +45,26 @@ class InferenceConfigTests(unittest.TestCase):
 
         self.assertTrue(config.pdgcn_inplane_top_layer_only)
 
+    def test_accepts_thickness_coupling_modes(self):
+        default_config = InferenceRunConfig(num_layers=2, layer_spacing=0.1)
+        legacy_config = InferenceRunConfig(
+            num_layers=2,
+            layer_spacing=0.1,
+            thickness_coupling_mode="temperature_fdm",
+        )
+
+        self.assertEqual(default_config.thickness_coupling_mode, "source_distribution")
+        self.assertEqual(legacy_config.thickness_coupling_mode, "temperature_fdm")
+
+    def test_accepts_disabled_internal_pseudo_source_flag(self):
+        config = InferenceRunConfig(
+            num_layers=3,
+            layer_spacing=0.1,
+            enable_internal_pseudo_source_features=False,
+        )
+
+        self.assertFalse(config.enable_internal_pseudo_source_features)
+
     def test_accepts_multilayer_batch_config(self):
         config = InferenceRunConfig(
             num_layers=2,
@@ -91,6 +111,16 @@ class InferenceConfigTests(unittest.TestCase):
     def test_rejects_bad_multilayer_batch_paths(self):
         with self.assertRaisesRegex(ValueError, "batch_mode"):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, batch_mode="true")
+        with self.assertRaisesRegex(ValueError, "write_vtk"):
+            InferenceRunConfig(num_layers=2, layer_spacing=0.1, write_vtk="true")
+        with self.assertRaisesRegex(ValueError, "thickness_coupling_mode"):
+            InferenceRunConfig(num_layers=2, layer_spacing=0.1, thickness_coupling_mode="bad")
+        with self.assertRaisesRegex(ValueError, "enable_internal_pseudo_source_features"):
+            InferenceRunConfig(
+                num_layers=2,
+                layer_spacing=0.1,
+                enable_internal_pseudo_source_features="true",
+            )
         with self.assertRaisesRegex(ValueError, "h5_dir"):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, h5_dir="")
         with self.assertRaisesRegex(ValueError, "output_dir"):

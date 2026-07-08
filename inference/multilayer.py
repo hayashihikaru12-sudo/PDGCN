@@ -11,7 +11,11 @@ from pde import apply_dirichlet_boundary
 from training.graph_utils import graph_boundary_nodes, graph_explicit_source_delta, graph_to_device
 from training.warmup import pseudo_time_relax_initial_temperature
 
-from .fdm import compute_layer_implicit_fdm_step
+from .fdm import compute_layer_fdm_delta, compute_layer_implicit_fdm_step, compute_layer_implicit_source_distribution
+
+
+THICKNESS_COUPLING_SOURCE_DISTRIBUTION = "source_distribution"
+THICKNESS_COUPLING_TEMPERATURE_FDM = "temperature_fdm"
 
 
 @torch.no_grad()
@@ -37,6 +41,8 @@ def rollout_multilayer_fdm(
     delta_smoothing_steps: int = 1,
     use_pdgcn_inplane: bool = True,
     pdgcn_inplane_top_layer_only: bool = False,
+    thickness_coupling_mode: str = THICKNESS_COUPLING_SOURCE_DISTRIBUTION,
+    enable_internal_pseudo_source_features: bool = True,
     timing_recorder=None,
 ):
     """Run multilayer PD-GCN inference coupled with implicit 1D FDM in thickness."""
@@ -60,6 +66,7 @@ def rollout_multilayer_fdm(
         delta_smoothing_steps,
         "delta_smoothing_steps",
     )
+    thickness_coupling_mode = _normalize_thickness_coupling_mode(thickness_coupling_mode)
 
     initial_setup_start = time.perf_counter()
     model_device = next(model.parameters()).device
@@ -83,21 +90,46 @@ def rollout_multilayer_fdm(
         for step in range(steps):
             step_start = time.perf_counter()
             graph = graph0 if step == 0 else _graph_for_step(graph_init_or_seq, step, steps, model_device)
-            source_delta = torch.zeros_like(current_temperature)
-            source_delta[0] = graph_explicit_source_delta(graph, model.config)
+            top_source_delta = torch.zeros_like(current_temperature)
+            top_source_delta[0] = graph_explicit_source_delta(graph, model.config)
+            if thickness_coupling_mode == THICKNESS_COUPLING_SOURCE_DISTRIBUTION:
+                source_delta = compute_layer_implicit_source_distribution(
+                    top_source_delta,
+                    dt_star=getattr(model.config, "dt_star", 1.0),
+                    inverse_pe=getattr(model.config, "inverse_pe", 1.0),
+                    k_ratio=getattr(model.config, "k_ratio", 0.0),
+                    layer_spacing_star=layer_spacing_star,
+                ).to(device=current_temperature.device, dtype=current_temperature.dtype)
+            else:
+                source_delta = top_source_delta
             source_temperature = apply_dirichlet_boundary(
                 current_temperature + source_delta,
                 graph_boundary_nodes(graph),
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
             if bool(use_pdgcn_inplane):
+                if thickness_coupling_mode == THICKNESS_COUPLING_SOURCE_DISTRIBUTION:
+                    q_feature_star, delta_feature_star = _build_source_distribution_features(
+                        source_delta,
+                        model.config,
+                    )
+                else:
+                    q_feature_star, delta_feature_star = _build_pseudo_source_features(
+                        graph,
+                        source_temperature,
+                        source_delta,
+                        model.config,
+                        layer_spacing_star=layer_spacing_star,
+                        enable_internal_pseudo_source_features=bool(enable_internal_pseudo_source_features),
+                    )
                 if bool(pdgcn_inplane_top_layer_only):
                     delta_net = torch.zeros_like(source_temperature)
                     delta_top = _forward_model_by_layer_batches(
                         model,
                         graph,
                         source_temperature[0:1],
-                        source_delta[0:1],
+                        q_feature_star[0:1],
+                        delta_feature_star[0:1],
                         effective_layer_batch_size=1,
                         layer_spacing_star=layer_spacing_star,
                         layer_fiber_angles_deg=layer_fiber_angles_deg,
@@ -115,7 +147,8 @@ def rollout_multilayer_fdm(
                         model,
                         graph,
                         source_temperature,
-                        source_delta,
+                        q_feature_star,
+                        delta_feature_star,
                         effective_layer_batch_size=effective_layer_batch_size,
                         layer_spacing_star=layer_spacing_star,
                         layer_fiber_angles_deg=layer_fiber_angles_deg,
@@ -136,14 +169,17 @@ def rollout_multilayer_fdm(
                 value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
 
-            next_temperature = compute_layer_implicit_fdm_step(
-                inplane_temperature,
-                dt_star=getattr(model.config, "dt_star", 1.0),
-                inverse_pe=getattr(model.config, "inverse_pe", 1.0),
-                k_ratio=getattr(model.config, "k_ratio", 0.0),
-                layer_spacing_star=layer_spacing_star,
-                bottom_temperature_star=bottom_temperature_star,
-            )
+            if thickness_coupling_mode == THICKNESS_COUPLING_TEMPERATURE_FDM:
+                next_temperature = compute_layer_implicit_fdm_step(
+                    inplane_temperature,
+                    dt_star=getattr(model.config, "dt_star", 1.0),
+                    inverse_pe=getattr(model.config, "inverse_pe", 1.0),
+                    k_ratio=getattr(model.config, "k_ratio", 0.0),
+                    layer_spacing_star=layer_spacing_star,
+                    bottom_temperature_star=bottom_temperature_star,
+                )
+            else:
+                next_temperature = inplane_temperature
             next_temperature = apply_dirichlet_boundary(
                 next_temperature,
                 graph_boundary_nodes(graph),
@@ -181,6 +217,76 @@ def rollout_multilayer_fdm(
     return None
 
 
+def _build_pseudo_source_features(
+    graph,
+    source_temperature,
+    source_delta,
+    model_config,
+    *,
+    layer_spacing_star: float,
+    enable_internal_pseudo_source_features: bool = True,
+):
+    q_feature = torch.zeros_like(source_temperature)
+    delta_feature = torch.zeros_like(source_temperature)
+    q_feature[0] = _graph_surface_heat_source_for_features(graph).to(
+        device=source_temperature.device,
+        dtype=source_temperature.dtype,
+    )
+    delta_feature[0] = source_delta[0].to(device=source_temperature.device, dtype=source_temperature.dtype)
+
+    num_layers = int(source_temperature.shape[0])
+    if num_layers <= 2 or not bool(enable_internal_pseudo_source_features):
+        return q_feature, delta_feature
+
+    pseudo_delta = compute_layer_fdm_delta(
+        source_temperature,
+        dt_star=getattr(model_config, "dt_star", 1.0),
+        inverse_pe=getattr(model_config, "inverse_pe", 1.0),
+        k_ratio=getattr(model_config, "k_ratio", 0.0),
+        layer_spacing_star=layer_spacing_star,
+    ).to(device=source_temperature.device, dtype=source_temperature.dtype)
+    delta_feature[1:-1] = pseudo_delta[1:-1].clamp_min(0.0)
+
+    denominator = (
+        float(getattr(model_config, "heat_source_absorptivity", 1.0))
+        * float(getattr(model_config, "source_coefficient", getattr(model_config, "pi_q", 0.0)))
+        * float(getattr(model_config, "dt_star", 1.0))
+    )
+    if denominator <= 0.0:
+        if bool(getattr(model_config, "include_q_in_features", False)) and bool(
+            torch.any(delta_feature[1:-1] > 0.0).item()
+        ):
+            raise ValueError(
+                "Cannot derive internal pseudo heat flux because "
+                "heat_source_absorptivity * source_coefficient * dt_star must be positive."
+            )
+        return q_feature, delta_feature
+
+    q_feature[1:-1] = delta_feature[1:-1] / denominator
+    return q_feature, delta_feature
+
+
+def _build_source_distribution_features(source_delta, model_config):
+    delta_feature = torch.as_tensor(source_delta)
+    q_feature = torch.zeros_like(delta_feature)
+    denominator = (
+        float(getattr(model_config, "heat_source_absorptivity", 1.0))
+        * float(getattr(model_config, "source_coefficient", getattr(model_config, "pi_q", 0.0)))
+        * float(getattr(model_config, "dt_star", 1.0))
+    )
+    if denominator <= 0.0:
+        if bool(getattr(model_config, "include_q_in_features", False)) and bool(
+            torch.any(delta_feature > 0.0).item()
+        ):
+            raise ValueError(
+                "Cannot derive distributed heat flux because "
+                "heat_source_absorptivity * source_coefficient * dt_star must be positive."
+            )
+        return q_feature, delta_feature
+    q_feature = delta_feature / denominator
+    return q_feature, delta_feature
+
+
 def _resolve_layer_batch_size(layer_batch_size, num_layers: int, device):
     if layer_batch_size is not None:
         batch_size = int(layer_batch_size)
@@ -196,7 +302,8 @@ def _forward_model_by_layer_batches(
     model,
     graph,
     current_temperature,
-    source_delta,
+    q_feature_star,
+    delta_t_source_feature_star,
     *,
     effective_layer_batch_size: int,
     layer_spacing_star: float,
@@ -214,7 +321,8 @@ def _forward_model_by_layer_batches(
             graph_step = _build_multilayer_graph(
                 graph,
                 current_temperature[layer_start:layer_end],
-                source_delta[layer_start:layer_end],
+                q_feature_star[layer_start:layer_end],
+                delta_t_source_feature_star[layer_start:layer_end],
                 layer_spacing_star=layer_spacing_star,
                 layer_fiber_angles_deg=layer_fiber_angles_deg,
                 normal_offset_sign=int(normal_offset_sign),
@@ -244,6 +352,17 @@ def _forward_model_by_layer_batches(
             torch.cuda.empty_cache()
             batch_size = max(1, batch_size // 2)
     return delta_net
+
+
+def _normalize_thickness_coupling_mode(value):
+    mode = str(value).strip().lower()
+    if mode not in {THICKNESS_COUPLING_SOURCE_DISTRIBUTION, THICKNESS_COUPLING_TEMPERATURE_FDM}:
+        raise ValueError(
+            "thickness_coupling_mode must be one of "
+            f"'{THICKNESS_COUPLING_SOURCE_DISTRIBUTION}' or '{THICKNESS_COUPLING_TEMPERATURE_FDM}', "
+            f"got {value!r}."
+        )
+    return mode
 
 
 def _smooth_delta_by_graph(delta, edge_index, boundary_nodes, *, alpha: float, steps: int):
@@ -386,7 +505,8 @@ def _initial_multilayer_temperature(
 def _build_multilayer_graph(
     graph,
     temperature_star,
-    source_delta_star=None,
+    q_feature_star=None,
+    delta_t_source_feature_star=None,
     *,
     layer_spacing_star: float = 0.0,
     layer_fiber_angles_deg=None,
@@ -396,7 +516,8 @@ def _build_multilayer_graph(
     return _build_multilayer_graph_impl(
         graph,
         temperature_star,
-        source_delta_star,
+        q_feature_star,
+        delta_t_source_feature_star,
         layer_spacing_star=layer_spacing_star,
         layer_fiber_angles_deg=layer_fiber_angles_deg,
         normal_offset_sign=normal_offset_sign,
@@ -407,7 +528,8 @@ def _build_multilayer_graph(
 def _build_multilayer_graph_impl(
     graph,
     temperature_star,
-    source_delta_star=None,
+    q_feature_star=None,
+    delta_t_source_feature_star=None,
     *,
     layer_spacing_star: float,
     layer_fiber_angles_deg,
@@ -432,7 +554,14 @@ def _build_multilayer_graph_impl(
     x[:, 0:3] = multilayer_geometry["pos"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype)
     x[:, 3:6] = multilayer_geometry["fiber"].reshape(num_layers * num_nodes, 3).to(device=device, dtype=x.dtype)
     x[:, 6:7] = temperature_star.reshape(num_layers * num_nodes, 1).to(device=device, dtype=x.dtype)
-    _apply_multilayer_source_features(x, graph, layer_indices, num_nodes, source_delta_star)
+    _apply_multilayer_source_features(
+        x,
+        graph,
+        layer_indices,
+        num_nodes,
+        q_feature_star,
+        delta_t_source_feature_star,
+    )
 
     offsets = (torch.arange(num_layers, device=device, dtype=edge_index.dtype) * num_nodes).reshape(num_layers, 1, 1)
     edge_index_batched = (edge_index.reshape(1, 2, edge_count) + offsets).permute(1, 0, 2).reshape(
@@ -475,7 +604,14 @@ def _build_multilayer_graph_impl(
     return data
 
 
-def _apply_multilayer_source_features(x, graph, layer_indices, num_nodes: int, source_delta_star):
+def _apply_multilayer_source_features(
+    x,
+    graph,
+    layer_indices,
+    num_nodes: int,
+    q_feature_star,
+    delta_t_source_feature_star,
+):
     inferred_layers = x.shape[0] // int(num_nodes)
     layer_indices = _as_layer_indices(layer_indices, inferred_layers, x.device, dtype=torch.long)
     num_layers = int(layer_indices.numel())
@@ -483,17 +619,15 @@ def _apply_multilayer_source_features(x, graph, layer_indices, num_nodes: int, s
     q_index = int(getattr(graph, "q_feature_index", -1))
     if q_index >= 0 and x.shape[1] > q_index:
         x[:, q_index : q_index + 1] = 0.0
-        top_mask = layer_indices == 0
-        if bool(top_mask.any().item()):
-            q_source = _graph_surface_heat_source_for_features(graph).to(device=x.device, dtype=x.dtype)
-            q_view = x[:, q_index : q_index + 1].reshape(num_layers, num_nodes, 1)
-            q_view[top_mask] = q_source.reshape(1, num_nodes, 1)
+        if q_feature_star is not None:
+            q_feature = q_feature_star.to(device=x.device, dtype=x.dtype).reshape(num_layers, num_nodes, 1)
+            x[:, q_index : q_index + 1] = q_feature.reshape(num_layers * num_nodes, 1)
 
     delta_index = int(getattr(graph, "delta_t_source_feature_index", -1))
     if delta_index >= 0 and x.shape[1] > delta_index:
         x[:, delta_index : delta_index + 1] = 0.0
-        if source_delta_star is not None:
-            delta = source_delta_star.to(device=x.device, dtype=x.dtype).reshape(num_layers, num_nodes, 1)
+        if delta_t_source_feature_star is not None:
+            delta = delta_t_source_feature_star.to(device=x.device, dtype=x.dtype).reshape(num_layers, num_nodes, 1)
             x[:, delta_index : delta_index + 1] = delta.reshape(num_layers * num_nodes, 1)
 
 

@@ -6,7 +6,12 @@ from torch_geometric.data import Data
 
 from data import ScaleParams
 from inference.io import _should_write_cloud_step
-from inference.multilayer import _build_multilayer_graph, _smooth_delta_by_graph, rollout_multilayer_fdm
+from inference.multilayer import (
+    _build_multilayer_graph,
+    _build_pseudo_source_features,
+    _smooth_delta_by_graph,
+    rollout_multilayer_fdm,
+)
 from models import PDGCNConfig
 
 
@@ -19,6 +24,18 @@ class ConstantDeltaModel(nn.Module):
 
     def forward(self, graph):
         self.call_count += 1
+        return self.delta.expand(graph.x.shape[0], 1)
+
+
+class RecordingDeltaModel(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.delta = nn.Parameter(torch.tensor(0.0))
+        self.graph_inputs = []
+
+    def forward(self, graph):
+        self.graph_inputs.append(graph.x.detach().clone())
         return self.delta.expand(graph.x.shape[0], 1)
 
 
@@ -135,9 +152,28 @@ class MultilayerRolloutTests(unittest.TestCase):
         )
 
         expected = torch.tensor(
-            [[[[2.9067245], [2.9067245]], [[1.0412147], [1.0412147]], [[0.00], [0.00]]]]
+            [[[[3.0], [3.0]], [[1.0], [1.0]], [[0.0], [0.0]]]]
         )
         self.assertEqual(tuple(result.shape), (1, 3, 2, 1))
+        self.assertTrue(torch.allclose(result, expected, atol=1e-6))
+
+    def test_temperature_fdm_mode_preserves_legacy_post_pdgcn_fdm(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        result = rollout_multilayer_fdm(
+            ConstantDeltaModel(),
+            make_graph(),
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            thickness_coupling_mode="temperature_fdm",
+        )
+
+        expected = torch.tensor(
+            [[[[2.9067245], [2.9067245]], [[1.0412147], [1.0412147]], [[0.0], [0.0]]]]
+        )
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
     def test_bottom_layer_is_constant(self):
@@ -172,7 +208,7 @@ class MultilayerRolloutTests(unittest.TestCase):
         )
 
         expected = torch.tensor(
-            [[[[2.9067245], [2.9067245]], [[1.0412147], [1.0412147]], [[0.00], [0.00]]]]
+            [[[[3.0], [3.0]], [[1.0], [1.0]], [[0.0], [0.0]]]]
         )
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
@@ -192,7 +228,7 @@ class MultilayerRolloutTests(unittest.TestCase):
         )
 
         expected = torch.tensor(
-            [[[[1.9088937], [1.9088937]], [[0.0867679], [0.0867679]], [[0.00], [0.00]]]]
+            [[[[2.0], [2.0]], [[0.0], [0.0]], [[0.0], [0.0]]]]
         )
         self.assertEqual(model.call_count, 0)
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
@@ -213,7 +249,7 @@ class MultilayerRolloutTests(unittest.TestCase):
         )
 
         expected = torch.tensor(
-            [[[[2.8633406], [2.8633406]], [[0.1301518], [0.1301518]], [[0.00], [0.00]]]]
+            [[[[3.0], [3.0]], [[0.0], [0.0]], [[0.0], [0.0]]]]
         )
         self.assertEqual(model.call_count, 1)
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
@@ -245,7 +281,7 @@ class MultilayerRolloutTests(unittest.TestCase):
         expected = torch.tensor([[[[3.0], [2.0]], [[0.0], [0.0]], [[0.0], [0.0]]]])
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
-    def test_multilayer_graph_zeroes_source_features_below_top_layer(self):
+    def test_multilayer_graph_writes_layer_source_features(self):
         graph = make_graph()
         graph.x = torch.zeros(2, 9)
         graph.x[:, 6:7] = 2.0
@@ -255,22 +291,165 @@ class MultilayerRolloutTests(unittest.TestCase):
         graph.include_q_in_features = True
         graph.include_delta_t_source_in_features = True
         temperature = torch.full((3, 2, 1), 2.0)
-        source_delta = torch.zeros(3, 2, 1)
-        source_delta[0] = torch.tensor([[0.25], [0.125]])
+        q_feature = torch.tensor([[[1.0], [0.5]], [[2.0], [1.0]], [[0.0], [0.0]]])
+        delta_feature = torch.tensor([[[0.25], [0.125]], [[0.5], [0.25]], [[0.0], [0.0]]])
 
         multilayer = _build_multilayer_graph(
             graph,
             temperature,
-            source_delta,
+            q_feature,
+            delta_feature,
             layer_spacing_star=0.0,
             layer_fiber_angles_deg=[0.0, 0.0, 0.0],
             normal_offset_sign=-1,
         )
 
-        expected_q = torch.tensor([[1.0], [0.5], [0.0], [0.0], [0.0], [0.0]])
-        expected_delta = torch.tensor([[0.25], [0.125], [0.0], [0.0], [0.0], [0.0]])
+        expected_q = torch.tensor([[1.0], [0.5], [2.0], [1.0], [0.0], [0.0]])
+        expected_delta = torch.tensor([[0.25], [0.125], [0.5], [0.25], [0.0], [0.0]])
         self.assertTrue(torch.allclose(multilayer.x[:, 7:8], expected_q, atol=1e-6))
         self.assertTrue(torch.allclose(multilayer.x[:, 8:9], expected_delta, atol=1e-6))
+
+    def test_rollout_injects_internal_pseudo_source_features(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        graph = make_graph()
+        graph.x = torch.zeros(2, 9)
+        graph.x[:, 6:7] = 2.0
+        graph.q_surface_star = torch.tensor([[1.0], [0.0]])
+        graph.q_feature_index = 7
+        graph.delta_t_source_feature_index = 8
+        graph.include_q_in_features = True
+        graph.include_delta_t_source_in_features = True
+        config = PDGCNConfig(
+            include_q_in_features=True,
+            include_delta_t_source_in_features=True,
+            inverse_pe=1.0,
+            k_ratio=1.0,
+            dt_star=1.0,
+            source_coefficient=2.0,
+            heat_source_absorptivity=0.5,
+        )
+        model = RecordingDeltaModel(config)
+
+        rollout_multilayer_fdm(
+            model,
+            graph,
+            1,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            thickness_coupling_mode="temperature_fdm",
+        )
+
+        self.assertEqual(len(model.graph_inputs), 1)
+        graph_x = model.graph_inputs[0]
+        expected_q = torch.tensor([[1.0], [0.0], [3.0], [2.0], [0.0], [0.0], [0.0], [0.0]])
+        expected_delta = torch.tensor([[1.0], [0.0], [3.0], [2.0], [0.0], [0.0], [0.0], [0.0]])
+        self.assertTrue(torch.allclose(graph_x[:, 7:8], expected_q, atol=1e-6))
+        self.assertTrue(torch.allclose(graph_x[:, 8:9], expected_delta, atol=1e-6))
+
+    def test_rollout_source_distribution_features_use_distributed_source(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        graph = make_graph()
+        graph.x = torch.zeros(2, 9)
+        graph.x[:, 6:7] = 2.0
+        graph.q_surface_star = torch.tensor([[1.0], [0.0]])
+        graph.q_feature_index = 7
+        graph.delta_t_source_feature_index = 8
+        graph.include_q_in_features = True
+        graph.include_delta_t_source_in_features = True
+        config = PDGCNConfig(
+            include_q_in_features=True,
+            include_delta_t_source_in_features=True,
+            inverse_pe=1.0,
+            k_ratio=1.0,
+            dt_star=1.0,
+            source_coefficient=2.0,
+            heat_source_absorptivity=0.5,
+        )
+        model = RecordingDeltaModel(config)
+
+        rollout_multilayer_fdm(
+            model,
+            graph,
+            1,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+        )
+
+        graph_x = model.graph_inputs[0]
+        expected = torch.tensor(
+            [[8.0 / 13.0], [0.0], [3.0 / 13.0], [0.0], [1.0 / 13.0], [0.0], [0.0], [0.0]]
+        )
+        self.assertTrue(torch.allclose(graph_x[:, 7:8], expected, atol=1e-6))
+        self.assertTrue(torch.allclose(graph_x[:, 8:9], expected, atol=1e-6))
+
+    def test_rollout_can_disable_internal_pseudo_source_features(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        graph = make_graph()
+        graph.x = torch.zeros(2, 9)
+        graph.x[:, 6:7] = 2.0
+        graph.q_surface_star = torch.tensor([[1.0], [0.0]])
+        graph.q_feature_index = 7
+        graph.delta_t_source_feature_index = 8
+        graph.include_q_in_features = True
+        graph.include_delta_t_source_in_features = True
+        config = PDGCNConfig(
+            include_q_in_features=True,
+            include_delta_t_source_in_features=True,
+            inverse_pe=1.0,
+            k_ratio=1.0,
+            dt_star=1.0,
+            source_coefficient=2.0,
+            heat_source_absorptivity=0.5,
+        )
+        model = RecordingDeltaModel(config)
+
+        rollout_multilayer_fdm(
+            model,
+            graph,
+            1,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            thickness_coupling_mode="temperature_fdm",
+            enable_internal_pseudo_source_features=False,
+        )
+
+        graph_x = model.graph_inputs[0]
+        expected_q = torch.tensor([[1.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0]])
+        expected_delta = torch.tensor([[1.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0], [0.0]])
+        self.assertTrue(torch.allclose(graph_x[:, 7:8], expected_q, atol=1e-6))
+        self.assertTrue(torch.allclose(graph_x[:, 8:9], expected_delta, atol=1e-6))
+
+    def test_internal_pseudo_source_features_clamp_negative_heating_to_zero(self):
+        graph = make_graph()
+        graph.q_surface_star = torch.zeros(2, 1)
+        source_temperature = torch.tensor([[[0.0], [0.0]], [[2.0], [1.0]], [[0.0], [0.0]]])
+        source_delta = torch.zeros_like(source_temperature)
+        config = PDGCNConfig(
+            include_q_in_features=True,
+            include_delta_t_source_in_features=True,
+            inverse_pe=1.0,
+            k_ratio=1.0,
+            dt_star=1.0,
+            source_coefficient=2.0,
+            heat_source_absorptivity=0.5,
+        )
+
+        q_feature, delta_feature = _build_pseudo_source_features(
+            graph,
+            source_temperature,
+            source_delta,
+            config,
+            layer_spacing_star=1.0,
+        )
+
+        self.assertTrue(torch.allclose(q_feature, torch.zeros_like(q_feature)))
+        self.assertTrue(torch.allclose(delta_feature, torch.zeros_like(delta_feature)))
 
     def test_cloud_interval_writes_every_nth_step_from_zero(self):
         written = [step for step in range(12) if _should_write_cloud_step(step, 5)]

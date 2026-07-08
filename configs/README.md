@@ -425,6 +425,8 @@ w = W_high if T_source_applied* > threshold else 1
     "write_vtk": false,
     "use_pdgcn_inplane": true,
     "pdgcn_inplane_top_layer_only": false,
+    "thickness_coupling_mode": "source_distribution",
+    "enable_internal_pseudo_source_features": true,
     "cloud_interval": 20,
     "layer_batch_size": null,
     "delta_smoothing_alpha": 0.2,
@@ -455,9 +457,11 @@ w = W_high if T_source_applied* > threshold else 1
 | `allow_unstable_fdm` | boolean | 兼容旧显式 FDM 配置的保留字段。当前厚度方向使用 Backward Euler 隐式 FDM，不再依赖该字段跳过稳定性检查。 |
 | `layer_fiber_angles_deg` | number array 或 `null` | 每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。为 `null` 时所有层使用 `0.0`。 |
 | `normal_offset_sign` | integer | 法向偏移方向，只能为 `-1` 或 `1`。默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。 |
-| `write_vtk` | boolean | 兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。 |
-| `use_pdgcn_inplane` | boolean | 是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。 |
-| `pdgcn_inplane_top_layer_only` | boolean | 当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。 |
+| `write_vtk` | boolean | 批量模式下是否在每个 HDF5 推理完成后同步输出多层 VTK 云图；单文件模式仍只写 HDF5，可用 `render_entry.py` 离线渲染。 |
+| `use_pdgcn_inplane` | boolean | 是否启用无源 PD-GCN 面内输运增量。设为 `false` 时默认执行“显式热源 + 源项厚度分配 only”对照推理。 |
+| `pdgcn_inplane_top_layer_only` | boolean | 当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅接收源项厚度分配结果。 |
+| `thickness_coupling_mode` | string | 厚度方向耦合方式。默认 `"source_distribution"` 表示先用隐式 FDM 分配顶层热源，再执行各层 PD-GCN；`"temperature_fdm"` 为旧流程消融模式，即 PD-GCN 后再对温度场做隐式 FDM。 |
+| `enable_internal_pseudo_source_features` | boolean | 兼容旧流程的伪热源特征开关，仅在 `thickness_coupling_mode="temperature_fdm"` 时生效。默认新流程下热源节点特征直接来自分配后的真实本地源，忽略该字段。 |
 | `cloud_interval` | integer | 合并三维云图输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
 | `layer_batch_size` | integer 或 `null` | 每次模型前向处理的层数；为 `null` 时 CUDA 自动使用较小层批量以降低显存。 |
 | `delta_smoothing_alpha` | number | 推理端网络增量图低通强度，范围 `[0, 1]`。默认 `0.2`；设为 `0` 可关闭平滑。 |
@@ -468,7 +472,7 @@ w = W_high if T_source_applied* > threshold else 1
 直接运行 `inference/infer_entry.py` 时，会优先使用 JSON 中的 `inference.batch_mode`。只有显式传入命令行参数 `--batch` 或 `--no-batch` 时，才会覆盖 JSON 配置。
 
 - 单文件模式：设置 `batch_mode=false`。此时入口使用 `h5_path` 作为输入 HDF5，并把结果写入 `output_path`；若 `h5_path=null`，入口会退回到训练配置 `datasets[dataset_index].h5_dir` 中自然排序的第一个 HDF5 文件。
-- 批量模式：设置 `batch_mode=true`。此时入口使用 `h5_dir` 作为输入目录，非递归遍历直属 `.h5`/`.hdf5` 文件，并把每个多层预测 HDF5 写入 `output_dir/<output_prefix><原文件名>`；对应离线 VTK 目录记录为 `output_dir/<output_prefix><原stem>_vtk/`。单个文件失败时会继续处理其他文件，并在命令行汇总成功和失败清单。
+- 批量模式：设置 `batch_mode=true`。此时入口使用 `h5_dir` 作为输入目录，非递归遍历直属 `.h5`/`.hdf5` 文件，并把每个源 HDF5 复制到 `output_dir/<output_prefix><原文件名>` 后增量写入多层预测结果；预测数据位于 `prediction/pdgcn_multilayer/temperature` 和 `prediction/pdgcn_multilayer/temperature_star`，源文件原有的 `dynamic/`、`edge_index`、边界节点、FEM 数据和属性会保留，原始输入 HDF5 不会被原地修改。若 `write_vtk=true`，会同步写出 `output_dir/<output_prefix><原stem>_vtk/temperature_step_*.vtk`。单个文件失败时会继续处理其他文件，并在命令行汇总成功和失败清单。
 
 多层推理中厚度方向 FDM 系数为：
 
@@ -477,18 +481,20 @@ C_n = dt_star * inverse_pe * k_ratio / layer_spacing_star^2
 layer_spacing_star = layer_spacing / L0
 ```
 
-当前厚度方向采用 Backward Euler 隐式 FDM，`C_n` 仍记录到推理 metadata 中作为诊断指标，但不再作为显式格式的稳定性报错阈值。
+当前默认厚度方向采用 Backward Euler 隐式 FDM 分配热源项，`C_n` 仍记录到推理 metadata 中作为诊断指标，但不再作为显式格式的稳定性报错阈值。
 
 多层推理的温度更新为：
 
 ```text
-T_src[0] = T_current[0] + delta_T_source
-T_src[k>0] = T_current[k]
+S[0] = delta_T_source
+S[k>0] = 0
+S_tilde = implicit_fdm_step(S, bottom=0)
+T_src = T_current + S_tilde
 T_inplane = T_src + delta_T_inplane
-T_next = implicit_fdm_step(T_inplane)
+T_next = clamp_bottom(T_inplane)
 ```
 
-其中 `delta_T_source` 只由显式表面热源模块作用于顶层；若启用热源节点特征，多层图中也只有顶层保留 `q*` 和 `ΔT_Q*`，非顶层这两列置零。`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
+其中 `delta_T_source` 只由显式表面热源模块从顶层表面热流计算得到；默认 `source_distribution` 模式先把该源项沿厚度方向分配为 `S_tilde`，再让每层基于 `T_current + S_tilde` 执行无源 PD-GCN 面内输运，不再在 PD-GCN 后对温度场做厚度 FDM。若启用热源节点特征，`q*` 和 `ΔT_Q*` 会来自分配后的本地源项。底层恒温边界源项始终为 0，最终温度仍钳制到 `bottom_temperature_star`。`temperature_fdm` 模式保留旧流程用于消融：顶层热源先进入 PD-GCN，随后对温度场执行隐式厚度 FDM；只有该旧模式会使用 `enable_internal_pseudo_source_features` 构造内部伪热源特征。网络增量会先按当前层内图拓扑进行可选低通平滑；该平滑只作用于网络增量，不直接平滑最终温度。
 
 ## 调参注意事项
 

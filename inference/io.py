@@ -1,4 +1,5 @@
 import json
+import shutil
 import time
 from dataclasses import MISSING, asdict, fields
 from pathlib import Path
@@ -17,6 +18,9 @@ from visualization import write_topology_wedge_vtk
 from .config import InferenceRunConfig
 from .fdm import compute_layer_fdm_coefficient
 from .multilayer import _build_multilayer_geometry, _resolve_layer_batch_size, rollout_multilayer_fdm
+
+
+DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH = "prediction/pdgcn_multilayer"
 
 
 def run_multilayer_inference_from_config(
@@ -138,7 +142,25 @@ def run_multilayer_inference_from_config(
                     scan_velocity=dataset.scan_velocity,
                     inference_config=inference_config,
                     warmup_steps=warmup_steps,
+                    incremental_output=True,
                 )
+                if bool(inference_config.write_vtk):
+                    render_summary = render_multilayer_clouds_from_hdf5(
+                        selected_output,
+                        cloud_interval=int(inference_config.cloud_interval),
+                        vtk_output_dir=selected_vtk_dir,
+                    )
+                    total_seconds = float(item["inference_seconds"]) + float(render_summary["render_seconds"])
+                    _update_prediction_metadata(
+                        selected_output,
+                        {
+                            **render_summary,
+                            "total_seconds": total_seconds,
+                            "write_vtk": True,
+                        },
+                    )
+                    item.update(render_summary)
+                    item["total_seconds"] = total_seconds
                 item["status"] = "succeeded"
                 results.append(item)
             except Exception as error:  # noqa: BLE001 - batch mode must summarize per-file failures.
@@ -196,6 +218,7 @@ def run_multilayer_inference_from_config(
         scan_velocity=dataset.scan_velocity,
         inference_config=inference_config,
         warmup_steps=warmup_steps,
+        incremental_output=False,
     )
 
 
@@ -231,6 +254,7 @@ def _run_multilayer_inference_for_h5(
     scan_velocity,
     inference_config,
     warmup_steps: int,
+    incremental_output: bool = False,
 ):
     timing = derive_timing_from_hdf5(selected_h5, scale_params, scan_velocity=scan_velocity)
 
@@ -275,7 +299,15 @@ def _run_multilayer_inference_for_h5(
         "layer_spacing": float(inference_config.layer_spacing),
         "layer_spacing_star": float(layer_spacing_star),
         "fdm_coefficient": float(fdm_coefficient),
-        "thickness_solver": "implicit_euler",
+        "thickness_coupling_mode": str(inference_config.thickness_coupling_mode),
+        "thickness_solver": (
+            "implicit_euler_source_distribution"
+            if str(inference_config.thickness_coupling_mode) == "source_distribution"
+            else "implicit_euler_temperature"
+        ),
+        "source_distribution_solver": (
+            "implicit_euler" if str(inference_config.thickness_coupling_mode) == "source_distribution" else None
+        ),
         "bottom_temperature_star": float(inference_config.bottom_temperature_star),
         "layer_fiber_angles_deg": list(
             inference_config.layer_fiber_angles_deg
@@ -295,34 +327,58 @@ def _run_multilayer_inference_for_h5(
         "delta_smoothing_steps": int(inference_config.delta_smoothing_steps),
         "use_pdgcn_inplane": bool(inference_config.use_pdgcn_inplane),
         "pdgcn_inplane_top_layer_only": bool(inference_config.pdgcn_inplane_top_layer_only),
+        "enable_internal_pseudo_source_features": bool(inference_config.enable_internal_pseudo_source_features),
+        "internal_pseudo_source_features_applied": (
+            str(inference_config.thickness_coupling_mode) == "temperature_fdm"
+            and bool(inference_config.enable_internal_pseudo_source_features)
+        ),
         "vtk_output_dir": str(selected_vtk_dir),
+        "prediction_group_path": DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH if incremental_output else None,
         "hdf5_timing": timing,
         "scale_params": asdict(scale_params),
         "model_config": asdict(model.config),
         "checkpoint_epoch": checkpoint_payload.get("epoch"),
     }
 
-    timing_summary = write_multilayer_hdf5(
-        selected_output,
-        model=model,
-        graph_factory=graph_factory,
-        steps=steps,
-        scale_params=scale_params,
-        num_layers=int(inference_config.num_layers),
-        num_nodes=num_nodes,
-        layer_spacing=float(inference_config.layer_spacing),
-        metadata=metadata,
-        warmup_steps=int(warmup_steps),
-        bottom_temperature_star=float(inference_config.bottom_temperature_star),
-        allow_unstable_fdm=bool(inference_config.allow_unstable_fdm),
-        layer_fiber_angles_deg=inference_config.layer_fiber_angles_deg,
-        normal_offset_sign=int(inference_config.normal_offset_sign),
-        layer_batch_size=inference_config.layer_batch_size,
-        delta_smoothing_alpha=float(inference_config.delta_smoothing_alpha),
-        delta_smoothing_steps=int(inference_config.delta_smoothing_steps),
-        use_pdgcn_inplane=bool(inference_config.use_pdgcn_inplane),
-        pdgcn_inplane_top_layer_only=bool(inference_config.pdgcn_inplane_top_layer_only),
-    )
+    selected_output = Path(selected_output)
+    write_output = selected_output
+    temp_output = None
+    if incremental_output:
+        temp_output = _copy_hdf5_to_multilayer_output(selected_h5, selected_output)
+        write_output = temp_output
+
+    try:
+        timing_summary = write_multilayer_hdf5(
+            write_output,
+            model=model,
+            graph_factory=graph_factory,
+            steps=steps,
+            scale_params=scale_params,
+            num_layers=int(inference_config.num_layers),
+            num_nodes=num_nodes,
+            layer_spacing=float(inference_config.layer_spacing),
+            metadata=metadata,
+            warmup_steps=int(warmup_steps),
+            bottom_temperature_star=float(inference_config.bottom_temperature_star),
+            allow_unstable_fdm=bool(inference_config.allow_unstable_fdm),
+            layer_fiber_angles_deg=inference_config.layer_fiber_angles_deg,
+            normal_offset_sign=int(inference_config.normal_offset_sign),
+            layer_batch_size=inference_config.layer_batch_size,
+            delta_smoothing_alpha=float(inference_config.delta_smoothing_alpha),
+            delta_smoothing_steps=int(inference_config.delta_smoothing_steps),
+            use_pdgcn_inplane=bool(inference_config.use_pdgcn_inplane),
+            pdgcn_inplane_top_layer_only=bool(inference_config.pdgcn_inplane_top_layer_only),
+            thickness_coupling_mode=str(inference_config.thickness_coupling_mode),
+            enable_internal_pseudo_source_features=bool(inference_config.enable_internal_pseudo_source_features),
+            prediction_group_path=DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH if incremental_output else None,
+        )
+        if temp_output is not None:
+            temp_output.replace(selected_output)
+    except Exception:
+        if temp_output is not None and temp_output.exists():
+            temp_output.unlink()
+        raise
+
     return {
         "output_path": str(selected_output),
         "checkpoint_path": str(selected_checkpoint),
@@ -330,11 +386,27 @@ def _run_multilayer_inference_for_h5(
         "steps": steps,
         "num_layers": int(inference_config.num_layers),
         "fdm_coefficient": float(fdm_coefficient),
-        "thickness_solver": "implicit_euler",
+        "thickness_coupling_mode": str(inference_config.thickness_coupling_mode),
+        "thickness_solver": metadata["thickness_solver"],
         "vtk_output_dir": str(selected_vtk_dir),
         "cloud_interval": int(cloud_interval),
         **timing_summary,
     }
+
+
+def _copy_hdf5_to_multilayer_output(source_h5, output_h5):
+    source_h5 = Path(source_h5).resolve()
+    output_h5 = Path(output_h5).resolve()
+    if source_h5 == output_h5:
+        raise ValueError("multilayer batch inference output_path must differ from the source HDF5 path.")
+    if not source_h5.exists():
+        raise FileNotFoundError(f"HDF5 file not found: {source_h5}")
+    output_h5.parent.mkdir(parents=True, exist_ok=True)
+    temp_output = output_h5.with_name(f".{output_h5.name}.tmp")
+    if temp_output.exists():
+        temp_output.unlink()
+    shutil.copy2(source_h5, temp_output)
+    return temp_output
 
 
 def load_inference_run_context(config_path):
@@ -430,9 +502,13 @@ def write_multilayer_hdf5(
     delta_smoothing_steps: int = 1,
     use_pdgcn_inplane: bool = True,
     pdgcn_inplane_top_layer_only: bool = False,
+    thickness_coupling_mode: str = "source_distribution",
+    enable_internal_pseudo_source_features: bool = True,
+    prediction_group_path=None,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    prediction_group_path = None if prediction_group_path is None else str(prediction_group_path).strip("/")
     metadata = dict(metadata)
     metadata["effective_layer_batch_size"] = int(
         _resolve_layer_batch_size(layer_batch_size, int(num_layers), next(model.parameters()).device)
@@ -448,13 +524,20 @@ def write_multilayer_hdf5(
         "rendered_steps": [],
     }
 
-    with h5py.File(output_path, "w") as output_file:
-        temperature_star_dataset = output_file.create_dataset(
+    open_mode = "r+" if prediction_group_path else "w"
+    with h5py.File(output_path, open_mode) as output_file:
+        output_group = output_file
+        if prediction_group_path:
+            if prediction_group_path in output_file:
+                del output_file[prediction_group_path]
+            output_group = output_file.create_group(prediction_group_path)
+
+        temperature_star_dataset = output_group.create_dataset(
             "temperature_star",
             shape=(int(steps), int(num_layers), int(num_nodes), 1),
             dtype="float32",
         )
-        temperature_dataset = output_file.create_dataset(
+        temperature_dataset = output_group.create_dataset(
             "temperature",
             shape=(int(steps), int(num_layers), int(num_nodes), 1),
             dtype="float32",
@@ -487,6 +570,8 @@ def write_multilayer_hdf5(
             delta_smoothing_steps=int(delta_smoothing_steps),
             use_pdgcn_inplane=bool(use_pdgcn_inplane),
             pdgcn_inplane_top_layer_only=bool(pdgcn_inplane_top_layer_only),
+            thickness_coupling_mode=str(thickness_coupling_mode),
+            enable_internal_pseudo_source_features=bool(enable_internal_pseudo_source_features),
             timing_recorder=step_inference_seconds.append,
         )
         timing_summary["total_seconds"] = time.perf_counter() - start_total
@@ -497,8 +582,8 @@ def write_multilayer_hdf5(
             timing_summary["min_inference_seconds"] = float(np.min(step_inference_seconds))
         metadata.update(timing_summary)
         metadata_json = json.dumps(metadata, ensure_ascii=False)
-        output_file.create_dataset("metadata", data=metadata_json)
-        output_file.attrs["metadata"] = metadata_json
+        output_group.create_dataset("metadata", data=metadata_json)
+        output_group.attrs["metadata"] = metadata_json
 
     return timing_summary
 
@@ -549,8 +634,9 @@ def render_multilayer_clouds_from_hdf5(
     rendered_steps = []
     start_render = time.perf_counter()
     with h5py.File(prediction_h5, "r") as output_file:
-        temperature_dataset = output_file["temperature"]
-        temperature_star_dataset = output_file["temperature_star"]
+        prediction_group = _resolve_multilayer_prediction_group(output_file)
+        temperature_dataset = prediction_group["temperature"]
+        temperature_star_dataset = prediction_group["temperature_star"]
         steps = int(temperature_star_dataset.shape[0])
         for step in range(steps):
             if not _should_write_cloud_step(step, cloud_interval):
@@ -718,40 +804,66 @@ def _remap_edge_index(edge_index, sample_indices, nodes_per_layer: int):
 
 def _read_prediction_num_nodes(prediction_h5):
     with h5py.File(prediction_h5, "r") as output_file:
-        return int(output_file["temperature_star"].shape[2])
+        prediction_group = _resolve_multilayer_prediction_group(output_file)
+        return int(prediction_group["temperature_star"].shape[2])
 
 
 def _read_prediction_metadata(prediction_h5):
     with h5py.File(prediction_h5, "r") as output_file:
-        if "metadata" in output_file.attrs:
-            metadata_json = output_file.attrs["metadata"]
-        else:
-            metadata_json = output_file["metadata"][()]
-    if isinstance(metadata_json, bytes):
-        metadata_json = metadata_json.decode("utf-8")
-    return json.loads(str(metadata_json))
+        return _read_prediction_metadata_from_open_file(output_file)
 
 
 def _update_prediction_metadata(prediction_h5, values):
     prediction_h5 = Path(prediction_h5)
     with h5py.File(prediction_h5, "r+") as output_file:
-        metadata = _read_prediction_metadata_from_open_file(output_file)
+        prediction_group = _resolve_multilayer_prediction_group(output_file)
+        metadata = _read_prediction_metadata_from_open_group(prediction_group)
         metadata.update(values)
         metadata_json = json.dumps(metadata, ensure_ascii=False)
-        if "metadata" in output_file:
-            del output_file["metadata"]
-        output_file.create_dataset("metadata", data=metadata_json)
-        output_file.attrs["metadata"] = metadata_json
+        if "metadata" in prediction_group:
+            del prediction_group["metadata"]
+        prediction_group.create_dataset("metadata", data=metadata_json)
+        prediction_group.attrs["metadata"] = metadata_json
 
 
 def _read_prediction_metadata_from_open_file(output_file):
-    if "metadata" in output_file.attrs:
-        metadata_json = output_file.attrs["metadata"]
+    prediction_group = _resolve_multilayer_prediction_group(output_file)
+    return _read_prediction_metadata_from_open_group(prediction_group)
+
+
+def _read_prediction_metadata_from_open_group(prediction_group):
+    if "metadata" in prediction_group.attrs:
+        metadata_json = prediction_group.attrs["metadata"]
     else:
-        metadata_json = output_file["metadata"][()]
+        metadata_json = prediction_group["metadata"][()]
     if isinstance(metadata_json, bytes):
         metadata_json = metadata_json.decode("utf-8")
     return json.loads(str(metadata_json))
+
+
+def _resolve_multilayer_prediction_group(output_file):
+    if DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH in output_file:
+        prediction_group = output_file[DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH]
+        if "temperature_star" in prediction_group and "temperature" in prediction_group:
+            return prediction_group
+    if "temperature_star" in output_file and "temperature" in output_file:
+        return output_file
+    if "prediction" in output_file:
+        found = []
+
+        def visitor(_name, item):
+            if isinstance(item, h5py.Group) and "temperature_star" in item and "temperature" in item:
+                found.append(item)
+                return True
+            return None
+
+        output_file["prediction"].visititems(visitor)
+        if found:
+            return found[0]
+    raise KeyError(
+        "Multilayer prediction datasets not found. Expected either root temperature datasets or "
+        f"'{DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH}/temperature'."
+    )
 
 
 def _resolve_path(base_dir: Path, value) -> Path:

@@ -131,15 +131,17 @@ runs/pdgcn/multilayer_prediction.h5
 runs/pdgcn/multilayer_prediction_vtk/
 ```
 
-多层推理输出 HDF5 包含：
+多层推理单文件模式输出 HDF5 包含：
 
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
 - `metadata`：JSON 字符串数据集，同时写入根属性副本；记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、`dt_star`、FDM 系数、层分块大小、VTK 输出间隔、无量纲化参数和推理/渲染耗时。
 
-层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。多层推进顺序固定为：顶层显式表面热源、所有层无源 PD-GCN 面内输运、厚度方向 1D FDM、底层恒温钳制。下层不读取热源，能量只能由厚度 FDM 从上层传入；若启用热源节点特征，下层的 `q*` 和 `ΔT_Q*` 特征会置零。下层几何沿节点曲面法向偏移，纤维方向按 `layer_fiber_angles_deg` 绕节点法向旋转。
+多层批量模式会仿照单层批量推理，先复制原始输入 HDF5 到输出目录，再在副本中增量写入 `prediction/pdgcn_multilayer/temperature`、`prediction/pdgcn_multilayer/temperature_star` 和组内 `metadata`；源文件原有的 `dynamic/`、`edge_index`、边界节点、FEM 数据和属性会保留，原始输入 HDF5 不会被原地修改。
 
-`infer_entry.py` 只保存 HDF5。需要云图时，使用 `render_entry.py` 根据 HDF5 结果按 `cloud_interval` 离线输出 ParaView 可读取的 legacy `.vtk` 合并三维拓扑云图，文件名形如
+层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。默认 `inference.thickness_coupling_mode="source_distribution"` 时，多层推进顺序为：顶层显式表面热源、厚度方向 1D FDM 分配热源项、所有层无源 PD-GCN 面内输运、底层恒温钳制；FDM 不再在 PD-GCN 后抽走温度场。若启用热源节点特征，各层的 `q*` 和 `ΔT_Q*` 来自分配后的本地热源，底层恒温边界源项仍置零。旧的 `temperature_fdm` 模式仅作为消融保留，此时 `enable_internal_pseudo_source_features` 才控制内部层伪热源特征。下层几何沿节点曲面法向偏移，纤维方向按 `layer_fiber_angles_deg` 绕节点法向旋转。
+
+`infer_entry.py` 在单文件模式下只保存 HDF5；在批量模式下若 `inference.write_vtk=true`，会为每个输出 HDF5 同步写出 ParaView 可读取的 legacy `.vtk` 合并三维拓扑云图。也可使用 `render_entry.py` 根据 HDF5 结果按 `cloud_interval` 离线补渲染，文件名形如
 `temperature_step_000000.vtk`。每个 VTK 从真实 `edge_index` 恢复 Gmsh 三角网格面，并在相邻层之间生成 `UNSTRUCTURED_GRID` wedge 体单元，可在 ParaView 中用 `temperature` 或 `temperature_star` 着色。拓扑渲染必须使用全节点，不能按节点数降采样。
 
 训练监控快照不再生成 PNG 热力图。需要查看单层曲面温度/残差时，运行：

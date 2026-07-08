@@ -33,6 +33,8 @@ class InferenceRunConfig:
     write_vtk: bool = True
     use_pdgcn_inplane: bool = True
     pdgcn_inplane_top_layer_only: bool = False
+    thickness_coupling_mode: str = "source_distribution"
+    enable_internal_pseudo_source_features: bool = True
     cloud_interval: int = 20
     layer_batch_size: Optional[int] = None
     delta_smoothing_alpha: float = 0.2
@@ -49,6 +51,18 @@ class InferenceRunConfig:
             raise ValueError(f"inference.dataset_index must be non-negative, got {self.dataset_index}.")
         if not isinstance(self.batch_mode, bool):
             raise ValueError("inference.batch_mode must be a boolean.")
+        if not isinstance(self.write_vtk, bool):
+            raise ValueError("inference.write_vtk must be a boolean.")
+        mode = str(self.thickness_coupling_mode).strip().lower()
+        if mode not in {"source_distribution", "temperature_fdm"}:
+            raise ValueError(
+                "inference.thickness_coupling_mode must be one of "
+                "'source_distribution' or 'temperature_fdm', "
+                f"got {self.thickness_coupling_mode!r}."
+            )
+        object.__setattr__(self, "thickness_coupling_mode", mode)
+        if not isinstance(self.enable_internal_pseudo_source_features, bool):
+            raise ValueError("inference.enable_internal_pseudo_source_features must be a boolean.")
         if self.h5_dir is not None and (not isinstance(self.h5_dir, str) or not self.h5_dir.strip()):
             raise ValueError("inference.h5_dir must be null or a non-empty string.")
         if self.output_dir is not None and (not isinstance(self.output_dir, str) or not self.output_dir.strip()):
