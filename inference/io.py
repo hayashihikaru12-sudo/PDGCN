@@ -1,4 +1,5 @@
 import json
+import shutil
 import time
 from dataclasses import MISSING, asdict, fields
 from pathlib import Path
@@ -17,6 +18,9 @@ from visualization import write_topology_wedge_vtk
 from .config import InferenceRunConfig
 from .fdm import compute_layer_fdm_coefficient
 from .multilayer import _build_multilayer_geometry, _resolve_layer_batch_size, rollout_multilayer_fdm
+
+
+DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH = "prediction/pdgcn_multilayer"
 
 
 def run_multilayer_inference_from_config(
@@ -63,6 +67,7 @@ def run_multilayer_inference_from_config(
         if inference_config.warmup_steps is not None
         else int(run_config.training.warmup_steps)
     )
+    prediction_group_path = str(inference_config.prediction_group_path).strip("/")
 
     if batch_mode:
         if h5_path or (batch is None and inference_config.h5_path):
@@ -113,6 +118,7 @@ def run_multilayer_inference_from_config(
                 "h5_dir": str(selected_h5_dir),
                 "output_dir": str(selected_output_dir),
                 "output_prefix": str(inference_config.output_prefix),
+                "prediction_group_path": prediction_group_path,
                 "processed_count": len(results),
                 "succeeded_count": 0,
                 "failed_count": len(results),
@@ -138,6 +144,7 @@ def run_multilayer_inference_from_config(
                     scan_velocity=dataset.scan_velocity,
                     inference_config=inference_config,
                     warmup_steps=warmup_steps,
+                    prediction_group_path=prediction_group_path,
                 )
                 item["status"] = "succeeded"
                 results.append(item)
@@ -158,6 +165,7 @@ def run_multilayer_inference_from_config(
             "h5_dir": str(selected_h5_dir),
             "output_dir": str(selected_output_dir),
             "output_prefix": str(inference_config.output_prefix),
+            "prediction_group_path": prediction_group_path,
             "processed_count": len(results),
             "succeeded_count": len(succeeded),
             "failed_count": len(failed),
@@ -196,6 +204,7 @@ def run_multilayer_inference_from_config(
         scan_velocity=dataset.scan_velocity,
         inference_config=inference_config,
         warmup_steps=warmup_steps,
+        prediction_group_path=None,
     )
 
 
@@ -231,6 +240,7 @@ def _run_multilayer_inference_for_h5(
     scan_velocity,
     inference_config,
     warmup_steps: int,
+    prediction_group_path,
 ):
     timing = derive_timing_from_hdf5(selected_h5, scale_params, scan_velocity=scan_velocity)
 
@@ -296,33 +306,50 @@ def _run_multilayer_inference_for_h5(
         "use_pdgcn_inplane": bool(inference_config.use_pdgcn_inplane),
         "pdgcn_inplane_top_layer_only": bool(inference_config.pdgcn_inplane_top_layer_only),
         "vtk_output_dir": str(selected_vtk_dir),
+        "prediction_group_path": _metadata_prediction_group_path(prediction_group_path),
         "hdf5_timing": timing,
         "scale_params": asdict(scale_params),
         "model_config": asdict(model.config),
         "checkpoint_epoch": checkpoint_payload.get("epoch"),
     }
 
-    timing_summary = write_multilayer_hdf5(
-        selected_output,
-        model=model,
-        graph_factory=graph_factory,
-        steps=steps,
-        scale_params=scale_params,
-        num_layers=int(inference_config.num_layers),
-        num_nodes=num_nodes,
-        layer_spacing=float(inference_config.layer_spacing),
-        metadata=metadata,
-        warmup_steps=int(warmup_steps),
-        bottom_temperature_star=float(inference_config.bottom_temperature_star),
-        allow_unstable_fdm=bool(inference_config.allow_unstable_fdm),
-        layer_fiber_angles_deg=inference_config.layer_fiber_angles_deg,
-        normal_offset_sign=int(inference_config.normal_offset_sign),
-        layer_batch_size=inference_config.layer_batch_size,
-        delta_smoothing_alpha=float(inference_config.delta_smoothing_alpha),
-        delta_smoothing_steps=int(inference_config.delta_smoothing_steps),
-        use_pdgcn_inplane=bool(inference_config.use_pdgcn_inplane),
-        pdgcn_inplane_top_layer_only=bool(inference_config.pdgcn_inplane_top_layer_only),
-    )
+    output_target = Path(selected_output)
+    temp_output = None
+    if prediction_group_path is not None:
+        temp_output = _copy_hdf5_to_multilayer_prediction_output(selected_h5, output_target)
+        output_target_for_write = temp_output
+    else:
+        output_target_for_write = output_target
+
+    try:
+        timing_summary = write_multilayer_hdf5(
+            output_target_for_write,
+            model=model,
+            graph_factory=graph_factory,
+            steps=steps,
+            scale_params=scale_params,
+            num_layers=int(inference_config.num_layers),
+            num_nodes=num_nodes,
+            layer_spacing=float(inference_config.layer_spacing),
+            metadata=metadata,
+            warmup_steps=int(warmup_steps),
+            bottom_temperature_star=float(inference_config.bottom_temperature_star),
+            allow_unstable_fdm=bool(inference_config.allow_unstable_fdm),
+            layer_fiber_angles_deg=inference_config.layer_fiber_angles_deg,
+            normal_offset_sign=int(inference_config.normal_offset_sign),
+            layer_batch_size=inference_config.layer_batch_size,
+            delta_smoothing_alpha=float(inference_config.delta_smoothing_alpha),
+            delta_smoothing_steps=int(inference_config.delta_smoothing_steps),
+            use_pdgcn_inplane=bool(inference_config.use_pdgcn_inplane),
+            pdgcn_inplane_top_layer_only=bool(inference_config.pdgcn_inplane_top_layer_only),
+            prediction_group_path=prediction_group_path,
+        )
+        if temp_output is not None:
+            temp_output.replace(output_target)
+    except Exception:
+        if temp_output is not None and temp_output.exists():
+            temp_output.unlink()
+        raise
     return {
         "output_path": str(selected_output),
         "checkpoint_path": str(selected_checkpoint),
@@ -333,8 +360,24 @@ def _run_multilayer_inference_for_h5(
         "thickness_solver": "implicit_euler",
         "vtk_output_dir": str(selected_vtk_dir),
         "cloud_interval": int(cloud_interval),
+        "prediction_group_path": _metadata_prediction_group_path(prediction_group_path),
         **timing_summary,
     }
+
+
+def _copy_hdf5_to_multilayer_prediction_output(source_h5, output_h5):
+    source_h5 = Path(source_h5).resolve()
+    output_h5 = Path(output_h5).resolve()
+    if source_h5 == output_h5:
+        raise ValueError("multilayer batch output HDF5 path must differ from the source HDF5 path.")
+    if not source_h5.exists():
+        raise FileNotFoundError(f"HDF5 file not found: {source_h5}")
+    output_h5.parent.mkdir(parents=True, exist_ok=True)
+    temp_output = output_h5.with_name(f".{output_h5.name}.tmp")
+    if temp_output.exists():
+        temp_output.unlink()
+    shutil.copy2(source_h5, temp_output)
+    return temp_output
 
 
 def load_inference_run_context(config_path):
@@ -430,9 +473,11 @@ def write_multilayer_hdf5(
     delta_smoothing_steps: int = 1,
     use_pdgcn_inplane: bool = True,
     pdgcn_inplane_top_layer_only: bool = False,
+    prediction_group_path=None,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    prediction_group_path = None if prediction_group_path is None else str(prediction_group_path).strip("/")
     metadata = dict(metadata)
     metadata["effective_layer_batch_size"] = int(
         _resolve_layer_batch_size(layer_batch_size, int(num_layers), next(model.parameters()).device)
@@ -448,13 +493,19 @@ def write_multilayer_hdf5(
         "rendered_steps": [],
     }
 
-    with h5py.File(output_path, "w") as output_file:
-        temperature_star_dataset = output_file.create_dataset(
+    file_mode = "w" if prediction_group_path is None else "r+"
+    temp_group_path = None
+    with h5py.File(output_path, file_mode) as output_file:
+        output_group = output_file
+        if prediction_group_path is not None:
+            output_group, temp_group_path = _create_temporary_prediction_group(output_file, prediction_group_path)
+
+        temperature_star_dataset = output_group.create_dataset(
             "temperature_star",
             shape=(int(steps), int(num_layers), int(num_nodes), 1),
             dtype="float32",
         )
-        temperature_dataset = output_file.create_dataset(
+        temperature_dataset = output_group.create_dataset(
             "temperature",
             shape=(int(steps), int(num_layers), int(num_nodes), 1),
             dtype="float32",
@@ -497,10 +548,37 @@ def write_multilayer_hdf5(
             timing_summary["min_inference_seconds"] = float(np.min(step_inference_seconds))
         metadata.update(timing_summary)
         metadata_json = json.dumps(metadata, ensure_ascii=False)
-        output_file.create_dataset("metadata", data=metadata_json)
-        output_file.attrs["metadata"] = metadata_json
+        output_group.create_dataset("metadata", data=metadata_json)
+        output_group.attrs["metadata"] = metadata_json
+        if prediction_group_path is None:
+            output_file.attrs["metadata"] = metadata_json
+        else:
+            _promote_temporary_prediction_group(output_file, temp_group_path, prediction_group_path)
 
     return timing_summary
+
+
+def _create_temporary_prediction_group(output_file, prediction_group_path: str):
+    prediction_group_path = str(prediction_group_path).strip("/")
+    parts = prediction_group_path.split("/")
+    parent = output_file
+    for part in parts[:-1]:
+        parent = parent.require_group(part)
+    final_name = parts[-1]
+    temp_name = f"__tmp_{final_name}"
+    if temp_name in parent:
+        del parent[temp_name]
+    return parent.create_group(temp_name), "/".join(parts[:-1] + [temp_name])
+
+
+def _promote_temporary_prediction_group(output_file, temp_group_path: str, prediction_group_path: str):
+    if prediction_group_path in output_file:
+        del output_file[prediction_group_path]
+    output_file.move(temp_group_path, prediction_group_path)
+
+
+def _metadata_prediction_group_path(prediction_group_path):
+    return "/" if prediction_group_path is None else str(prediction_group_path).strip("/")
 
 
 def _should_write_cloud_step(step: int, cloud_interval: int) -> bool:
@@ -549,8 +627,9 @@ def render_multilayer_clouds_from_hdf5(
     rendered_steps = []
     start_render = time.perf_counter()
     with h5py.File(prediction_h5, "r") as output_file:
-        temperature_dataset = output_file["temperature"]
-        temperature_star_dataset = output_file["temperature_star"]
+        output_group = _resolve_multilayer_prediction_group(output_file)
+        temperature_dataset = output_group["temperature"]
+        temperature_star_dataset = output_group["temperature_star"]
         steps = int(temperature_star_dataset.shape[0])
         for step in range(steps):
             if not _should_write_cloud_step(step, cloud_interval):
@@ -718,15 +797,14 @@ def _remap_edge_index(edge_index, sample_indices, nodes_per_layer: int):
 
 def _read_prediction_num_nodes(prediction_h5):
     with h5py.File(prediction_h5, "r") as output_file:
-        return int(output_file["temperature_star"].shape[2])
+        group = _resolve_multilayer_prediction_group(output_file)
+        return int(group["temperature_star"].shape[2])
 
 
 def _read_prediction_metadata(prediction_h5):
     with h5py.File(prediction_h5, "r") as output_file:
-        if "metadata" in output_file.attrs:
-            metadata_json = output_file.attrs["metadata"]
-        else:
-            metadata_json = output_file["metadata"][()]
+        group = _resolve_multilayer_prediction_group(output_file)
+        metadata_json = _read_prediction_metadata_json_from_group(group)
     if isinstance(metadata_json, bytes):
         metadata_json = metadata_json.decode("utf-8")
     return json.loads(str(metadata_json))
@@ -735,23 +813,44 @@ def _read_prediction_metadata(prediction_h5):
 def _update_prediction_metadata(prediction_h5, values):
     prediction_h5 = Path(prediction_h5)
     with h5py.File(prediction_h5, "r+") as output_file:
-        metadata = _read_prediction_metadata_from_open_file(output_file)
+        group = _resolve_multilayer_prediction_group(output_file)
+        metadata = _read_prediction_metadata_from_group(group)
         metadata.update(values)
         metadata_json = json.dumps(metadata, ensure_ascii=False)
-        if "metadata" in output_file:
-            del output_file["metadata"]
-        output_file.create_dataset("metadata", data=metadata_json)
-        output_file.attrs["metadata"] = metadata_json
+        if "metadata" in group:
+            del group["metadata"]
+        group.create_dataset("metadata", data=metadata_json)
+        group.attrs["metadata"] = metadata_json
+        if group.name == "/":
+            output_file.attrs["metadata"] = metadata_json
 
 
 def _read_prediction_metadata_from_open_file(output_file):
-    if "metadata" in output_file.attrs:
-        metadata_json = output_file.attrs["metadata"]
-    else:
-        metadata_json = output_file["metadata"][()]
+    return _read_prediction_metadata_from_group(_resolve_multilayer_prediction_group(output_file))
+
+
+def _read_prediction_metadata_from_group(group):
+    metadata_json = _read_prediction_metadata_json_from_group(group)
     if isinstance(metadata_json, bytes):
         metadata_json = metadata_json.decode("utf-8")
     return json.loads(str(metadata_json))
+
+
+def _read_prediction_metadata_json_from_group(group):
+    if "metadata" in group.attrs:
+        return group.attrs["metadata"]
+    return group["metadata"][()]
+
+
+def _resolve_multilayer_prediction_group(output_file, *, prediction_group_path=DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH):
+    prediction_group_path = str(prediction_group_path or DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH).strip("/")
+    if prediction_group_path and prediction_group_path in output_file:
+        return output_file[prediction_group_path]
+    if "temperature" in output_file and "temperature_star" in output_file:
+        return output_file
+    raise KeyError(
+        f"Prediction group '{prediction_group_path}' not found and no legacy multilayer prediction root datasets exist."
+    )
 
 
 def _resolve_path(base_dir: Path, value) -> Path:

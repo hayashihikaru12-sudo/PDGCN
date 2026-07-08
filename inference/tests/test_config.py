@@ -53,12 +53,14 @@ class InferenceConfigTests(unittest.TestCase):
             h5_dir="inputs",
             output_dir="outputs",
             output_prefix="pre_",
+            prediction_group_path="prediction/pdgcn_multilayer",
         )
 
         self.assertTrue(config.batch_mode)
         self.assertEqual(config.h5_dir, "inputs")
         self.assertEqual(config.output_dir, "outputs")
         self.assertEqual(config.output_prefix, "pre_")
+        self.assertEqual(config.prediction_group_path, "prediction/pdgcn_multilayer")
 
     def test_rejects_invalid_delta_smoothing_alpha(self):
         with self.assertRaisesRegex(ValueError, "delta_smoothing_alpha"):
@@ -97,6 +99,8 @@ class InferenceConfigTests(unittest.TestCase):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, output_dir="")
         with self.assertRaisesRegex(ValueError, "output_prefix"):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, output_prefix="")
+        with self.assertRaisesRegex(ValueError, "prediction_group_path"):
+            InferenceRunConfig(num_layers=2, layer_spacing=0.1, prediction_group_path="prediction//bad")
 
     def test_single_layer_config_accepts_modes(self):
         config = SingleLayerInferenceRunConfig(

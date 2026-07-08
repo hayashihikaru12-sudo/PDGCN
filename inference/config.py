@@ -22,6 +22,7 @@ class InferenceRunConfig:
     h5_dir: Optional[str] = None
     output_dir: Optional[str] = None
     output_prefix: str = "pre_"
+    prediction_group_path: str = "prediction/pdgcn_multilayer"
     batch_mode: bool = False
     steps: Optional[int] = None
     warmup_steps: Optional[int] = None
@@ -55,6 +56,9 @@ class InferenceRunConfig:
             raise ValueError("inference.output_dir must be null or a non-empty string.")
         if not isinstance(self.output_prefix, str) or not self.output_prefix:
             raise ValueError("inference.output_prefix must be a non-empty string.")
+        if not isinstance(self.prediction_group_path, str) or not self.prediction_group_path.strip():
+            raise ValueError("inference.prediction_group_path must be a non-empty string.")
+        _validate_hdf5_group_path(self.prediction_group_path, "inference.prediction_group_path")
         if self.steps is not None and int(self.steps) <= 0:
             raise ValueError(f"inference.steps must be positive when set, got {self.steps}.")
         if self.warmup_steps is not None and int(self.warmup_steps) < 0:

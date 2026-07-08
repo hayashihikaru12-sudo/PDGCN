@@ -82,6 +82,20 @@ class InferenceIOTests(unittest.TestCase):
                 max_nodes_per_layer=3,
             )
 
+    def test_render_multilayer_clouds_from_embedded_prediction_group(self):
+        source_h5 = self.root / "source.h5"
+        self._write_source_h5(source_h5)
+        self._write_prediction_h5(source_h5, source_h5, group_path="prediction/pdgcn_multilayer", mode="a")
+
+        result = render_multilayer_clouds_from_hdf5(
+            source_h5,
+            cloud_interval=1,
+            vtk_output_dir=self.root / "embedded_vtk",
+        )
+
+        self.assertEqual(result["rendered_steps"], [0, 1])
+        self.assertTrue((self.root / "embedded_vtk" / "temperature_step_000000.vtk").exists())
+
     def _write_source_h5(self, path):
         xyz = np.array(
             [
@@ -109,7 +123,7 @@ class InferenceIOTests(unittest.TestCase):
             boundary.create_dataset("downwind", data=np.array([3], dtype=np.int64))
             boundary.create_dataset("side", data=np.array([2], dtype=np.int64))
 
-    def _write_prediction_h5(self, path, source_h5):
+    def _write_prediction_h5(self, path, source_h5, *, group_path=None, mode="w"):
         metadata = {
             "source_h5": str(source_h5.resolve()),
             "num_layers": 2,
@@ -134,12 +148,15 @@ class InferenceIOTests(unittest.TestCase):
                 "eps": 1e-12,
             },
         }
-        with h5py.File(path, "w") as h5_file:
-            h5_file.create_dataset("temperature_star", data=np.ones((2, 2, 4, 1), dtype=np.float32))
-            h5_file.create_dataset("temperature", data=np.full((2, 2, 4, 1), 310.0, dtype=np.float32))
+        with h5py.File(path, mode) as h5_file:
+            output = h5_file.create_group(group_path) if group_path is not None else h5_file
+            output.create_dataset("temperature_star", data=np.ones((2, 2, 4, 1), dtype=np.float32))
+            output.create_dataset("temperature", data=np.full((2, 2, 4, 1), 310.0, dtype=np.float32))
             metadata_json = json.dumps(metadata)
-            h5_file.create_dataset("metadata", data=metadata_json)
-            h5_file.attrs["metadata"] = metadata_json
+            output.create_dataset("metadata", data=metadata_json)
+            output.attrs["metadata"] = metadata_json
+            if group_path is None:
+                h5_file.attrs["metadata"] = metadata_json
 
 
 if __name__ == "__main__":

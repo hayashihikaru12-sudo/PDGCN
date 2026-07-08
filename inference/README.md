@@ -61,6 +61,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
     "output_path": "../runs/pdgcn/multilayer_prediction.h5",
     "dataset_index": 0,
     "h5_path": null,
+    "prediction_group_path": "prediction/pdgcn_multilayer",
     "steps": null,
     "warmup_steps": null,
     "bottom_temperature_star": 0.0,
@@ -88,6 +89,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `output_path`：输出 HDF5 路径。
 - `dataset_index`：使用 `datasets[]` 中的哪个数据集。
 - `h5_path`：可选输入 HDF5 文件；为 `null` 时自动选取数据目录中的第一个 HDF5。
+- `prediction_group_path`：批量模式写入增强副本的预测组路径，默认 `prediction/pdgcn_multilayer`。
 - `steps`：推理步数；为 `null` 时使用输入 HDF5 的全部帧。
 - `warmup_steps`：推理初温 warmup 步数；为 `null` 时沿用训练配置。
 - `bottom_temperature_star`：底层恒温边界的无量纲温度，默认 `0.0`。
@@ -146,6 +148,8 @@ HDF5 输出包含：
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
 - `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、FDM 系数、增量平滑参数、合并三维云图输出间隔、尺度参数、总推理/渲染耗时和逐帧推理耗时统计。
+
+单文件模式仍按 `output_path` 写出独立预测 HDF5；批量模式会先把原始 HDF5 复制到 `output_dir/<output_prefix><原文件名>`，再在副本内追加/替换 `prediction_group_path` 预测组，原始文件保持不变。离线渲染入口兼容新版预测组和旧版根级预测数据集。
 
 VTK 输出默认目录为：
 

@@ -780,7 +780,7 @@ class RunConfigTests(unittest.TestCase):
         vtk_files = sorted(vtk_dir.glob("temperature_step_*.vtk"))
         self.assertEqual(vtk_files, [])
 
-    def test_multilayer_batch_inference_writes_prefixed_outputs(self):
+    def test_multilayer_batch_inference_writes_augmented_hdf5_copies(self):
         h5_dir = self.root / "h5"
         h5_dir.mkdir()
         first_h5 = h5_dir / "case1.h5"
@@ -863,14 +863,23 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(result["processed_count"], 2)
         self.assertEqual(result["succeeded_count"], 2)
         self.assertEqual(result["failed_count"], 0)
+        self.assertEqual(result["prediction_group_path"], "prediction/pdgcn_multilayer")
         self.assertEqual([Path(item["h5_path"]).name for item in result["results"]], ["case1.h5", "case2.h5"])
+        for source_path in (first_h5, second_h5):
+            with h5py.File(source_path, "r") as h5_file:
+                self.assertIn("dynamic/xyz", h5_file)
+                self.assertNotIn("prediction/pdgcn_multilayer", h5_file)
         for name in ("pre_case1.h5", "pre_case2.h5"):
             output_path = output_dir / name
             self.assertTrue(output_path.exists())
             with h5py.File(output_path, "r") as h5_file:
-                self.assertEqual(tuple(h5_file["temperature"].shape), (2, 3, 4, 1))
-                metadata = json.loads(h5_file.attrs["metadata"])
+                self.assertIn("dynamic/xyz", h5_file)
+                output_group = h5_file["prediction/pdgcn_multilayer"]
+                self.assertEqual(tuple(output_group["temperature"].shape), (2, 3, 4, 1))
+                self.assertEqual(tuple(output_group["temperature_star"].shape), (2, 3, 4, 1))
+                metadata = json.loads(output_group.attrs["metadata"])
                 self.assertEqual(Path(metadata["source_h5"]).name, name.replace("pre_", ""))
+                self.assertEqual(metadata["prediction_group_path"], "prediction/pdgcn_multilayer")
                 self.assertEqual(Path(metadata["vtk_output_dir"]).parent, output_dir.resolve())
 
     def test_load_inference_run_context_accepts_legacy_unified_config(self):

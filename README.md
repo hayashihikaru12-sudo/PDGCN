@@ -131,11 +131,13 @@ runs/pdgcn/multilayer_prediction.h5
 runs/pdgcn/multilayer_prediction_vtk/
 ```
 
-多层推理输出 HDF5 包含：
+多层单文件推理输出 HDF5 包含：
 
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
 - `metadata`：JSON 字符串数据集，同时写入根属性副本；记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、`dt_star`、FDM 系数、层分块大小、VTK 输出间隔、无量纲化参数和推理/渲染耗时。
+
+多层批量推理会先把每个原始 HDF5 复制到 `output_dir/<output_prefix><原文件名>`，再在副本内追加/替换 `prediction/pdgcn_multilayer` 预测组；组内包含 `temperature`、`temperature_star` 和 `metadata`，形状与单文件模式一致。原始 HDF5 保持不变。
 
 层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。多层推进顺序固定为：顶层显式表面热源、所有层无源 PD-GCN 面内输运、厚度方向 1D FDM、底层恒温钳制。下层不读取热源，能量只能由厚度 FDM 从上层传入；若启用热源节点特征，下层的 `q*` 和 `ΔT_Q*` 特征会置零。下层几何沿节点曲面法向偏移，纤维方向按 `layer_fiber_angles_deg` 绕节点法向旋转。
 

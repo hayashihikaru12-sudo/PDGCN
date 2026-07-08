@@ -9,6 +9,7 @@
     "h5_dir": "../case1_validTheta_50X50",
     "output_dir": "../runs/pdgcn/multilayer_batch",
     "output_prefix": "pre_",
+    "prediction_group_path": "prediction/pdgcn_multilayer",
     "batch_mode": false,
     "steps": null,
     "warmup_steps": 0,
