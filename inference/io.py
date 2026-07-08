@@ -19,13 +19,27 @@ from .fdm import compute_layer_fdm_coefficient
 from .multilayer import _build_multilayer_geometry, _resolve_layer_batch_size, rollout_multilayer_fdm
 
 
-def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_path=None, output_path=None):
+def run_multilayer_inference_from_config(
+    config_path,
+    *,
+    checkpoint=None,
+    h5_path=None,
+    batch=None,
+    h5_dir=None,
+    output_path=None,
+    output_dir=None,
+    output_prefix=None,
+):
     """Run multilayer PD-GCN + 1D FDM inference from an inference JSON config."""
 
     config_path = Path(config_path)
     run_config, inference_config, training_base_dir, inference_base_dir, training_config_path = (
         load_inference_run_context(config_path)
     )
+    overrides = asdict(inference_config)
+    if output_prefix is not None:
+        overrides["output_prefix"] = str(output_prefix)
+    inference_config = InferenceRunConfig(**overrides)
 
     if int(inference_config.dataset_index) >= len(run_config.datasets):
         raise IndexError(
@@ -35,10 +49,6 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
 
     dataset = run_config.datasets[int(inference_config.dataset_index)]
     scale_params = dataset.scale.to_scale_params()
-    if h5_path or inference_config.h5_path:
-        selected_h5 = _resolve_path(inference_base_dir, h5_path or inference_config.h5_path)
-    else:
-        selected_h5 = discover_hdf5_files(_resolve_path(training_base_dir, dataset.h5_dir))[0]
     if checkpoint:
         selected_checkpoint = _resolve_path(inference_base_dir, checkpoint)
     else:
@@ -46,21 +56,183 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
             training_base_dir,
             run_config.outputs.checkpoint_path if run_config.outputs is not None else run_config.data.checkpoint_path,
         )
+    device = torch.device(run_config.training.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    batch_mode = bool(inference_config.batch_mode) if batch is None else bool(batch)
+    warmup_steps = (
+        int(inference_config.warmup_steps)
+        if inference_config.warmup_steps is not None
+        else int(run_config.training.warmup_steps)
+    )
+
+    if batch_mode:
+        if h5_path or (batch is None and inference_config.h5_path):
+            raise ValueError("multilayer batch mode uses h5_dir; do not set h5_path or --h5.")
+        if output_path is not None:
+            raise ValueError("multilayer batch mode uses output_dir; do not set output_path or --output.")
+        selected_h5_dir = (
+            _resolve_path(inference_base_dir, h5_dir or inference_config.h5_dir)
+            if h5_dir or inference_config.h5_dir
+            else _resolve_path(training_base_dir, dataset.h5_dir)
+        )
+        selected_h5_paths = discover_hdf5_files(selected_h5_dir)
+        selected_output_dir_value = output_dir or inference_config.output_dir
+        if not selected_output_dir_value:
+            raise ValueError("multilayer batch mode requires output_dir or --output-dir.")
+        selected_output_dir = _resolve_path(inference_base_dir, selected_output_dir_value)
+        selected_output_dir.mkdir(parents=True, exist_ok=True)
+
+        results = []
+        skipped_paths = set()
+        runtime = None
+        for candidate_h5 in selected_h5_paths:
+            candidate_output = selected_output_dir / f"{inference_config.output_prefix}{candidate_h5.name}"
+            try:
+                runtime = _prepare_multilayer_runtime(
+                    candidate_h5,
+                    selected_checkpoint=selected_checkpoint,
+                    scale_params=scale_params,
+                    scan_velocity=dataset.scan_velocity,
+                    model_overrides=run_config.model,
+                    device=device,
+                )
+                break
+            except Exception as error:  # noqa: BLE001 - batch mode must summarize per-file failures.
+                skipped_paths.add(candidate_h5)
+                results.append(
+                    {
+                        "status": "failed",
+                        "h5_path": str(candidate_h5),
+                        "output_path": str(candidate_output),
+                        "error": str(error),
+                    }
+                )
+        if runtime is None:
+            return {
+                "batch_mode": True,
+                "checkpoint_path": str(selected_checkpoint),
+                "h5_dir": str(selected_h5_dir),
+                "output_dir": str(selected_output_dir),
+                "output_prefix": str(inference_config.output_prefix),
+                "processed_count": len(results),
+                "succeeded_count": 0,
+                "failed_count": len(results),
+                "results": results,
+            }
+        model, checkpoint_payload = runtime
+        for selected_h5 in selected_h5_paths:
+            if selected_h5 in skipped_paths:
+                continue
+            selected_output = selected_output_dir / f"{inference_config.output_prefix}{selected_h5.name}"
+            selected_vtk_dir = selected_output_dir / f"{inference_config.output_prefix}{selected_h5.stem}_vtk"
+            try:
+                item = _run_multilayer_inference_for_h5(
+                    config_path=config_path,
+                    training_config_path=training_config_path,
+                    selected_h5=selected_h5,
+                    selected_output=selected_output,
+                    selected_vtk_dir=selected_vtk_dir,
+                    selected_checkpoint=selected_checkpoint,
+                    checkpoint_payload=checkpoint_payload,
+                    model=model,
+                    scale_params=scale_params,
+                    scan_velocity=dataset.scan_velocity,
+                    inference_config=inference_config,
+                    warmup_steps=warmup_steps,
+                )
+                item["status"] = "succeeded"
+                results.append(item)
+            except Exception as error:  # noqa: BLE001 - batch mode must summarize per-file failures.
+                results.append(
+                    {
+                        "status": "failed",
+                        "h5_path": str(selected_h5),
+                        "output_path": str(selected_output),
+                        "error": str(error),
+                    }
+                )
+        succeeded = [item for item in results if item["status"] == "succeeded"]
+        failed = [item for item in results if item["status"] == "failed"]
+        return {
+            "batch_mode": True,
+            "checkpoint_path": str(selected_checkpoint),
+            "h5_dir": str(selected_h5_dir),
+            "output_dir": str(selected_output_dir),
+            "output_prefix": str(inference_config.output_prefix),
+            "processed_count": len(results),
+            "succeeded_count": len(succeeded),
+            "failed_count": len(failed),
+            "results": results,
+        }
+
+    selected_h5 = (
+        _resolve_path(inference_base_dir, h5_path or inference_config.h5_path)
+        if h5_path or inference_config.h5_path
+        else discover_hdf5_files(_resolve_path(training_base_dir, dataset.h5_dir))[0]
+    )
     selected_output = _resolve_path(inference_base_dir, output_path or inference_config.output_path)
     selected_vtk_dir = (
         _resolve_path(inference_base_dir, inference_config.vtk_output_dir)
         if inference_config.vtk_output_dir is not None
         else selected_output.with_name(f"{selected_output.stem}_vtk")
     )
+    model, checkpoint_payload = _prepare_multilayer_runtime(
+        selected_h5,
+        selected_checkpoint=selected_checkpoint,
+        scale_params=scale_params,
+        scan_velocity=dataset.scan_velocity,
+        model_overrides=run_config.model,
+        device=device,
+    )
+    return _run_multilayer_inference_for_h5(
+        config_path=config_path,
+        training_config_path=training_config_path,
+        selected_h5=selected_h5,
+        selected_output=selected_output,
+        selected_vtk_dir=selected_vtk_dir,
+        selected_checkpoint=selected_checkpoint,
+        checkpoint_payload=checkpoint_payload,
+        model=model,
+        scale_params=scale_params,
+        scan_velocity=dataset.scan_velocity,
+        inference_config=inference_config,
+        warmup_steps=warmup_steps,
+    )
 
-    timing = derive_timing_from_hdf5(selected_h5, scale_params, scan_velocity=dataset.scan_velocity)
+
+def _prepare_multilayer_runtime(
+    selected_h5,
+    *,
+    selected_checkpoint,
+    scale_params,
+    scan_velocity,
+    model_overrides,
+    device,
+):
+    timing = derive_timing_from_hdf5(selected_h5, scale_params, scan_velocity=scan_velocity)
     fallback_model_config = pdgcn_config_from_scale(
         scale_params,
         dt=timing["dt"],
-        model_overrides=run_config.model,
+        model_overrides=model_overrides,
     )
-    device = torch.device(run_config.training.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model, checkpoint_payload = load_model_from_checkpoint(selected_checkpoint, fallback_model_config, device)
+    return load_model_from_checkpoint(selected_checkpoint, fallback_model_config, device)
+
+
+def _run_multilayer_inference_for_h5(
+    *,
+    config_path,
+    training_config_path,
+    selected_h5,
+    selected_output,
+    selected_vtk_dir,
+    selected_checkpoint,
+    checkpoint_payload,
+    model,
+    scale_params,
+    scan_velocity,
+    inference_config,
+    warmup_steps: int,
+):
+    timing = derive_timing_from_hdf5(selected_h5, scale_params, scan_velocity=scan_velocity)
 
     num_frames, num_nodes = read_hdf5_temperature_shape(selected_h5)
     steps = int(inference_config.steps) if inference_config.steps is not None else int(num_frames)
@@ -77,6 +249,7 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
     )
 
     loader = HDF5Loader(selected_h5, scale_params=scale_params)
+    device = next(model.parameters()).device
 
     def graph_factory(frame_idx):
         raw = loader.load_graph_data(int(frame_idx), device=device)
@@ -139,11 +312,7 @@ def run_multilayer_inference_from_config(config_path, *, checkpoint=None, h5_pat
         num_nodes=num_nodes,
         layer_spacing=float(inference_config.layer_spacing),
         metadata=metadata,
-        warmup_steps=(
-            int(inference_config.warmup_steps)
-            if inference_config.warmup_steps is not None
-            else int(run_config.training.warmup_steps)
-        ),
+        warmup_steps=int(warmup_steps),
         bottom_temperature_star=float(inference_config.bottom_temperature_star),
         allow_unstable_fdm=bool(inference_config.allow_unstable_fdm),
         layer_fiber_angles_deg=inference_config.layer_fiber_angles_deg,

@@ -45,6 +45,21 @@ class InferenceConfigTests(unittest.TestCase):
 
         self.assertTrue(config.pdgcn_inplane_top_layer_only)
 
+    def test_accepts_multilayer_batch_config(self):
+        config = InferenceRunConfig(
+            num_layers=2,
+            layer_spacing=0.1,
+            batch_mode=True,
+            h5_dir="inputs",
+            output_dir="outputs",
+            output_prefix="pre_",
+        )
+
+        self.assertTrue(config.batch_mode)
+        self.assertEqual(config.h5_dir, "inputs")
+        self.assertEqual(config.output_dir, "outputs")
+        self.assertEqual(config.output_prefix, "pre_")
+
     def test_rejects_invalid_delta_smoothing_alpha(self):
         with self.assertRaisesRegex(ValueError, "delta_smoothing_alpha"):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, delta_smoothing_alpha=-0.1)
@@ -72,6 +87,16 @@ class InferenceConfigTests(unittest.TestCase):
     def test_rejects_invalid_normal_offset_sign(self):
         with self.assertRaisesRegex(ValueError, "normal_offset_sign"):
             InferenceRunConfig(num_layers=2, layer_spacing=0.1, normal_offset_sign=0)
+
+    def test_rejects_bad_multilayer_batch_paths(self):
+        with self.assertRaisesRegex(ValueError, "batch_mode"):
+            InferenceRunConfig(num_layers=2, layer_spacing=0.1, batch_mode="true")
+        with self.assertRaisesRegex(ValueError, "h5_dir"):
+            InferenceRunConfig(num_layers=2, layer_spacing=0.1, h5_dir="")
+        with self.assertRaisesRegex(ValueError, "output_dir"):
+            InferenceRunConfig(num_layers=2, layer_spacing=0.1, output_dir="")
+        with self.assertRaisesRegex(ValueError, "output_prefix"):
+            InferenceRunConfig(num_layers=2, layer_spacing=0.1, output_prefix="")
 
     def test_single_layer_config_accepts_modes(self):
         config = SingleLayerInferenceRunConfig(

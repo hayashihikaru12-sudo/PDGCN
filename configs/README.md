@@ -412,6 +412,10 @@ w = W_high if T_source_applied* > threshold else 1
     "output_path": "../runs/pdgcn/multilayer_prediction.h5",
     "dataset_index": 0,
     "h5_path": null,
+    "h5_dir": "../case_3_HDF",
+    "output_dir": "../runs/pdgcn/multilayer_batch",
+    "output_prefix": "pre_",
+    "batch_mode": false,
     "steps": null,
     "warmup_steps": null,
     "bottom_temperature_star": 0.0,
@@ -441,6 +445,10 @@ w = W_high if T_source_applied* > threshold else 1
 | `output_path` | string | 多层推理输出 HDF5 路径。 |
 | `dataset_index` | integer | 使用 `datasets[]` 中的第几个数据集，示例为 `0`。 |
 | `h5_path` | string 或 `null` | 可选输入 HDF5 文件。为 `null` 时使用所选数据集目录中自然升序的第一个文件。 |
+| `batch_mode` | boolean | 是否启用多层批量推理。启用后遍历 `h5_dir` 下直属 `.h5`/`.hdf5` 文件。 |
+| `h5_dir` | string 或 `null` | 多层批量模式输入目录；为 `null` 时使用 `datasets[dataset_index].h5_dir`。 |
+| `output_dir` | string 或 `null` | 多层批量模式输出目录；每个输入文件写为 `<output_dir>/<output_prefix><原文件名>`。 |
+| `output_prefix` | string | 多层批量输出文件名前缀，默认 `pre_`。 |
 | `steps` | integer 或 `null` | 推理步数。为 `null` 时使用输入 HDF5 的全部帧。 |
 | `warmup_steps` | integer 或 `null` | 推理前 warmup 步数。为 `null` 时沿用训练配置中的 `warmup_steps`。 |
 | `bottom_temperature_star` | number | 底层恒温边界的无量纲温度。`0.0` 对应真实温度 `T_amb`。 |
@@ -456,6 +464,11 @@ w = W_high if T_source_applied* > threshold else 1
 | `delta_smoothing_steps` | integer | 对 `delta_T_net` 执行的图低通迭代次数，必须非负。默认 `1`；设为 `0` 可关闭平滑。 |
 | `cloud_max_nodes_per_layer` | integer 或 `null` | 兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。 |
 | `vtk_output_dir` | string 或 `null` | VTK 输出目录。为 `null` 时使用 `<output_path stem>_vtk/`。 |
+
+直接运行 `inference/infer_entry.py` 时，会优先使用 JSON 中的 `inference.batch_mode`。只有显式传入命令行参数 `--batch` 或 `--no-batch` 时，才会覆盖 JSON 配置。
+
+- 单文件模式：设置 `batch_mode=false`。此时入口使用 `h5_path` 作为输入 HDF5，并把结果写入 `output_path`；若 `h5_path=null`，入口会退回到训练配置 `datasets[dataset_index].h5_dir` 中自然排序的第一个 HDF5 文件。
+- 批量模式：设置 `batch_mode=true`。此时入口使用 `h5_dir` 作为输入目录，非递归遍历直属 `.h5`/`.hdf5` 文件，并把每个多层预测 HDF5 写入 `output_dir/<output_prefix><原文件名>`；对应离线 VTK 目录记录为 `output_dir/<output_prefix><原stem>_vtk/`。单个文件失败时会继续处理其他文件，并在命令行汇总成功和失败清单。
 
 多层推理中厚度方向 FDM 系数为：
 

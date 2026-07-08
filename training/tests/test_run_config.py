@@ -780,6 +780,99 @@ class RunConfigTests(unittest.TestCase):
         vtk_files = sorted(vtk_dir.glob("temperature_step_*.vtk"))
         self.assertEqual(vtk_files, [])
 
+    def test_multilayer_batch_inference_writes_prefixed_outputs(self):
+        h5_dir = self.root / "h5"
+        h5_dir.mkdir()
+        first_h5 = h5_dir / "case1.h5"
+        second_h5 = h5_dir / "case2.h5"
+        make_h5(first_h5)
+        make_h5(second_h5)
+        checkpoint_path = self.root / "checkpoint.pt"
+        output_dir = self.root / "batch_outputs"
+        model_config = PDGCNConfig(
+            hidden_size=8,
+            message_passing_num=1,
+            inverse_pe=0.0,
+            source_coefficient=0.0,
+            pi_q=0.0,
+            k_ratio=0.05,
+            dt_star=1.0,
+        )
+        model = PDGCN(model_config)
+        torch.save(
+            {
+                "model": model.state_dict(),
+                "optimizer": None,
+                "epoch": 0,
+                "metadata": {"model_config": model_config.__dict__},
+            },
+            checkpoint_path,
+        )
+        training_config_path = self.root / "train.json"
+        inference_config_path = self.root / "infer_batch.json"
+        training_payload = {
+            "outputs": {
+                "checkpoint_path": str(checkpoint_path.resolve()),
+                "history_path": "history.json",
+            },
+            "datasets": [
+                {
+                    "name": "case_a",
+                    "h5_dir": str(h5_dir.resolve()),
+                    "cache_dir": "cache/case_a",
+                    "scale": {
+                        "L0": 0.002,
+                        "v0": 0.002,
+                        "T_amb": 300.0,
+                        "delta_T0": 10.0,
+                        "Q0": 2.0e6,
+                        "K0": 8.0,
+                        "rho": 2.0,
+                        "Cp": 1.0,
+                        "heat_source_effective_thickness": 0.001,
+                    },
+                }
+            ],
+            "hyperparameters": {
+                "model": {"hidden_size": 8, "message_passing_num": 1},
+                "physics_loss": {"lambda_outflow": 0.0},
+                "training": {"lr": 0.001, "epochs": 1, "tbptt_window": 1, "warmup_steps": 0, "device": "cpu"},
+            },
+        }
+        inference_payload = {
+            "training_config": "train.json",
+            "inference": {
+                "num_layers": 3,
+                "layer_spacing": 0.001,
+                "output_path": "unused_single_file_output.h5",
+                "h5_dir": str(h5_dir.resolve()),
+                "output_dir": str(output_dir.resolve()),
+                "output_prefix": "pre_",
+                "batch_mode": True,
+                "steps": 2,
+                "warmup_steps": 0,
+                "cloud_interval": 1,
+            },
+        }
+        training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
+        inference_config_path.write_text(json.dumps(inference_payload), encoding="utf-8")
+
+        result = run_multilayer_inference_from_config(inference_config_path)
+
+        self.assertTrue(result["batch_mode"])
+        self.assertEqual(result["processed_count"], 2)
+        self.assertEqual(result["succeeded_count"], 2)
+        self.assertEqual(result["failed_count"], 0)
+        self.assertEqual([Path(item["h5_path"]).name for item in result["results"]], ["case1.h5", "case2.h5"])
+        for name in ("pre_case1.h5", "pre_case2.h5"):
+            output_path = output_dir / name
+            self.assertTrue(output_path.exists())
+            with h5py.File(output_path, "r") as h5_file:
+                self.assertEqual(tuple(h5_file["temperature"].shape), (2, 3, 4, 1))
+                metadata = json.loads(h5_file.attrs["metadata"])
+                self.assertEqual(Path(metadata["source_h5"]).name, name.replace("pre_", ""))
+                self.assertEqual(Path(metadata["vtk_output_dir"]).parent, output_dir.resolve())
+
     def test_load_inference_run_context_accepts_legacy_unified_config(self):
         config_path = self.root / "legacy_infer.json"
         payload = {

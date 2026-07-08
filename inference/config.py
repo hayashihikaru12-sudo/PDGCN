@@ -19,6 +19,10 @@ class InferenceRunConfig:
     output_path: str = "../runs/pdgcn/multilayer_prediction.h5"
     dataset_index: int = 0
     h5_path: Optional[str] = None
+    h5_dir: Optional[str] = None
+    output_dir: Optional[str] = None
+    output_prefix: str = "pre_"
+    batch_mode: bool = False
     steps: Optional[int] = None
     warmup_steps: Optional[int] = None
     bottom_temperature_star: float = 0.0
@@ -43,6 +47,14 @@ class InferenceRunConfig:
             raise ValueError(f"inference.layer_spacing must be positive, got {self.layer_spacing}.")
         if int(self.dataset_index) < 0:
             raise ValueError(f"inference.dataset_index must be non-negative, got {self.dataset_index}.")
+        if not isinstance(self.batch_mode, bool):
+            raise ValueError("inference.batch_mode must be a boolean.")
+        if self.h5_dir is not None and (not isinstance(self.h5_dir, str) or not self.h5_dir.strip()):
+            raise ValueError("inference.h5_dir must be null or a non-empty string.")
+        if self.output_dir is not None and (not isinstance(self.output_dir, str) or not self.output_dir.strip()):
+            raise ValueError("inference.output_dir must be null or a non-empty string.")
+        if not isinstance(self.output_prefix, str) or not self.output_prefix:
+            raise ValueError("inference.output_prefix must be a non-empty string.")
         if self.steps is not None and int(self.steps) <= 0:
             raise ValueError(f"inference.steps must be positive when set, got {self.steps}.")
         if self.warmup_steps is not None and int(self.warmup_steps) < 0:
