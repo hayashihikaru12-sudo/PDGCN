@@ -32,7 +32,7 @@ def make_h5(path: Path):
     fiber = np.tile(np.array([[[1.0, 0.0, 0.0]]], dtype=np.float32), (2, 4, 1))
     normal = np.tile(np.array([[[0.0, 0.0, 1.0]]], dtype=np.float32), (2, 4, 1))
     q = np.array([[[0.0], [1.0], [0.5], [0.0]], [[0.0], [0.8], [0.4], [0.0]]], dtype=np.float32)
-    edge_index = np.array([[0, 1, 2, 0], [1, 3, 3, 2]], dtype=np.int64)
+    edge_index = np.array([[0, 1, 2, 0, 1], [1, 3, 3, 2, 2]], dtype=np.int64)
 
     with h5py.File(path, "w") as h5_file:
         h5_file.attrs["velocity_speed"] = 2.0
@@ -852,6 +852,7 @@ class RunConfigTests(unittest.TestCase):
                 "steps": 2,
                 "warmup_steps": 0,
                 "cloud_interval": 1,
+                "write_vtk": True,
             },
         }
         training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
@@ -865,6 +866,11 @@ class RunConfigTests(unittest.TestCase):
         self.assertEqual(result["failed_count"], 0)
         self.assertEqual(result["prediction_group_path"], "prediction/pdgcn_multilayer")
         self.assertEqual([Path(item["h5_path"]).name for item in result["results"]], ["case1.h5", "case2.h5"])
+        for item in result["results"]:
+            self.assertTrue(item["vtk_written"])
+            self.assertEqual(item["rendered_steps"], [0, 1])
+            self.assertGreaterEqual(item["render_seconds"], 0.0)
+            self.assertGreaterEqual(item["total_seconds"], item["inference_seconds"])
         for source_path in (first_h5, second_h5):
             with h5py.File(source_path, "r") as h5_file:
                 self.assertIn("dynamic/xyz", h5_file)
@@ -881,6 +887,20 @@ class RunConfigTests(unittest.TestCase):
                 self.assertEqual(Path(metadata["source_h5"]).name, name.replace("pre_", ""))
                 self.assertEqual(metadata["prediction_group_path"], "prediction/pdgcn_multilayer")
                 self.assertEqual(Path(metadata["vtk_output_dir"]).parent, output_dir.resolve())
+                self.assertTrue(metadata["vtk_written"])
+                self.assertEqual(metadata["rendered_steps"], [0, 1])
+                self.assertGreaterEqual(metadata["render_seconds"], 0.0)
+            vtk_dir = output_dir / f"{Path(name).stem}_vtk"
+            vtk_files = sorted(vtk_dir.glob("temperature_step_*.vtk"))
+            self.assertEqual([path.name for path in vtk_files], [
+                "temperature_step_000000.vtk",
+                "temperature_step_000001.vtk",
+            ])
+            vtk_text = vtk_files[0].read_text(encoding="ascii")
+            self.assertIn("SCALARS temperature float 1", vtk_text)
+            self.assertIn("SCALARS temperature_star float 1", vtk_text)
+            self.assertIn("SCALARS layer_index float 1", vtk_text)
+            self.assertIn("SCALARS time_step float 1", vtk_text)
 
     def test_load_inference_run_context_accepts_legacy_unified_config(self):
         config_path = self.root / "legacy_infer.json"

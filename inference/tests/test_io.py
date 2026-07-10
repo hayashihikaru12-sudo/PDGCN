@@ -96,6 +96,23 @@ class InferenceIOTests(unittest.TestCase):
         self.assertEqual(result["rendered_steps"], [0, 1])
         self.assertTrue((self.root / "embedded_vtk" / "temperature_step_000000.vtk").exists())
 
+    def test_render_multilayer_clouds_from_custom_prediction_group(self):
+        source_h5 = self.root / "source.h5"
+        self._write_source_h5(source_h5)
+        custom_group = "results/custom_multilayer"
+        self._write_prediction_h5(source_h5, source_h5, group_path=custom_group, mode="a")
+
+        result = render_multilayer_clouds_from_hdf5(
+            source_h5,
+            cloud_interval=1,
+            vtk_output_dir=self.root / "custom_vtk",
+            prediction_group_path=custom_group,
+        )
+
+        self.assertTrue(result["vtk_written"])
+        self.assertEqual(result["rendered_steps"], [0, 1])
+        self.assertTrue((self.root / "custom_vtk" / "temperature_step_000001.vtk").exists())
+
     def _write_source_h5(self, path):
         xyz = np.array(
             [

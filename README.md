@@ -141,7 +141,7 @@ runs/pdgcn/multilayer_prediction_vtk/
 
 层索引约定为 `layer=0` 是顶层，`layer=L-1` 是底层恒温模具边界。多层推进顺序固定为：顶层显式表面热源、所有层无源 PD-GCN 面内输运、厚度方向 1D FDM、底层恒温钳制。下层不读取热源，能量只能由厚度 FDM 从上层传入；若启用热源节点特征，下层的 `q*` 和 `ΔT_Q*` 特征会置零。下层几何沿节点曲面法向偏移，纤维方向按 `layer_fiber_angles_deg` 绕节点法向旋转。
 
-`infer_entry.py` 只保存 HDF5。需要云图时，使用 `render_entry.py` 根据 HDF5 结果按 `cloud_interval` 离线输出 ParaView 可读取的 legacy `.vtk` 合并三维拓扑云图，文件名形如
+多层批量模式在 `write_vtk=true` 时，会在每个 HDF5 推理完成后按 `cloud_interval` 自动输出 ParaView 可读取的 legacy `.vtk` 合并三维拓扑云图；单文件模式仍可使用 `render_entry.py` 离线渲染。文件名形如
 `temperature_step_000000.vtk`。每个 VTK 从真实 `edge_index` 恢复 Gmsh 三角网格面，并在相邻层之间生成 `UNSTRUCTURED_GRID` wedge 体单元，可在 ParaView 中用 `temperature` 或 `temperature_star` 着色。拓扑渲染必须使用全节点，不能按节点数降采样。
 
 训练监控快照不再生成 PNG 热力图。需要查看单层曲面温度/残差时，运行：

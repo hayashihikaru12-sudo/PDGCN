@@ -56,6 +56,9 @@ def main(argv=None):
         for item in result["results"]:
             status = item["status"]
             print(f"{status}: {item['h5_path']} -> {item.get('output_path', '')}")
+            if status == "succeeded" and item.get("vtk_written"):
+                print(f"  vtk_output_dir: {item['vtk_output_dir']}")
+                print(f"  rendered_steps: {item['rendered_steps']}")
             if status == "failed":
                 print(f"  error: {item['error']}")
         return 1 if result["failed_count"] else 0

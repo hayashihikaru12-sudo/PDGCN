@@ -22,7 +22,7 @@
    - 使用 1D FDM 基于面内更新后的温度计算厚度方向层间传热；
    - 对迎风/侧边节点施加 Dirichlet 边界；
    - 对底层全节点施加恒温边界。
-7. 写出多层温度序列 HDF5。VTK 云图不由推理入口生成，需使用 `render_entry.py` 从 HDF5 结果离线渲染。
+7. 写出多层温度序列 HDF5。批量模式在 `write_vtk=true` 时会为每个成功案例自动生成 VTK；单文件模式可使用 `render_entry.py` 从 HDF5 结果离线渲染。
 
 ## 使用方法
 
@@ -96,7 +96,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `allow_unstable_fdm`：兼容旧显式 FDM 配置的保留字段；当前厚度方向使用 Backward Euler 隐式 FDM，不再依赖该字段跳过稳定性检查。
 - `layer_fiber_angles_deg`：每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。
 - `normal_offset_sign`：法向偏移方向，只能为 `-1` 或 `1`；默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。
-- `write_vtk`：兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。
+- `write_vtk`：多层批量模式是否在每个 HDF5 推理完成后自动生成 VTK；单文件模式仍使用 `render_entry.py` 离线渲染。
 - `use_pdgcn_inplane`：是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。
 - `pdgcn_inplane_top_layer_only`：当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。
 - `cloud_interval`：合并三维云图输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
@@ -104,7 +104,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `delta_smoothing_alpha`：推理端网络增量图低通强度，范围 `[0, 1]`；默认 `0.2`，设为 `0` 可关闭。
 - `delta_smoothing_steps`：对 `delta_T_net` 执行的图低通迭代次数，必须非负；默认 `1`，设为 `0` 可关闭。
 - `cloud_max_nodes_per_layer`：兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。
-- `vtk_output_dir`：VTK 输出目录；为 `null` 时使用 `<output_path stem>_vtk/`。
+- `vtk_output_dir`：单文件离线渲染的 VTK 输出目录；批量模式固定使用 `<output_dir>/<output_prefix><原stem>_vtk/`。
 
 ## 隐式 FDM 更新公式
 
@@ -149,15 +149,15 @@ HDF5 输出包含：
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
 - `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、FDM 系数、增量平滑参数、合并三维云图输出间隔、尺度参数、总推理/渲染耗时和逐帧推理耗时统计。
 
-单文件模式仍按 `output_path` 写出独立预测 HDF5；批量模式会先把原始 HDF5 复制到 `output_dir/<output_prefix><原文件名>`，再在副本内追加/替换 `prediction_group_path` 预测组，原始文件保持不变。离线渲染入口兼容新版预测组和旧版根级预测数据集。
+单文件模式仍按 `output_path` 写出独立预测 HDF5；批量模式会先把原始 HDF5 复制到 `output_dir/<output_prefix><原文件名>`，再在副本内追加/替换 `prediction_group_path` 预测组，原始文件保持不变。批量模式启用 `write_vtk` 后，会为每个案例同步生成对应的 VTK 目录，并把 `vtk_written`、`vtk_output_dir`、`rendered_steps`、`render_seconds` 和含渲染时间的 `total_seconds` 写入返回结果及预测组 metadata。离线渲染入口兼容默认/自定义预测组和旧版根级预测数据集。
 
-VTK 输出默认目录为：
+单文件离线渲染的 VTK 默认目录为：
 
 ```text
 <output_path stem>_vtk/
 ```
 
-VTK 仅由 `render_entry.py` 从已生成的 HDF5 结果离线生成，并按 `cloud_interval` 写出合并三维拓扑云图快照。默认文件名格式：
+批量模式由 `infer_entry.py` 在 `write_vtk=true` 时自动生成 VTK；单文件结果仍可由 `render_entry.py` 离线生成。两种路径都按 `cloud_interval` 写出合并三维拓扑云图快照，默认文件名格式：
 
 ```text
 temperature_step_000000.vtk

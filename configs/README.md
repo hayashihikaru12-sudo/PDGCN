@@ -457,7 +457,7 @@ w = W_high if T_source_applied* > threshold else 1
 | `allow_unstable_fdm` | boolean | 兼容旧显式 FDM 配置的保留字段。当前厚度方向使用 Backward Euler 隐式 FDM，不再依赖该字段跳过稳定性检查。 |
 | `layer_fiber_angles_deg` | number array 或 `null` | 每层相对第 0 层纤维方向的旋转角，单位为度；长度需等于 `num_layers`，第 0 项必须为 `0.0`。为 `null` 时所有层使用 `0.0`。 |
 | `normal_offset_sign` | integer | 法向偏移方向，只能为 `-1` 或 `1`。默认 `-1` 表示 `pos_i = pos_0 - i * layer_spacing * normal`。 |
-| `write_vtk` | boolean | 兼容旧配置的保留字段；`infer_entry.py` 不再根据该字段生成 VTK。 |
+| `write_vtk` | boolean | 多层批量模式是否在每个 HDF5 推理完成后自动生成 VTK；单文件模式仍使用 `render_entry.py` 离线渲染。 |
 | `use_pdgcn_inplane` | boolean | 是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。 |
 | `pdgcn_inplane_top_layer_only` | boolean | 当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。 |
 | `cloud_interval` | integer | 合并三维云图输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
@@ -465,12 +465,12 @@ w = W_high if T_source_applied* > threshold else 1
 | `delta_smoothing_alpha` | number | 推理端网络增量图低通强度，范围 `[0, 1]`。默认 `0.2`；设为 `0` 可关闭平滑。 |
 | `delta_smoothing_steps` | integer | 对 `delta_T_net` 执行的图低通迭代次数，必须非负。默认 `1`；设为 `0` 可关闭平滑。 |
 | `cloud_max_nodes_per_layer` | integer 或 `null` | 兼容旧配置的保留字段；拓扑 wedge 渲染必须使用全节点，该字段不会被自动应用。 |
-| `vtk_output_dir` | string 或 `null` | VTK 输出目录。为 `null` 时使用 `<output_path stem>_vtk/`。 |
+| `vtk_output_dir` | string 或 `null` | 单文件离线渲染的 VTK 输出目录。多层批量模式固定使用 `<output_dir>/<output_prefix><原stem>_vtk/`。 |
 
 直接运行 `inference/infer_entry.py` 时，会优先使用 JSON 中的 `inference.batch_mode`。只有显式传入命令行参数 `--batch` 或 `--no-batch` 时，才会覆盖 JSON 配置。
 
 - 单文件模式：设置 `batch_mode=false`。此时入口使用 `h5_path` 作为输入 HDF5，并把结果写入 `output_path`；若 `h5_path=null`，入口会退回到训练配置 `datasets[dataset_index].h5_dir` 中自然排序的第一个 HDF5 文件。
-- 批量模式：设置 `batch_mode=true`。此时入口使用 `h5_dir` 作为输入目录，非递归遍历直属 `.h5`/`.hdf5` 文件，把每个原始 HDF5 复制到 `output_dir/<output_prefix><原文件名>`，并在副本内追加/替换 `prediction_group_path` 预测组；对应离线 VTK 目录记录为 `output_dir/<output_prefix><原stem>_vtk/`。原始 HDF5 不会被修改。单个文件失败时会继续处理其他文件，并在命令行汇总成功和失败清单。
+- 批量模式：设置 `batch_mode=true`。此时入口使用 `h5_dir` 作为输入目录，非递归遍历直属 `.h5`/`.hdf5` 文件，把每个原始 HDF5 复制到 `output_dir/<output_prefix><原文件名>`，并在副本内追加/替换 `prediction_group_path` 预测组。若 `write_vtk=true`，还会按 `cloud_interval` 自动写出 `output_dir/<output_prefix><原stem>_vtk/temperature_step_*.vtk`；每个文件的返回结果和 HDF5 metadata 会记录 `vtk_written`、`vtk_output_dir`、`rendered_steps` 与 `render_seconds`。原始 HDF5 不会被修改。单个文件失败时会继续处理其他文件，并在命令行汇总成功和失败清单。
 
 多层推理中厚度方向 FDM 系数为：
 

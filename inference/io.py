@@ -145,6 +145,7 @@ def run_multilayer_inference_from_config(
                     inference_config=inference_config,
                     warmup_steps=warmup_steps,
                     prediction_group_path=prediction_group_path,
+                    render_vtk=bool(inference_config.write_vtk),
                 )
                 item["status"] = "succeeded"
                 results.append(item)
@@ -205,6 +206,7 @@ def run_multilayer_inference_from_config(
         inference_config=inference_config,
         warmup_steps=warmup_steps,
         prediction_group_path=None,
+        render_vtk=False,
     )
 
 
@@ -241,6 +243,7 @@ def _run_multilayer_inference_for_h5(
     inference_config,
     warmup_steps: int,
     prediction_group_path,
+    render_vtk: bool,
 ):
     timing = derive_timing_from_hdf5(selected_h5, scale_params, scan_velocity=scan_velocity)
 
@@ -342,6 +345,37 @@ def _run_multilayer_inference_for_h5(
             delta_smoothing_steps=int(inference_config.delta_smoothing_steps),
             use_pdgcn_inplane=bool(inference_config.use_pdgcn_inplane),
             pdgcn_inplane_top_layer_only=bool(inference_config.pdgcn_inplane_top_layer_only),
+            prediction_group_path=prediction_group_path,
+        )
+        render_summary = {
+            "render_seconds": 0.0,
+            "rendered_steps": [],
+            "vtk_output_dir": str(selected_vtk_dir),
+            "vtk_written": False,
+        }
+        if render_vtk:
+            render_summary = render_multilayer_clouds_from_hdf5(
+                output_target_for_write,
+                cloud_interval=cloud_interval,
+                vtk_output_dir=selected_vtk_dir,
+                prediction_group_path=prediction_group_path,
+            )
+            render_summary["vtk_written"] = bool(render_summary["rendered_steps"])
+        total_seconds = float(timing_summary["inference_seconds"]) + float(render_summary["render_seconds"])
+        timing_summary = {
+            **timing_summary,
+            **render_summary,
+            "total_seconds": total_seconds,
+        }
+        _update_prediction_metadata(
+            output_target_for_write,
+            {
+                "render_seconds": float(render_summary["render_seconds"]),
+                "rendered_steps": list(render_summary["rendered_steps"]),
+                "vtk_output_dir": str(render_summary["vtk_output_dir"]),
+                "vtk_written": bool(render_summary["vtk_written"]),
+                "total_seconds": total_seconds,
+            },
             prediction_group_path=prediction_group_path,
         )
         if temp_output is not None:
@@ -591,9 +625,13 @@ def render_multilayer_clouds_from_hdf5(
     cloud_interval=None,
     vtk_output_dir=None,
     max_nodes_per_layer=None,
+    prediction_group_path=DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH,
 ):
     prediction_h5 = Path(prediction_h5)
-    metadata = _read_prediction_metadata(prediction_h5)
+    metadata = _read_prediction_metadata(
+        prediction_h5,
+        prediction_group_path=prediction_group_path,
+    )
     scale_params = ScaleParams(**metadata["scale_params"])
     source_h5 = Path(metadata["source_h5"])
     if not source_h5.is_absolute():
@@ -619,7 +657,10 @@ def render_multilayer_clouds_from_hdf5(
     scan_velocity = hdf5_timing.get("velocity_speed", scale_params.v0)
     loader = HDF5Loader(source_h5, scale_params=scale_params)
     num_layers = int(metadata["num_layers"])
-    num_nodes = _read_prediction_num_nodes(prediction_h5)
+    num_nodes = _read_prediction_num_nodes(
+        prediction_h5,
+        prediction_group_path=prediction_group_path,
+    )
     layer_spacing_star = float(metadata.get("layer_spacing_star", float(metadata["layer_spacing"]) / scale_params.L0))
     layer_fiber_angles_deg = metadata.get("layer_fiber_angles_deg") or [0.0] * num_layers
     normal_offset_sign = int(metadata.get("normal_offset_sign", -1))
@@ -627,7 +668,10 @@ def render_multilayer_clouds_from_hdf5(
     rendered_steps = []
     start_render = time.perf_counter()
     with h5py.File(prediction_h5, "r") as output_file:
-        output_group = _resolve_multilayer_prediction_group(output_file)
+        output_group = _resolve_multilayer_prediction_group(
+            output_file,
+            prediction_group_path=prediction_group_path,
+        )
         temperature_dataset = output_group["temperature"]
         temperature_star_dataset = output_group["temperature_star"]
         steps = int(temperature_star_dataset.shape[0])
@@ -673,6 +717,7 @@ def render_multilayer_clouds_from_hdf5(
         "render_seconds": time.perf_counter() - start_render,
         "rendered_steps": rendered_steps,
         "vtk_output_dir": str(vtk_output_dir),
+        "vtk_written": bool(rendered_steps),
     }
 
 
@@ -795,25 +840,47 @@ def _remap_edge_index(edge_index, sample_indices, nodes_per_layer: int):
     return np.stack([mapping[edges[0, keep]], mapping[edges[1, keep]]], axis=0)
 
 
-def _read_prediction_num_nodes(prediction_h5):
+def _read_prediction_num_nodes(
+    prediction_h5,
+    *,
+    prediction_group_path=DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH,
+):
     with h5py.File(prediction_h5, "r") as output_file:
-        group = _resolve_multilayer_prediction_group(output_file)
+        group = _resolve_multilayer_prediction_group(
+            output_file,
+            prediction_group_path=prediction_group_path,
+        )
         return int(group["temperature_star"].shape[2])
 
 
-def _read_prediction_metadata(prediction_h5):
+def _read_prediction_metadata(
+    prediction_h5,
+    *,
+    prediction_group_path=DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH,
+):
     with h5py.File(prediction_h5, "r") as output_file:
-        group = _resolve_multilayer_prediction_group(output_file)
+        group = _resolve_multilayer_prediction_group(
+            output_file,
+            prediction_group_path=prediction_group_path,
+        )
         metadata_json = _read_prediction_metadata_json_from_group(group)
     if isinstance(metadata_json, bytes):
         metadata_json = metadata_json.decode("utf-8")
     return json.loads(str(metadata_json))
 
 
-def _update_prediction_metadata(prediction_h5, values):
+def _update_prediction_metadata(
+    prediction_h5,
+    values,
+    *,
+    prediction_group_path=DEFAULT_MULTILAYER_PREDICTION_GROUP_PATH,
+):
     prediction_h5 = Path(prediction_h5)
     with h5py.File(prediction_h5, "r+") as output_file:
-        group = _resolve_multilayer_prediction_group(output_file)
+        group = _resolve_multilayer_prediction_group(
+            output_file,
+            prediction_group_path=prediction_group_path,
+        )
         metadata = _read_prediction_metadata_from_group(group)
         metadata.update(values)
         metadata_json = json.dumps(metadata, ensure_ascii=False)
