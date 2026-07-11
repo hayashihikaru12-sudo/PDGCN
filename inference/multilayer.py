@@ -37,6 +37,7 @@ def rollout_multilayer_fdm(
     delta_smoothing_steps: int = 1,
     use_pdgcn_inplane: bool = True,
     pdgcn_inplane_top_layer_only: bool = False,
+    post_fdm_source_compensation_alpha: float = 0.0,
     timing_recorder=None,
 ):
     """Run multilayer PD-GCN inference coupled with implicit 1D FDM in thickness."""
@@ -56,6 +57,11 @@ def rollout_multilayer_fdm(
         raise ValueError(f"normal_offset_sign must be -1 or 1, got {normal_offset_sign}.")
     if not 0.0 <= float(delta_smoothing_alpha) <= 1.0:
         raise ValueError(f"delta_smoothing_alpha must be in [0, 1], got {delta_smoothing_alpha}.")
+    if not 0.0 <= float(post_fdm_source_compensation_alpha) <= 1.0:
+        raise ValueError(
+            "post_fdm_source_compensation_alpha must be in [0, 1], "
+            f"got {post_fdm_source_compensation_alpha}."
+        )
     delta_smoothing_steps = _as_non_negative_integer(
         delta_smoothing_steps,
         "delta_smoothing_steps",
@@ -143,6 +149,10 @@ def rollout_multilayer_fdm(
                 k_ratio=getattr(model.config, "k_ratio", 0.0),
                 layer_spacing_star=layer_spacing_star,
                 bottom_temperature_star=bottom_temperature_star,
+            )
+            next_temperature[0] = (
+                next_temperature[0]
+                + float(post_fdm_source_compensation_alpha) * source_delta[0]
             )
             next_temperature = apply_dirichlet_boundary(
                 next_temperature,

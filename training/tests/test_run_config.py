@@ -749,6 +749,7 @@ class RunConfigTests(unittest.TestCase):
                 "cloud_interval": 1,
                 "delta_smoothing_alpha": 0.3,
                 "delta_smoothing_steps": 2,
+                "post_fdm_source_compensation_alpha": 0.3,
             },
         }
         training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
@@ -766,6 +767,7 @@ class RunConfigTests(unittest.TestCase):
             self.assertEqual(metadata["cloud_interval"], 1)
             self.assertAlmostEqual(metadata["delta_smoothing_alpha"], 0.3)
             self.assertEqual(metadata["delta_smoothing_steps"], 2)
+            self.assertAlmostEqual(metadata["post_fdm_source_compensation_alpha"], 0.3)
             self.assertEqual(metadata["training_config_path"], str(training_config_path.resolve()))
             self.assertIn("inference_seconds", metadata)
             self.assertIn("average_inference_seconds", metadata)

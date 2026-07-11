@@ -245,6 +245,90 @@ class MultilayerRolloutTests(unittest.TestCase):
         expected = torch.tensor([[[[3.0], [2.0]], [[0.0], [0.0]], [[0.0], [0.0]]]])
         self.assertTrue(torch.allclose(result, expected, atol=1e-6))
 
+    def test_post_fdm_source_compensation_heats_only_top_layer(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        graph = make_graph()
+        graph.q_surface_star = torch.tensor([[1.0], [0.5]])
+        model = ConstantDeltaModel()
+        model.delta.data.fill_(0.0)
+        model.config = PDGCNConfig(
+            inverse_pe=1.0,
+            k_ratio=1.0,
+            dt_star=0.5,
+            source_coefficient=2.0,
+            heat_source_absorptivity=1.0,
+        )
+
+        uncompensated = rollout_multilayer_fdm(
+            model,
+            graph,
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+        )
+        compensated = rollout_multilayer_fdm(
+            model,
+            graph,
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            post_fdm_source_compensation_alpha=0.25,
+        )
+
+        expected_difference = torch.zeros_like(compensated)
+        expected_difference[0, 0] = torch.tensor([[0.25], [0.125]])
+        self.assertTrue(torch.allclose(compensated - uncompensated, expected_difference, atol=1e-6))
+
+    def test_post_fdm_source_compensation_is_reclamped_at_inplane_boundary(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        graph = make_graph()
+        graph.q_surface_star = torch.ones(2, 1)
+        graph.upwind_nodes = torch.tensor([0], dtype=torch.long)
+        model = ConstantDeltaModel()
+        model.delta.data.fill_(0.0)
+        model.config = PDGCNConfig(
+            inverse_pe=0.0,
+            k_ratio=0.0,
+            dt_star=0.5,
+            source_coefficient=2.0,
+            heat_source_absorptivity=1.0,
+        )
+
+        result = rollout_multilayer_fdm(
+            model,
+            graph,
+            1,
+            scale_params,
+            num_layers=3,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            post_fdm_source_compensation_alpha=0.5,
+        )
+
+        self.assertAlmostEqual(result[0, 0, 0, 0].item(), 0.0)
+        self.assertAlmostEqual(result[0, 0, 1, 0].item(), 3.5)
+
+    def test_rollout_rejects_invalid_post_fdm_source_compensation_alpha(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        with self.assertRaisesRegex(ValueError, "post_fdm_source_compensation_alpha"):
+            rollout_multilayer_fdm(
+                ConstantDeltaModel(),
+                make_graph(),
+                1,
+                scale_params,
+                num_layers=3,
+                layer_spacing=1.0,
+                post_fdm_source_compensation_alpha=1.1,
+            )
+
     def test_multilayer_graph_zeroes_source_features_below_top_layer(self):
         graph = make_graph()
         graph.x = torch.zeros(2, 9)

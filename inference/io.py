@@ -308,6 +308,9 @@ def _run_multilayer_inference_for_h5(
         "delta_smoothing_steps": int(inference_config.delta_smoothing_steps),
         "use_pdgcn_inplane": bool(inference_config.use_pdgcn_inplane),
         "pdgcn_inplane_top_layer_only": bool(inference_config.pdgcn_inplane_top_layer_only),
+        "post_fdm_source_compensation_alpha": float(
+            inference_config.post_fdm_source_compensation_alpha
+        ),
         "vtk_output_dir": str(selected_vtk_dir),
         "prediction_group_path": _metadata_prediction_group_path(prediction_group_path),
         "hdf5_timing": timing,
@@ -345,6 +348,9 @@ def _run_multilayer_inference_for_h5(
             delta_smoothing_steps=int(inference_config.delta_smoothing_steps),
             use_pdgcn_inplane=bool(inference_config.use_pdgcn_inplane),
             pdgcn_inplane_top_layer_only=bool(inference_config.pdgcn_inplane_top_layer_only),
+            post_fdm_source_compensation_alpha=float(
+                inference_config.post_fdm_source_compensation_alpha
+            ),
             prediction_group_path=prediction_group_path,
         )
         render_summary = {
@@ -507,6 +513,7 @@ def write_multilayer_hdf5(
     delta_smoothing_steps: int = 1,
     use_pdgcn_inplane: bool = True,
     pdgcn_inplane_top_layer_only: bool = False,
+    post_fdm_source_compensation_alpha: float = 0.0,
     prediction_group_path=None,
 ):
     output_path = Path(output_path)
@@ -572,6 +579,7 @@ def write_multilayer_hdf5(
             delta_smoothing_steps=int(delta_smoothing_steps),
             use_pdgcn_inplane=bool(use_pdgcn_inplane),
             pdgcn_inplane_top_layer_only=bool(pdgcn_inplane_top_layer_only),
+            post_fdm_source_compensation_alpha=float(post_fdm_source_compensation_alpha),
             timing_recorder=step_inference_seconds.append,
         )
         timing_summary["total_seconds"] = time.perf_counter() - start_total

@@ -99,6 +99,7 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `write_vtk`：多层批量模式是否在每个 HDF5 推理完成后自动生成 VTK；单文件模式仍使用 `render_entry.py` 离线渲染。
 - `use_pdgcn_inplane`：是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。
 - `pdgcn_inplane_top_layer_only`：当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。
+- `post_fdm_source_compensation_alpha`：FDM 后顶层热源补偿系数，范围 `[0, 1]`，默认 `0.0` 保持旧行为。
 - `cloud_interval`：合并三维云图输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
 - `layer_batch_size`：每次模型前向处理的层数；为 `null` 时 CUDA 默认自动按较小层批量推理，降低 30 层等大规模工况显存占用。
 - `delta_smoothing_alpha`：推理端网络增量图低通强度，范围 `[0, 1]`；默认 `0.2`，设为 `0` 可关闭。
@@ -121,7 +122,9 @@ layer_spacing_star = layer_spacing / L0
 T_src[0] = T_curr[0] + delta_T_source
 T_src[k>0] = T_curr[k]
 T_inplane = T_src + delta_T_inplane
-T_next = implicit_fdm_step(T_inplane)
+T_fdm = implicit_fdm_step(T_inplane)
+T_fdm[0] = T_fdm[0] + post_fdm_source_compensation_alpha * delta_T_source
+T_next = apply_boundary(T_fdm)
 ```
 
 其中：
@@ -129,6 +132,7 @@ T_next = implicit_fdm_step(T_inplane)
 - `delta_T_source` 来自显式表面热源模块，只作用于顶层；
 - `delta_T_inplane` 来自训练好的无源单层 PDGCN，并在 FDM 前按层内图拓扑进行可选低通平滑；
 - `implicit_fdm_step` 来自厚度方向 Backward Euler 隐式 1D FDM；
+- FDM 后补偿只使用当前步顶层的原始 `delta_T_source`，不放大 `q*` 或 `ΔT_Q*` 节点特征，补偿后重新钳制面内边界与底层恒温边界；
 - 默认 `layer=0` 为顶层，`layer=num_layers-1` 为底层。
 
 增量低通只更新内部节点的网络增量，迎风、侧边界和出流边界节点保持原增量；它不会直接平滑最终温度场，也不会作用于 warmup。
@@ -147,7 +151,7 @@ HDF5 输出包含：
 
 - `temperature`：真实温度，形状 `[time, layer, node, 1]`。
 - `temperature_star`：无量纲温度，形状 `[time, layer, node, 1]`。
-- `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、FDM 系数、增量平滑参数、合并三维云图输出间隔、尺度参数、总推理/渲染耗时和逐帧推理耗时统计。
+- `metadata`：JSON 字符串数据集，同时写入根属性副本，记录 checkpoint、源 HDF5、层数、层间距、纤维旋转角、法向偏移方向、FDM 系数、FDM 后热源补偿系数、增量平滑参数、合并三维云图输出间隔、尺度参数、总推理/渲染耗时和逐帧推理耗时统计。
 
 单文件模式仍按 `output_path` 写出独立预测 HDF5；批量模式会先把原始 HDF5 复制到 `output_dir/<output_prefix><原文件名>`，再在副本内追加/替换 `prediction_group_path` 预测组，原始文件保持不变。批量模式启用 `write_vtk` 后，会为每个案例同步生成对应的 VTK 目录，并把 `vtk_written`、`vtk_output_dir`、`rendered_steps`、`render_seconds` 和含渲染时间的 `total_seconds` 写入返回结果及预测组 metadata。离线渲染入口兼容默认/自定义预测组和旧版根级预测数据集。
 

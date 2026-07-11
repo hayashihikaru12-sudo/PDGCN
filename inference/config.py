@@ -34,6 +34,7 @@ class InferenceRunConfig:
     write_vtk: bool = True
     use_pdgcn_inplane: bool = True
     pdgcn_inplane_top_layer_only: bool = False
+    post_fdm_source_compensation_alpha: float = 0.0
     cloud_interval: int = 20
     layer_batch_size: Optional[int] = None
     delta_smoothing_alpha: float = 0.2
@@ -75,6 +76,11 @@ class InferenceRunConfig:
                 float(angle)
         if int(self.normal_offset_sign) not in (-1, 1):
             raise ValueError(f"inference.normal_offset_sign must be -1 or 1, got {self.normal_offset_sign}.")
+        if not 0.0 <= float(self.post_fdm_source_compensation_alpha) <= 1.0:
+            raise ValueError(
+                "inference.post_fdm_source_compensation_alpha must be in [0, 1], "
+                f"got {self.post_fdm_source_compensation_alpha}."
+            )
         if int(self.cloud_interval) <= 0:
             raise ValueError(f"inference.cloud_interval must be positive, got {self.cloud_interval}.")
         if self.layer_batch_size is not None and int(self.layer_batch_size) <= 0:

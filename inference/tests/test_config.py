@@ -45,6 +45,29 @@ class InferenceConfigTests(unittest.TestCase):
 
         self.assertTrue(config.pdgcn_inplane_top_layer_only)
 
+    def test_accepts_post_fdm_source_compensation_alpha(self):
+        config = InferenceRunConfig(
+            num_layers=2,
+            layer_spacing=0.1,
+            post_fdm_source_compensation_alpha=0.3,
+        )
+
+        self.assertAlmostEqual(config.post_fdm_source_compensation_alpha, 0.3)
+
+    def test_rejects_invalid_post_fdm_source_compensation_alpha(self):
+        with self.assertRaisesRegex(ValueError, "post_fdm_source_compensation_alpha"):
+            InferenceRunConfig(
+                num_layers=2,
+                layer_spacing=0.1,
+                post_fdm_source_compensation_alpha=-0.1,
+            )
+        with self.assertRaisesRegex(ValueError, "post_fdm_source_compensation_alpha"):
+            InferenceRunConfig(
+                num_layers=2,
+                layer_spacing=0.1,
+                post_fdm_source_compensation_alpha=1.1,
+            )
+
     def test_accepts_multilayer_batch_config(self):
         config = InferenceRunConfig(
             num_layers=2,

@@ -426,6 +426,7 @@ w = W_high if T_source_applied* > threshold else 1
     "write_vtk": false,
     "use_pdgcn_inplane": true,
     "pdgcn_inplane_top_layer_only": false,
+    "post_fdm_source_compensation_alpha": 0.0,
     "cloud_interval": 20,
     "layer_batch_size": null,
     "delta_smoothing_alpha": 0.2,
@@ -460,6 +461,7 @@ w = W_high if T_source_applied* > threshold else 1
 | `write_vtk` | boolean | 多层批量模式是否在每个 HDF5 推理完成后自动生成 VTK；单文件模式仍使用 `render_entry.py` 离线渲染。 |
 | `use_pdgcn_inplane` | boolean | 是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。 |
 | `pdgcn_inplane_top_layer_only` | boolean | 当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。 |
+| `post_fdm_source_compensation_alpha` | number | FDM 后顶层热源补偿系数，范围 `[0, 1]`。补偿量为当前步原始 `delta_T_source` 的该比例；默认 `0.0` 保持旧行为。 |
 | `cloud_interval` | integer | 合并三维云图输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
 | `layer_batch_size` | integer 或 `null` | 每次模型前向处理的层数；为 `null` 时 CUDA 自动使用较小层批量以降低显存。 |
 | `delta_smoothing_alpha` | number | 推理端网络增量图低通强度，范围 `[0, 1]`。默认 `0.2`；设为 `0` 可关闭平滑。 |
@@ -487,10 +489,12 @@ layer_spacing_star = layer_spacing / L0
 T_src[0] = T_current[0] + delta_T_source
 T_src[k>0] = T_current[k]
 T_inplane = T_src + delta_T_inplane
-T_next = implicit_fdm_step(T_inplane)
+T_fdm = implicit_fdm_step(T_inplane)
+T_fdm[0] = T_fdm[0] + post_fdm_source_compensation_alpha * delta_T_source
+T_next = apply_boundary(T_fdm)
 ```
 
-其中 `delta_T_source` 只由显式表面热源模块作用于顶层；若启用热源节点特征，多层图中也只有顶层保留 `q*` 和 `ΔT_Q*`，非顶层这两列置零。`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。
+其中 `delta_T_source` 只由显式表面热源模块作用于顶层；若启用热源节点特征，多层图中也只有顶层保留 `q*` 和 `ΔT_Q*`，非顶层这两列置零。`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。FDM 后补偿使用当前步原始 `delta_T_source`，只加到顶层，并在补偿后重新钳制面内与底层边界；`q*` 和 `ΔT_Q*` 特征不随补偿系数放大。
 
 ## 调参注意事项
 
