@@ -100,6 +100,8 @@ D:\ProgramData\CondaEnv\PIGNN\python.exe training\infer_entry.py --config config
 - `use_pdgcn_inplane`：是否启用无源 PD-GCN 面内输运增量。设为 `false` 时执行“显式热源 + 厚度 FDM only”对照推理。
 - `pdgcn_inplane_top_layer_only`：当 `use_pdgcn_inplane=true` 时，是否只在第 0 层启用 PD-GCN 面内输运；下层面内增量置零，仅由厚度 FDM 传热。
 - `post_fdm_source_compensation_alpha`：FDM 后顶层热源补偿系数，范围 `[0, 1]`，默认 `0.0` 保持旧行为。
+- `post_fdm_output_layer_compensations`：逐层补偿列表；每项只包含从 1 开始的 `layer` 和补偿温差 `temperature`。列表可扩展至任意非底层层号，空列表表示关闭固定输出补偿；所有层共享输入帧 Q 值最高区域的节点掩码。
+- `post_fdm_output_q_region_percent`：高热流区域百分比，范围 `(0, 100]`，默认 `10.0`；例如 `10.0` 表示选取输入帧 `dynamic/Q` 最高的 10% 节点。
 - `cloud_interval`：合并三维云图输出间隔，默认 `20`，即输出第 `0, 20, 40, ...` 帧。
 - `layer_batch_size`：每次模型前向处理的层数；为 `null` 时 CUDA 默认自动按较小层批量推理，降低 30 层等大规模工况显存占用。
 - `delta_smoothing_alpha`：推理端网络增量图低通强度，范围 `[0, 1]`；默认 `0.2`，设为 `0` 可关闭。
@@ -125,6 +127,8 @@ T_inplane = T_src + delta_T_inplane
 T_fdm = implicit_fdm_step(T_inplane)
 T_fdm[0] = T_fdm[0] + post_fdm_source_compensation_alpha * delta_T_source
 T_next = apply_boundary(T_fdm)
+T_output = per_layer_fixed_compensation(T_next.clone(), q_region_percent, layer_configs)
+T_rollout_next = T_next
 ```
 
 其中：
@@ -133,6 +137,7 @@ T_next = apply_boundary(T_fdm)
 - `delta_T_inplane` 来自训练好的无源单层 PDGCN，并在 FDM 前按层内图拓扑进行可选低通平滑；
 - `implicit_fdm_step` 来自厚度方向 Backward Euler 隐式 1D FDM；
 - FDM 后补偿只使用当前步顶层的原始 `delta_T_source`，不放大 `q*` 或 `ΔT_Q*` 节点特征，补偿后重新钳制面内边界与底层恒温边界；
+- 逐层固定输出补偿先选取输入帧 `dynamic/Q` 最高的 `post_fdm_output_q_region_percent` 百分比节点，再把每项 `temperature / delta_T0` 加到对应层；所有层使用同一组顶层节点编号，仅补偿量随层变化。该修正仅写入 `T_output`，后续自回归仍从 `T_next` 推进；
 - 默认 `layer=0` 为顶层，`layer=num_layers-1` 为底层。
 
 增量低通只更新内部节点的网络增量，迎风、侧边界和出流边界节点保持原增量；它不会直接平滑最终温度场，也不会作用于 warmup。

@@ -1,6 +1,7 @@
 import unittest
 
 from inference.config import InferenceRunConfig, SingleLayerInferenceRunConfig
+from inference.io import _build_inference_run_config
 
 
 class InferenceConfigTests(unittest.TestCase):
@@ -67,6 +68,73 @@ class InferenceConfigTests(unittest.TestCase):
                 layer_spacing=0.1,
                 post_fdm_source_compensation_alpha=1.1,
             )
+
+    def test_rejects_bottom_layer_for_enabled_output_compensation(self):
+        with self.assertRaisesRegex(ValueError, "non-bottom layer"):
+            InferenceRunConfig(
+                num_layers=3,
+                layer_spacing=0.1,
+                post_fdm_output_layer_compensations=(
+                    {"layer": 3, "temperature": 20.0},
+                ),
+            )
+
+    def test_accepts_per_layer_output_compensations(self):
+        config = InferenceRunConfig(
+            num_layers=10,
+            layer_spacing=0.1,
+            post_fdm_output_layer_compensations=(
+                {"layer": 1, "temperature": 125.0},
+                {"layer": 2, "temperature": 102.0},
+                {"layer": 3, "temperature": 20.0},
+            ),
+        )
+
+        self.assertEqual(len(config.post_fdm_output_layer_compensations), 3)
+
+    def test_rejects_duplicate_per_layer_output_compensations(self):
+        with self.assertRaisesRegex(ValueError, "duplicate layer"):
+            InferenceRunConfig(
+                num_layers=10,
+                layer_spacing=0.1,
+                post_fdm_output_layer_compensations=(
+                    {"layer": 1, "temperature": 125.0},
+                    {"layer": 1, "temperature": 102.0},
+                ),
+            )
+
+    def test_rejects_removed_uniform_output_compensation_fields(self):
+        with self.assertRaisesRegex(ValueError, "Unknown keys.*post_fdm_output_compensation_temperature"):
+            _build_inference_run_config(
+                {
+                    "num_layers": 10,
+                    "layer_spacing": 0.1,
+                    "post_fdm_output_compensation_temperature": 102.0,
+                }
+            )
+
+    def test_rejects_null_per_layer_output_compensations(self):
+        with self.assertRaisesRegex(ValueError, "sequence of objects"):
+            InferenceRunConfig(
+                num_layers=10,
+                layer_spacing=0.1,
+                post_fdm_output_layer_compensations=None,
+            )
+
+    def test_accepts_and_validates_q_region_percent(self):
+        config = InferenceRunConfig(
+            num_layers=4,
+            layer_spacing=0.1,
+            post_fdm_output_q_region_percent=25.0,
+        )
+        self.assertAlmostEqual(config.post_fdm_output_q_region_percent, 25.0)
+        for value in (0.0, 100.1):
+            with self.assertRaisesRegex(ValueError, "q_region_percent"):
+                InferenceRunConfig(
+                    num_layers=4,
+                    layer_spacing=0.1,
+                    post_fdm_output_q_region_percent=value,
+                )
 
     def test_accepts_multilayer_batch_config(self):
         config = InferenceRunConfig(

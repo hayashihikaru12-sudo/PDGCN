@@ -750,6 +750,11 @@ class RunConfigTests(unittest.TestCase):
                 "delta_smoothing_alpha": 0.3,
                 "delta_smoothing_steps": 2,
                 "post_fdm_source_compensation_alpha": 0.3,
+                "post_fdm_output_layer_compensations": [
+                    {"layer": 1, "temperature": 12.0},
+                    {"layer": 2, "temperature": 8.0},
+                ],
+                "post_fdm_output_q_region_percent": 12.5,
             },
         }
         training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
@@ -768,6 +773,14 @@ class RunConfigTests(unittest.TestCase):
             self.assertAlmostEqual(metadata["delta_smoothing_alpha"], 0.3)
             self.assertEqual(metadata["delta_smoothing_steps"], 2)
             self.assertAlmostEqual(metadata["post_fdm_source_compensation_alpha"], 0.3)
+            self.assertEqual(
+                metadata["post_fdm_output_layer_compensations"],
+                [
+                    {"layer": 1, "temperature": 12.0},
+                    {"layer": 2, "temperature": 8.0},
+                ],
+            )
+            self.assertAlmostEqual(metadata["post_fdm_output_q_region_percent"], 12.5)
             self.assertEqual(metadata["training_config_path"], str(training_config_path.resolve()))
             self.assertIn("inference_seconds", metadata)
             self.assertIn("average_inference_seconds", metadata)

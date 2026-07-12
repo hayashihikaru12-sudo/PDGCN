@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Optional, Sequence
 
 
@@ -35,6 +36,8 @@ class InferenceRunConfig:
     use_pdgcn_inplane: bool = True
     pdgcn_inplane_top_layer_only: bool = False
     post_fdm_source_compensation_alpha: float = 0.0
+    post_fdm_output_layer_compensations: Sequence[dict] = ()
+    post_fdm_output_q_region_percent: float = 10.0
     cloud_interval: int = 20
     layer_batch_size: Optional[int] = None
     delta_smoothing_alpha: float = 0.2
@@ -80,6 +83,17 @@ class InferenceRunConfig:
             raise ValueError(
                 "inference.post_fdm_source_compensation_alpha must be in [0, 1], "
                 f"got {self.post_fdm_source_compensation_alpha}."
+            )
+        _validate_output_layer_compensations(
+            self.post_fdm_output_layer_compensations,
+            num_layers=int(self.num_layers),
+            name="inference.post_fdm_output_layer_compensations",
+        )
+        q_region_percent = float(self.post_fdm_output_q_region_percent)
+        if not 0.0 < q_region_percent <= 100.0:
+            raise ValueError(
+                "inference.post_fdm_output_q_region_percent must be in (0, 100], "
+                f"got {self.post_fdm_output_q_region_percent}."
             )
         if int(self.cloud_interval) <= 0:
             raise ValueError(f"inference.cloud_interval must be positive, got {self.cloud_interval}.")
@@ -173,3 +187,44 @@ def _validate_hdf5_group_path(value: str, name: str):
     parts = str(value).strip("/").split("/")
     if not parts or any(part in {"", ".", ".."} for part in parts):
         raise ValueError(f"{name} must be a relative HDF5 group path, got {value!r}.")
+
+
+def _is_positive_integer(value):
+    return _is_non_negative_integer(value) and int(value) > 0
+
+
+def _validate_output_layer_compensations(value, *, num_layers: int, name: str):
+    if value is None or isinstance(value, (str, bytes)):
+        raise ValueError(f"{name} must be a sequence of objects.")
+    try:
+        entries = tuple(value)
+    except TypeError as error:
+        raise ValueError(f"{name} must be a sequence of objects.") from error
+
+    layers = []
+    valid_keys = {"layer", "temperature"}
+    for index, entry in enumerate(entries):
+        entry_name = f"{name}[{index}]"
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"{entry_name} must be an object.")
+        unknown = sorted(set(entry) - valid_keys)
+        if unknown:
+            raise ValueError(f"Unknown keys in {entry_name}: {unknown}")
+        missing = sorted(valid_keys - set(entry))
+        if missing:
+            raise ValueError(f"Missing required keys in {entry_name}: {missing}")
+        layer = entry["layer"]
+        if not _is_positive_integer(layer):
+            raise ValueError(f"{entry_name}.layer must be a positive one-based integer, got {layer}.")
+        layer = int(layer)
+        if layer >= int(num_layers):
+            raise ValueError(
+                f"{entry_name}.layer must refer to a non-bottom layer 1..{int(num_layers) - 1}, "
+                f"got {layer}."
+            )
+        temperature = float(entry["temperature"])
+        if temperature < 0.0:
+            raise ValueError(f"{entry_name}.temperature must be non-negative, got {temperature}.")
+        layers.append(layer)
+    if len(set(layers)) != len(layers):
+        raise ValueError(f"{name} must not contain duplicate layer indices.")

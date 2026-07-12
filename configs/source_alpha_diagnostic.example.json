@@ -1,0 +1,14 @@
+{
+  "base_inference_config": "pdgcn_infer.example.json",
+  "diagnostic": {
+    "alpha_q_values": [1.0, 1.05, 1.1, 1.15, 1.2, 1.3],
+    "output_dir": "../runs/pdgcn/source_alpha_diagnostic",
+    "h5_dir": "../multilayer_hdf5",
+    "fem_temperature_dataset": "fem/temperature",
+    "fem_valid_mask_dataset": "fem/valid_mask",
+    "fem_frame_offset": 0,
+    "max_cases": null,
+    "write_plots": true
+  }
+}
+

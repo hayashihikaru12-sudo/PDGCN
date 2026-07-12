@@ -1,5 +1,7 @@
 import inspect
+import math
 import time
+from collections.abc import Mapping
 from typing import Sequence, Union
 
 import torch
@@ -38,6 +40,8 @@ def rollout_multilayer_fdm(
     use_pdgcn_inplane: bool = True,
     pdgcn_inplane_top_layer_only: bool = False,
     post_fdm_source_compensation_alpha: float = 0.0,
+    post_fdm_output_layer_compensations=(),
+    post_fdm_output_q_region_percent: float = 10.0,
     timing_recorder=None,
 ):
     """Run multilayer PD-GCN inference coupled with implicit 1D FDM in thickness."""
@@ -61,6 +65,16 @@ def rollout_multilayer_fdm(
         raise ValueError(
             "post_fdm_source_compensation_alpha must be in [0, 1], "
             f"got {post_fdm_source_compensation_alpha}."
+        )
+    output_layer_compensations = _normalize_output_layer_compensations(
+        post_fdm_output_layer_compensations,
+        num_layers=num_layers,
+    )
+    q_region_percent = float(post_fdm_output_q_region_percent)
+    if not 0.0 < q_region_percent <= 100.0:
+        raise ValueError(
+            "post_fdm_output_q_region_percent must be in (0, 100], "
+            f"got {post_fdm_output_q_region_percent}."
         )
     delta_smoothing_steps = _as_non_negative_integer(
         delta_smoothing_steps,
@@ -165,10 +179,18 @@ def rollout_multilayer_fdm(
                 dtype=next_temperature.dtype,
             )
 
+            output_temperature = _apply_nonrollout_output_compensation(
+                next_temperature,
+                graph,
+                layer_compensations=output_layer_compensations,
+                delta_t0=float(scale_params.delta_T0),
+                q_region_percent=q_region_percent,
+                boundary_value=getattr(model.config, "dirichlet_temperature_star", 0.0),
+            )
             output = (
-                next_temperature
+                output_temperature
                 if return_dimensionless
-                else temperature_from_dimensionless(next_temperature, scale_params)
+                else temperature_from_dimensionless(output_temperature, scale_params)
             )
             if writer is not None:
                 render_seconds = _call_writer(writer, step, output.detach().cpu(), None)
@@ -189,6 +211,99 @@ def rollout_multilayer_fdm(
     if return_all:
         return torch.stack(outputs, dim=0)
     return None
+
+
+def _apply_nonrollout_output_compensation(
+    rollout_temperature,
+    graph,
+    *,
+    layer_compensations,
+    delta_t0: float,
+    q_region_percent: float,
+    boundary_value: float,
+):
+    """Add per-layer output-only offsets without feeding them back into rollout state."""
+
+    if not layer_compensations:
+        return rollout_temperature
+    q_surface_star = getattr(graph, "q_surface_star", None)
+    if q_surface_star is None:
+        raise ValueError("graph.q_surface_star is required to define the high-Q compensation region.")
+    q_surface_star = q_surface_star.to(device=rollout_temperature.device).reshape(-1)
+    num_nodes = int(q_surface_star.numel())
+    if num_nodes != int(rollout_temperature.shape[1]):
+        raise ValueError(
+            "graph.q_surface_star node count must match rollout temperature node count, "
+            f"got {num_nodes} and {rollout_temperature.shape[1]}."
+        )
+    if not bool(torch.any(q_surface_star > 0).item()):
+        return rollout_temperature
+    num_q_nodes = max(1, int(math.ceil(num_nodes * float(q_region_percent) / 100.0)))
+    q_indices = torch.topk(q_surface_star, k=min(num_q_nodes, num_nodes), largest=True).indices
+    source_mask = torch.zeros(num_nodes, 1, device=q_surface_star.device, dtype=torch.bool)
+    source_mask[q_indices, 0] = True
+    compensated = rollout_temperature.clone()
+    for entry in layer_compensations:
+        layer_index = int(entry["layer"]) - 1
+        compensation_temperature_star = float(entry["temperature"]) / float(delta_t0)
+        compensated[layer_index] = compensated[layer_index] + (
+            source_mask.to(dtype=compensated.dtype) * compensation_temperature_star
+        )
+    compensated = apply_dirichlet_boundary(
+        compensated,
+        graph_boundary_nodes(graph),
+        value=boundary_value,
+    )
+    return compensated
+
+
+def _normalize_output_layer_compensations(
+    value,
+    *,
+    num_layers: int,
+):
+    if value is None or isinstance(value, (str, bytes)):
+        raise ValueError("post_fdm_output_layer_compensations must be a sequence of objects.")
+    try:
+        entries = tuple(value)
+    except TypeError as error:
+        raise ValueError("post_fdm_output_layer_compensations must be a sequence of objects.") from error
+
+    normalized = []
+    layers = []
+    valid_keys = {"layer", "temperature"}
+    for index, entry in enumerate(entries):
+        name = f"post_fdm_output_layer_compensations[{index}]"
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"{name} must be an object.")
+        unknown = sorted(set(entry) - valid_keys)
+        if unknown:
+            raise ValueError(f"Unknown keys in {name}: {unknown}")
+        missing = sorted(valid_keys - set(entry))
+        if missing:
+            raise ValueError(f"Missing required keys in {name}: {missing}")
+        layer = entry["layer"]
+        if isinstance(layer, bool) or int(layer) != layer or int(layer) <= 0:
+            raise ValueError(f"{name}.layer must be a positive one-based integer, got {layer}.")
+        layer = int(layer)
+        if layer >= int(num_layers):
+            raise ValueError(
+                f"{name}.layer must refer to a non-bottom layer 1..{int(num_layers) - 1}, got {layer}."
+            )
+        temperature = float(entry["temperature"])
+        if temperature < 0.0:
+            raise ValueError(f"{name}.temperature must be non-negative, got {temperature}.")
+        layers.append(layer)
+        if temperature > 0.0:
+            normalized.append(
+                {
+                    "layer": layer,
+                    "temperature": temperature,
+                }
+            )
+    if len(set(layers)) != len(layers):
+        raise ValueError("post_fdm_output_layer_compensations must not contain duplicate layer indices.")
+    return tuple(normalized)
 
 
 def _resolve_layer_batch_size(layer_batch_size, num_layers: int, device):

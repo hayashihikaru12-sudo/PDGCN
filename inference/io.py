@@ -311,6 +311,12 @@ def _run_multilayer_inference_for_h5(
         "post_fdm_source_compensation_alpha": float(
             inference_config.post_fdm_source_compensation_alpha
         ),
+        "post_fdm_output_layer_compensations": [
+            dict(entry) for entry in inference_config.post_fdm_output_layer_compensations
+        ],
+        "post_fdm_output_q_region_percent": float(
+            inference_config.post_fdm_output_q_region_percent
+        ),
         "vtk_output_dir": str(selected_vtk_dir),
         "prediction_group_path": _metadata_prediction_group_path(prediction_group_path),
         "hdf5_timing": timing,
@@ -350,6 +356,10 @@ def _run_multilayer_inference_for_h5(
             pdgcn_inplane_top_layer_only=bool(inference_config.pdgcn_inplane_top_layer_only),
             post_fdm_source_compensation_alpha=float(
                 inference_config.post_fdm_source_compensation_alpha
+            ),
+            post_fdm_output_layer_compensations=inference_config.post_fdm_output_layer_compensations,
+            post_fdm_output_q_region_percent=float(
+                inference_config.post_fdm_output_q_region_percent
             ),
             prediction_group_path=prediction_group_path,
         )
@@ -514,6 +524,8 @@ def write_multilayer_hdf5(
     use_pdgcn_inplane: bool = True,
     pdgcn_inplane_top_layer_only: bool = False,
     post_fdm_source_compensation_alpha: float = 0.0,
+    post_fdm_output_layer_compensations=(),
+    post_fdm_output_q_region_percent: float = 10.0,
     prediction_group_path=None,
 ):
     output_path = Path(output_path)
@@ -580,6 +592,8 @@ def write_multilayer_hdf5(
             use_pdgcn_inplane=bool(use_pdgcn_inplane),
             pdgcn_inplane_top_layer_only=bool(pdgcn_inplane_top_layer_only),
             post_fdm_source_compensation_alpha=float(post_fdm_source_compensation_alpha),
+            post_fdm_output_layer_compensations=post_fdm_output_layer_compensations,
+            post_fdm_output_q_region_percent=float(post_fdm_output_q_region_percent),
             timing_recorder=step_inference_seconds.append,
         )
         timing_summary["total_seconds"] = time.perf_counter() - start_total

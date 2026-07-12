@@ -329,6 +329,79 @@ class MultilayerRolloutTests(unittest.TestCase):
                 post_fdm_source_compensation_alpha=1.1,
             )
 
+    def test_fixed_output_compensation_rejects_bottom_layer(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+
+        with self.assertRaisesRegex(ValueError, "non-bottom layer"):
+            rollout_multilayer_fdm(
+                ConstantDeltaModel(),
+                make_graph(),
+                1,
+                scale_params,
+                num_layers=3,
+                layer_spacing=1.0,
+                post_fdm_output_layer_compensations=(
+                    {"layer": 3, "temperature": 20.0},
+                ),
+            )
+
+    def test_per_layer_output_compensation_uses_shared_top_q_percent_mask(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        graph = make_graph()
+        graph.q_surface_star = torch.tensor([[0.1], [1.0]])
+        model = ConstantDeltaModel()
+        model.delta.data.fill_(0.0)
+        model.config = PDGCNConfig(inverse_pe=0.0, k_ratio=0.0, source_coefficient=0.0)
+
+        baseline = rollout_multilayer_fdm(
+            model,
+            graph,
+            2,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+        )
+        compensated = rollout_multilayer_fdm(
+            model,
+            graph,
+            2,
+            scale_params,
+            num_layers=4,
+            layer_spacing=1.0,
+            return_dimensionless=True,
+            use_pdgcn_inplane=False,
+            post_fdm_output_layer_compensations=(
+                {"layer": 1, "temperature": 125.0},
+                {"layer": 2, "temperature": 102.0},
+                {"layer": 3, "temperature": 20.0},
+            ),
+            post_fdm_output_q_region_percent=50.0,
+        )
+
+        expected_difference = torch.zeros_like(compensated)
+        expected_difference[:, 0, 1, 0] = 12.5
+        expected_difference[:, 1, 1, 0] = 10.2
+        expected_difference[:, 2, 1, 0] = 2.0
+        self.assertTrue(torch.allclose(compensated - baseline, expected_difference, atol=1e-6))
+
+    def test_output_compensation_requires_input_q(self):
+        scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)
+        with self.assertRaisesRegex(ValueError, "high-Q compensation region"):
+            rollout_multilayer_fdm(
+                ConstantDeltaModel(),
+                make_graph(),
+                1,
+                scale_params,
+                num_layers=4,
+                layer_spacing=1.0,
+                post_fdm_output_layer_compensations=(
+                    {"layer": 1, "temperature": 125.0},
+                ),
+                post_fdm_output_q_region_percent=50.0,
+            )
+
     def test_multilayer_graph_zeroes_source_features_below_top_layer(self):
         graph = make_graph()
         graph.x = torch.zeros(2, 9)
