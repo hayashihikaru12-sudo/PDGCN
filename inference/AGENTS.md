@@ -25,7 +25,7 @@
 - `layer=0` 为顶层，`layer=num_layers-1` 为底层模具恒温边界。
 - 显式表面热源固定只作用于顶层；下层不读取热源，下层能量只能来自厚度 FDM。
 - `post_fdm_source_compensation_alpha` 仅在 FDM 后把当前步原始 `delta_T_source` 的指定比例补到顶层，默认 `0.0` 保持旧行为，取值范围为 `[0, 1]`。
-- `post_fdm_output_layer_compensations` 是唯一的固定输出温差补偿接口，每层独立配置 `temperature`，层号从 1 开始且不得包含底层；所有层复用输入帧 `dynamic/Q` 最高 `post_fdm_output_q_region_percent` 百分比节点掩码。修正后的副本用于 HDF5/返回值，未经修正的 `T_next` 继续 rollout。
+- `post_fdm_output_layer_compensations` 是唯一的固定输出温差补偿接口，每层独立配置 `temperature`，层号从 1 开始且不得包含底层；所有层复用输入帧 `dynamic/Q` 生成的连续权重场。最高 `post_fdm_output_q_region_percent` 百分比为完整补偿核心区，随后 `post_fdm_output_q_transition_percent` 百分比用 smoothstep 衰减到零。修正后的副本用于 HDF5/返回值，未经修正的 `T_next` 继续 rollout。
 - 多层状态张量形状固定为 `[layer, node, 1]`。
 - 输出序列形状固定为 `[time, layer, node, 1]`。
 - CUDA 推理默认按较小层批量前向，避免 30 层等大规模场景一次性构造完整多层图导致显存溢出。

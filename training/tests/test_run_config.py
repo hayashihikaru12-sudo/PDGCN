@@ -755,6 +755,7 @@ class RunConfigTests(unittest.TestCase):
                     {"layer": 2, "temperature": 8.0},
                 ],
                 "post_fdm_output_q_region_percent": 12.5,
+                "post_fdm_output_q_transition_percent": 7.5,
             },
         }
         training_config_path.write_text(json.dumps(training_payload), encoding="utf-8")
@@ -781,6 +782,7 @@ class RunConfigTests(unittest.TestCase):
                 ],
             )
             self.assertAlmostEqual(metadata["post_fdm_output_q_region_percent"], 12.5)
+            self.assertAlmostEqual(metadata["post_fdm_output_q_transition_percent"], 7.5)
             self.assertEqual(metadata["training_config_path"], str(training_config_path.resolve()))
             self.assertIn("inference_seconds", metadata)
             self.assertIn("average_inference_seconds", metadata)

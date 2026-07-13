@@ -432,6 +432,8 @@ w = W_high if T_source_applied* > threshold else 1
       {"layer": 2, "temperature": 102.0},
       {"layer": 3, "temperature": 20.0}
     ],
+    "post_fdm_output_q_region_percent": 2.5,
+    "post_fdm_output_q_transition_percent": 5.0,
     "cloud_interval": 20,
     "layer_batch_size": null,
     "delta_smoothing_alpha": 0.2,
@@ -469,6 +471,7 @@ w = W_high if T_source_applied* > threshold else 1
 | `post_fdm_source_compensation_alpha` | number | FDM 后顶层热源补偿系数，范围 `[0, 1]`。补偿量为当前步原始 `delta_T_source` 的该比例；默认 `0.0` 保持旧行为。 |
 | `post_fdm_output_layer_compensations` | object array | 逐层补偿配置。每项只包含 `layer`（从 1 开始的非底层层号）和 `temperature`（该层补偿温差，`°C`）。层号不得重复，数组长度可扩展；示例初值为第 1/2/3 层 `125/102/20°C`。设为空数组可关闭固定输出补偿。所有层共享输入帧 Q 值最高百分比节点掩码。 |
 | `post_fdm_output_q_region_percent` | number | 输入帧 `dynamic/Q` 高热流区域百分比，范围 `(0, 100]`，默认 `10.0`；选取 Q 值最高的指定百分比节点作为所有配置层的补偿区域。 |
+| `post_fdm_output_q_transition_percent` | number | 高 Q 核心区外的平滑过渡比例，默认 `5.0`，必须非负且与核心区比例之和不超过 `100`。过渡区补偿权重按 Q 值通过 smoothstep 从 `1` 连续衰减到 `0`；设为 `0.0` 恢复二值硬边界。 |
 | `cloud_interval` | integer | 合并三维云图输出间隔。默认 `20` 表示输出第 `0, 20, 40, ...` 帧。 |
 | `layer_batch_size` | integer 或 `null` | 每次模型前向处理的层数；为 `null` 时 CUDA 自动使用较小层批量以降低显存。 |
 | `delta_smoothing_alpha` | number | 推理端网络增量图低通强度，范围 `[0, 1]`。默认 `0.2`；设为 `0` 可关闭平滑。 |
@@ -502,11 +505,12 @@ T_next = apply_boundary(T_fdm)
 T_output = T_next
 for item in post_fdm_output_layer_compensations:
     k = item.layer - 1
-    T_output[k, q_rank <= post_fdm_output_q_region_percent] += item.temperature / delta_T0
+    weight = smooth_high_q_weight(q, core_percent, transition_percent)
+    T_output[k] += weight * item.temperature / delta_T0
 T_rollout_next = T_next
 ```
 
-其中 `delta_T_source` 只由显式表面热源模块作用于顶层；若启用热源节点特征，多层图中也只有顶层保留 `q*` 和 `ΔT_Q*`，非顶层这两列置零。`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。逐层固定输出补偿先从输入帧 `dynamic/Q` 选取最高 `post_fdm_output_q_region_percent` 百分比节点，再把各层配置的 `temperature / delta_T0` 加到对应层；所有层共享同一组节点编号，只修改当帧写入 HDF5/返回值的副本，不修改 `T_rollout_next`，因此不会逐步累计，也不会改变 PD-GCN/FDM 动力学。
+其中 `delta_T_source` 只由显式表面热源模块作用于顶层；若启用热源节点特征，多层图中也只有顶层保留 `q*` 和 `ΔT_Q*`，非顶层这两列置零。`delta_T_inplane` 由无源 PD-GCN 计算，若 `use_pdgcn_inplane=false` 则全层置零，若 `pdgcn_inplane_top_layer_only=true` 则仅第 0 层保留 PD-GCN 增量、下层置零；`implicit_fdm_step` 由厚度方向 Backward Euler 隐式 1D FDM 基于 `T_inplane` 计算。网络增量会先按当前层内图拓扑进行可选低通平滑，再进入 FDM 步骤；该平滑只作用于网络增量，不直接平滑最终温度。逐层固定输出补偿以输入帧 `dynamic/Q` 最高 `post_fdm_output_q_region_percent` 百分比节点为完整补偿核心区，并在随后的 `post_fdm_output_q_transition_percent` 百分比节点中按 Q 值使用 smoothstep 将权重从 1 平滑衰减到 0，再乘各层配置的 `temperature / delta_T0`；所有层共享同一连续权重场，只修改当帧写入 HDF5/返回值的副本，不修改 `T_rollout_next`，因此不会逐步累计，也不会改变 PD-GCN/FDM 动力学。
 
 ## 调参注意事项
 

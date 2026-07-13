@@ -42,6 +42,7 @@ def rollout_multilayer_fdm(
     post_fdm_source_compensation_alpha: float = 0.0,
     post_fdm_output_layer_compensations=(),
     post_fdm_output_q_region_percent: float = 10.0,
+    post_fdm_output_q_transition_percent: float = 5.0,
     timing_recorder=None,
 ):
     """Run multilayer PD-GCN inference coupled with implicit 1D FDM in thickness."""
@@ -75,6 +76,13 @@ def rollout_multilayer_fdm(
         raise ValueError(
             "post_fdm_output_q_region_percent must be in (0, 100], "
             f"got {post_fdm_output_q_region_percent}."
+        )
+    q_transition_percent = float(post_fdm_output_q_transition_percent)
+    if q_transition_percent < 0.0 or q_region_percent + q_transition_percent > 100.0:
+        raise ValueError(
+            "post_fdm_output_q_transition_percent must be non-negative and "
+            "q_region_percent + q_transition_percent must not exceed 100, "
+            f"got {post_fdm_output_q_transition_percent}."
         )
     delta_smoothing_steps = _as_non_negative_integer(
         delta_smoothing_steps,
@@ -185,6 +193,7 @@ def rollout_multilayer_fdm(
                 layer_compensations=output_layer_compensations,
                 delta_t0=float(scale_params.delta_T0),
                 q_region_percent=q_region_percent,
+                q_transition_percent=q_transition_percent,
                 boundary_value=getattr(model.config, "dirichlet_temperature_star", 0.0),
             )
             output = (
@@ -220,6 +229,7 @@ def _apply_nonrollout_output_compensation(
     layer_compensations,
     delta_t0: float,
     q_region_percent: float,
+    q_transition_percent: float,
     boundary_value: float,
 ):
     """Add per-layer output-only offsets without feeding them back into rollout state."""
@@ -238,16 +248,17 @@ def _apply_nonrollout_output_compensation(
         )
     if not bool(torch.any(q_surface_star > 0).item()):
         return rollout_temperature
-    num_q_nodes = max(1, int(math.ceil(num_nodes * float(q_region_percent) / 100.0)))
-    q_indices = torch.topk(q_surface_star, k=min(num_q_nodes, num_nodes), largest=True).indices
-    source_mask = torch.zeros(num_nodes, 1, device=q_surface_star.device, dtype=torch.bool)
-    source_mask[q_indices, 0] = True
+    compensation_weight = _smooth_high_q_compensation_weight(
+        q_surface_star,
+        core_percent=float(q_region_percent),
+        transition_percent=float(q_transition_percent),
+    ).reshape(num_nodes, 1)
     compensated = rollout_temperature.clone()
     for entry in layer_compensations:
         layer_index = int(entry["layer"]) - 1
         compensation_temperature_star = float(entry["temperature"]) / float(delta_t0)
         compensated[layer_index] = compensated[layer_index] + (
-            source_mask.to(dtype=compensated.dtype) * compensation_temperature_star
+            compensation_weight.to(dtype=compensated.dtype) * compensation_temperature_star
         )
     compensated = apply_dirichlet_boundary(
         compensated,
@@ -255,6 +266,28 @@ def _apply_nonrollout_output_compensation(
         value=boundary_value,
     )
     return compensated
+
+
+def _smooth_high_q_compensation_weight(q_surface_star, *, core_percent: float, transition_percent: float):
+    """Build a shared high-Q weight with a full-strength core and smoothstep fade band."""
+
+    q_surface_star = q_surface_star.reshape(-1)
+    num_nodes = int(q_surface_star.numel())
+    core_count = max(1, min(num_nodes, int(math.ceil(num_nodes * float(core_percent) / 100.0))))
+    outer_percent = min(100.0, float(core_percent) + float(transition_percent))
+    outer_count = max(core_count, min(num_nodes, int(math.ceil(num_nodes * outer_percent / 100.0))))
+    sorted_q = torch.topk(q_surface_star, k=outer_count, largest=True).values
+    q_core = sorted_q[core_count - 1]
+    if outer_count == core_count or float(transition_percent) <= 0.0:
+        return (q_surface_star >= q_core).to(dtype=q_surface_star.dtype)
+
+    q_outer = sorted_q[outer_count - 1]
+    scale = q_core - q_outer
+    eps = torch.finfo(q_surface_star.dtype).eps
+    if bool(torch.abs(scale).le(eps).item()):
+        return (q_surface_star >= q_core).to(dtype=q_surface_star.dtype)
+    normalized = ((q_surface_star - q_outer) / scale).clamp(0.0, 1.0)
+    return normalized.square() * (3.0 - 2.0 * normalized)
 
 
 def _normalize_output_layer_compensations(

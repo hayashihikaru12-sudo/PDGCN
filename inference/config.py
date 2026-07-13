@@ -38,6 +38,7 @@ class InferenceRunConfig:
     post_fdm_source_compensation_alpha: float = 0.0
     post_fdm_output_layer_compensations: Sequence[dict] = ()
     post_fdm_output_q_region_percent: float = 10.0
+    post_fdm_output_q_transition_percent: float = 5.0
     cloud_interval: int = 20
     layer_batch_size: Optional[int] = None
     delta_smoothing_alpha: float = 0.2
@@ -94,6 +95,13 @@ class InferenceRunConfig:
             raise ValueError(
                 "inference.post_fdm_output_q_region_percent must be in (0, 100], "
                 f"got {self.post_fdm_output_q_region_percent}."
+            )
+        q_transition_percent = float(self.post_fdm_output_q_transition_percent)
+        if q_transition_percent < 0.0 or q_region_percent + q_transition_percent > 100.0:
+            raise ValueError(
+                "inference.post_fdm_output_q_transition_percent must be non-negative and "
+                "q_region_percent + q_transition_percent must not exceed 100, "
+                f"got {self.post_fdm_output_q_transition_percent}."
             )
         if int(self.cloud_interval) <= 0:
             raise ValueError(f"inference.cloud_interval must be positive, got {self.cloud_interval}.")

@@ -6,7 +6,12 @@ from torch_geometric.data import Data
 
 from data import ScaleParams
 from inference.io import _should_write_cloud_step
-from inference.multilayer import _build_multilayer_graph, _smooth_delta_by_graph, rollout_multilayer_fdm
+from inference.multilayer import (
+    _build_multilayer_graph,
+    _smooth_delta_by_graph,
+    _smooth_high_q_compensation_weight,
+    rollout_multilayer_fdm,
+)
 from models import PDGCNConfig
 
 
@@ -385,6 +390,21 @@ class MultilayerRolloutTests(unittest.TestCase):
         expected_difference[:, 1, 1, 0] = 10.2
         expected_difference[:, 2, 1, 0] = 2.0
         self.assertTrue(torch.allclose(compensated - baseline, expected_difference, atol=1e-6))
+
+    def test_high_q_compensation_weight_has_smooth_transition(self):
+        q_surface_star = torch.tensor([0.0, 0.25, 0.5, 1.0])
+
+        weight = _smooth_high_q_compensation_weight(
+            q_surface_star,
+            core_percent=25.0,
+            transition_percent=50.0,
+        )
+
+        self.assertAlmostEqual(weight[3].item(), 1.0)
+        self.assertGreater(weight[2].item(), 0.0)
+        self.assertLess(weight[2].item(), 1.0)
+        self.assertAlmostEqual(weight[1].item(), 0.0)
+        self.assertAlmostEqual(weight[0].item(), 0.0)
 
     def test_output_compensation_requires_input_q(self):
         scale_params = ScaleParams(L0=1.0, v0=1.0, T_amb=300.0, delta_T0=10.0, Q0=1.0)

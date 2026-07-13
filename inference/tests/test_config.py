@@ -136,6 +136,23 @@ class InferenceConfigTests(unittest.TestCase):
                     post_fdm_output_q_region_percent=value,
                 )
 
+    def test_accepts_and_validates_q_transition_percent(self):
+        config = InferenceRunConfig(
+            num_layers=4,
+            layer_spacing=0.1,
+            post_fdm_output_q_region_percent=10.0,
+            post_fdm_output_q_transition_percent=5.0,
+        )
+        self.assertAlmostEqual(config.post_fdm_output_q_transition_percent, 5.0)
+        for value in (-0.1, 91.0):
+            with self.assertRaisesRegex(ValueError, "q_transition_percent"):
+                InferenceRunConfig(
+                    num_layers=4,
+                    layer_spacing=0.1,
+                    post_fdm_output_q_region_percent=10.0,
+                    post_fdm_output_q_transition_percent=value,
+                )
+
     def test_accepts_multilayer_batch_config(self):
         config = InferenceRunConfig(
             num_layers=2,

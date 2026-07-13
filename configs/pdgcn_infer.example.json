@@ -22,11 +22,12 @@
     "pdgcn_inplane_top_layer_only": false,
     "post_fdm_source_compensation_alpha": 0.0,
     "post_fdm_output_layer_compensations": [
-      {"layer": 1, "temperature": 125.0},
-      {"layer": 2, "temperature": 102.0},
-      {"layer": 3, "temperature": 20.0}
+      {"layer": 1, "temperature": 128.0},
+      {"layer": 2, "temperature": 121.3},
+      {"layer": 3, "temperature": 87.6}
     ],
-    "post_fdm_output_q_region_percent": 2.5,
+    "post_fdm_output_q_region_percent": 3.0,
+    "post_fdm_output_q_transition_percent": 1.0,
     "cloud_interval": 20,
     "layer_batch_size": null,
     "delta_smoothing_alpha": 0.2,

@@ -317,6 +317,9 @@ def _run_multilayer_inference_for_h5(
         "post_fdm_output_q_region_percent": float(
             inference_config.post_fdm_output_q_region_percent
         ),
+        "post_fdm_output_q_transition_percent": float(
+            inference_config.post_fdm_output_q_transition_percent
+        ),
         "vtk_output_dir": str(selected_vtk_dir),
         "prediction_group_path": _metadata_prediction_group_path(prediction_group_path),
         "hdf5_timing": timing,
@@ -360,6 +363,9 @@ def _run_multilayer_inference_for_h5(
             post_fdm_output_layer_compensations=inference_config.post_fdm_output_layer_compensations,
             post_fdm_output_q_region_percent=float(
                 inference_config.post_fdm_output_q_region_percent
+            ),
+            post_fdm_output_q_transition_percent=float(
+                inference_config.post_fdm_output_q_transition_percent
             ),
             prediction_group_path=prediction_group_path,
         )
@@ -526,6 +532,7 @@ def write_multilayer_hdf5(
     post_fdm_source_compensation_alpha: float = 0.0,
     post_fdm_output_layer_compensations=(),
     post_fdm_output_q_region_percent: float = 10.0,
+    post_fdm_output_q_transition_percent: float = 5.0,
     prediction_group_path=None,
 ):
     output_path = Path(output_path)
@@ -594,6 +601,7 @@ def write_multilayer_hdf5(
             post_fdm_source_compensation_alpha=float(post_fdm_source_compensation_alpha),
             post_fdm_output_layer_compensations=post_fdm_output_layer_compensations,
             post_fdm_output_q_region_percent=float(post_fdm_output_q_region_percent),
+            post_fdm_output_q_transition_percent=float(post_fdm_output_q_transition_percent),
             timing_recorder=step_inference_seconds.append,
         )
         timing_summary["total_seconds"] = time.perf_counter() - start_total
